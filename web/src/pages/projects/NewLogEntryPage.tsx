@@ -128,7 +128,7 @@ export default function NewLogEntryPage() {
   }
 
   return (
-    <div className="w-full px-8 py-7">
+    <div className="w-full px-4 py-5 md:px-8 md:py-7">
       {/* Breadcrumb */}
       <div className="flex items-center gap-1.5 text-[12px] mb-5" style={{ color: 'var(--ink-3)' }}>
         <button onClick={() => navigate('/projects')} className="hover:underline">Projects</button>

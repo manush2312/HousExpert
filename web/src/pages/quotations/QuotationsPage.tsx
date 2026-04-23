@@ -58,9 +58,9 @@ export default function QuotationsPage() {
   }, [quotations])
 
   return (
-    <div className="w-full px-8 py-7">
+    <div className="w-full px-4 py-5 md:px-8 md:py-7">
       {/* Header */}
-      <div className="flex items-start justify-between gap-6 mb-7">
+      <div className="flex flex-wrap items-start justify-between gap-3 mb-7">
         <div>
           <div className="eyebrow mb-1">Sales</div>
           <h1 className="text-[26px] font-semibold tracking-tight" style={{ color: 'var(--ink)' }}>
@@ -155,7 +155,8 @@ export default function QuotationsPage() {
       {/* Table */}
       {!loading && filtered.length > 0 && (
         <div className="card overflow-hidden">
-          <table className="w-full text-[13px]">
+          <div className="overflow-x-auto">
+          <table className="w-full min-w-175 text-[13px]">
             <thead>
               <tr style={{ background: 'var(--bg-sunken)' }}>
                 {['No.', 'Client', 'Location', 'Items', 'Total', 'Date', 'Status', ''].map((h) => (
@@ -207,6 +208,7 @@ export default function QuotationsPage() {
               })}
             </tbody>
           </table>
+          </div>
         </div>
       )}
     </div>

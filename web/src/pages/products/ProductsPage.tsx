@@ -36,9 +36,9 @@ export default function ProductsPage() {
   }
 
   return (
-    <div className="w-full px-8 py-7">
+    <div className="w-full px-4 py-5 md:px-8 md:py-7">
       {/* Header */}
-      <div className="flex items-start justify-between gap-6 mb-7">
+      <div className="flex flex-wrap items-start justify-between gap-3 mb-7">
         <div>
           <div className="eyebrow mb-1">Catalog</div>
           <h1 className="text-[26px] font-semibold tracking-tight" style={{ color: 'var(--ink)' }}>

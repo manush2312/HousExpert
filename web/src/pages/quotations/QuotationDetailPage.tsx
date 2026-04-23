@@ -67,7 +67,7 @@ export default function QuotationDetailPage() {
   const isEditable = quotation.status === 'draft'
 
   return (
-    <div className="w-full px-8 py-7">
+    <div className="w-full px-4 py-5 md:px-8 md:py-7">
       {/* Breadcrumb */}
       <div className="flex items-center gap-1.5 text-[12px] mb-5" style={{ color: 'var(--ink-3)' }}>
         <button onClick={() => navigate('/quotations')} className="hover:underline">Quotations</button>
@@ -183,40 +183,43 @@ export default function QuotationDetailPage() {
                 </span>
               </div>
 
-              {/* Column headers */}
-              <div
-                className="grid px-5 py-2 text-[10.5px] font-semibold uppercase tracking-wider gap-3"
-                style={{ color: 'var(--ink-4)', background: 'var(--bg-sunken)', borderBottom: '1px solid var(--line-2)', gridTemplateColumns: '24px 2fr 80px 60px 60px 90px 1fr 100px' }}
-              >
-                <span>#</span>
-                <span>Description</span>
-                <span>Size (inches)</span>
-                <span>Sq.Ft</span>
-                <span>Qty</span>
-                <span>Rate</span>
-                <span>Note</span>
-                <span className="text-right">Amount</span>
-              </div>
-
-              {/* Rows */}
-              {sec.items.map((item, idx) => (
+              {/* Scrollable table */}
+              <div className="overflow-x-auto">
+                {/* Column headers */}
                 <div
-                  key={item.item_id}
-                  className="grid px-5 py-2.5 gap-3 text-[12.5px]"
-                  style={{ gridTemplateColumns: '24px 2fr 80px 60px 60px 90px 1fr 100px', borderBottom: '1px solid var(--line-2)', color: 'var(--ink-2)' }}
+                  className="grid px-5 py-2 text-[10.5px] font-semibold uppercase tracking-wider gap-3"
+                  style={{ color: 'var(--ink-4)', background: 'var(--bg-sunken)', borderBottom: '1px solid var(--line-2)', gridTemplateColumns: '24px 2fr 80px 60px 60px 90px 1fr 100px', minWidth: 660 }}
                 >
-                  <span className="numeral text-[11px]" style={{ color: 'var(--ink-5)' }}>{idx + 1}</span>
-                  <span className="font-medium" style={{ color: 'var(--ink)' }}>{item.description}</span>
-                  <span className="numeral">{item.size || '—'}</span>
-                  <span className="numeral">{item.sqft != null ? item.sqft : '—'}</span>
-                  <span className="numeral">{item.qty}</span>
-                  <span className="numeral">₹{item.rate.toLocaleString('en-IN')}</span>
-                  <span style={{ color: 'var(--ink-4)' }}>{item.note || '—'}</span>
-                  <span className="numeral text-right font-medium" style={{ color: item.amount > 0 ? 'var(--ink)' : 'var(--ink-5)' }}>
-                    {item.amount > 0 ? fmtINR(item.amount) : '—'}
-                  </span>
+                  <span>#</span>
+                  <span>Description</span>
+                  <span>Size (inches)</span>
+                  <span>Sq.Ft</span>
+                  <span>Qty</span>
+                  <span>Rate</span>
+                  <span>Note</span>
+                  <span className="text-right">Amount</span>
                 </div>
-              ))}
+
+                {/* Rows */}
+                {sec.items.map((item, idx) => (
+                  <div
+                    key={item.item_id}
+                    className="grid px-5 py-2.5 gap-3 text-[12.5px]"
+                    style={{ gridTemplateColumns: '24px 2fr 80px 60px 60px 90px 1fr 100px', borderBottom: '1px solid var(--line-2)', color: 'var(--ink-2)', minWidth: 660 }}
+                  >
+                    <span className="numeral text-[11px]" style={{ color: 'var(--ink-5)' }}>{idx + 1}</span>
+                    <span className="font-medium" style={{ color: 'var(--ink)' }}>{item.description}</span>
+                    <span className="numeral">{item.size || '—'}</span>
+                    <span className="numeral">{item.sqft != null ? item.sqft : '—'}</span>
+                    <span className="numeral">{item.qty}</span>
+                    <span className="numeral">₹{item.rate.toLocaleString('en-IN')}</span>
+                    <span style={{ color: 'var(--ink-4)' }}>{item.note || '—'}</span>
+                    <span className="numeral text-right font-medium" style={{ color: item.amount > 0 ? 'var(--ink)' : 'var(--ink-5)' }}>
+                      {item.amount > 0 ? fmtINR(item.amount) : '—'}
+                    </span>
+                  </div>
+                ))}
+              </div>
             </div>
           )
         })}

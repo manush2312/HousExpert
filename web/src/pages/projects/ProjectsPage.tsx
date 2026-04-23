@@ -106,8 +106,8 @@ export default function ProjectsPage() {
   const refreshedLabel = lastRefreshedAt ? 'just now' : 'pending'
 
   return (
-    <div className="w-full px-8 py-7">
-      <div className="flex items-start justify-between gap-6 mb-7">
+    <div className="w-full px-4 py-5 md:px-8 md:py-7">
+      <div className="flex flex-wrap items-start justify-between gap-3 mb-7">
         <div>
           <h1 className="text-[26px] font-semibold tracking-tight numeral" style={{ color: 'var(--ink)' }}>
             Projects
@@ -162,7 +162,7 @@ export default function ProjectsPage() {
       )}
 
       <div className="card px-3 py-2.5 mb-3 flex flex-wrap items-center gap-2">
-        <div className="relative min-w-[240px] flex-1">
+        <div className="relative min-w-60 flex-1">
           <Search
             size={14}
             className="pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2"
@@ -487,7 +487,7 @@ function ProjectsTable({
   return (
     <div className="card overflow-hidden">
       <div className="overflow-x-auto">
-        <table className="w-full min-w-[920px] text-[13px]">
+        <table className="w-full min-w-230 text-[13px]">
           <thead>
             <tr style={{ background: 'var(--bg-sunken)' }}>
               <Th>Project</Th>
@@ -530,8 +530,8 @@ function ProjectsTable({
                   </div>
                 </td>
                 <td className="px-4 py-2.5">
-                  <div className="flex min-w-[140px] items-center gap-2">
-                    <div className="flex-1 min-w-[60px]">
+                  <div className="flex min-w-35 items-center gap-2">
+                    <div className="flex-1 min-w-15">
                       <Progress value={project.progress ?? 0} />
                     </div>
                     <span className="w-8 text-right text-[11.5px] numeral" style={{ color: 'var(--ink-2)' }}>

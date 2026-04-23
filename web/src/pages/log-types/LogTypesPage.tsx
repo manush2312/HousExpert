@@ -37,9 +37,9 @@ export default function LogTypesPage() {
   )
 
   return (
-    <div className="w-full px-8 py-7">
+    <div className="w-full px-4 py-5 md:px-8 md:py-7">
       {/* Page header */}
-      <div className="flex items-start justify-between gap-6 mb-7">
+      <div className="flex flex-wrap items-start justify-between gap-3 mb-7">
         <div>
           <h1 className="text-[26px] font-semibold tracking-tight numeral" style={{ color: 'var(--ink)' }}>Log types</h1>
           <p className="text-[13.5px] mt-1.5 max-w-xl" style={{ color: 'var(--ink-3)' }}>

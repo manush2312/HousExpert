@@ -28,12 +28,23 @@ function useTheme() {
 
 export default function AppLayout() {
   const { theme, toggle } = useTheme()
+  const location = useLocation()
   const [collapsed, setCollapsed] = useState(() => localStorage.getItem('hx-sidebar') === 'true')
+  const [mobileOpen, setMobileOpen] = useState(false)
   const [paletteOpen, setPaletteOpen] = useState(false)
   const [projects, setProjects] = useState<Project[]>([])
   const [logTypes, setLogTypes] = useState<LogType[]>([])
 
   useEffect(() => { localStorage.setItem('hx-sidebar', String(collapsed)) }, [collapsed])
+  useEffect(() => { setMobileOpen(false) }, [location.pathname])
+
+  const handleToggleSidebar = () => {
+    if (window.innerWidth < 1024) {
+      setMobileOpen((m) => !m)
+    } else {
+      setCollapsed((c) => !c)
+    }
+  }
 
   // Cmd+K shortcut
   useEffect(() => {
@@ -56,6 +67,13 @@ export default function AppLayout() {
 
   return (
     <div className="flex h-screen" style={{ background: 'var(--bg)' }}>
+      {mobileOpen && (
+        <div
+          className="fixed inset-0 z-30 lg:hidden"
+          style={{ background: 'rgba(0,0,0,0.4)' }}
+          onClick={() => setMobileOpen(false)}
+        />
+      )}
       <Sidebar
         collapsed={collapsed}
         setCollapsed={setCollapsed}
@@ -63,9 +81,10 @@ export default function AppLayout() {
         onToggleTheme={toggle}
         onOpenPalette={() => setPaletteOpen(true)}
         projects={projects}
+        mobileOpen={mobileOpen}
       />
       <main className="flex-1 overflow-y-auto min-w-0">
-        <Topbar collapsed={collapsed} onToggleSidebar={() => setCollapsed((c) => !c)} />
+        <Topbar collapsed={collapsed} onToggleSidebar={handleToggleSidebar} />
         <div className="animate-fade-up">
           <Outlet />
         </div>
@@ -89,9 +108,10 @@ interface SidebarProps {
   onToggleTheme: () => void
   onOpenPalette: () => void
   projects: Project[]
+  mobileOpen: boolean
 }
 
-function Sidebar({ collapsed, theme, onToggleTheme, onOpenPalette, projects }: SidebarProps) {
+function Sidebar({ collapsed, theme, onToggleTheme, onOpenPalette, projects, mobileOpen }: SidebarProps) {
   const location = useLocation()
 
   const navItems = [
@@ -105,7 +125,7 @@ function Sidebar({ collapsed, theme, onToggleTheme, onOpenPalette, projects }: S
 
   return (
     <aside
-      className="shrink-0 flex flex-col transition-all duration-200"
+      className={`shrink-0 flex flex-col transition-all duration-200 fixed inset-y-0 left-0 lg:relative lg:inset-auto z-40 lg:z-auto ${mobileOpen ? 'translate-x-0' : '-translate-x-full lg:translate-x-0'}`}
       style={{
         width: collapsed ? 68 : 248,
         background: 'var(--bg-elev)',
