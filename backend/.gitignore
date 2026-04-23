@@ -1,0 +1,8 @@
+# Local environment
+.env
+
+# Temporary build/runtime output
+tmp/
+
+# Logs
+*.log

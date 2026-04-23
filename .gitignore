@@ -1,0 +1,13 @@
+# macOS
+.DS_Store
+
+# Project temp/output
+/tmp/
+
+# Backend local files
+/backend/.env
+/backend/tmp/
+
+# Web build/deps
+/web/node_modules/
+/web/dist/
