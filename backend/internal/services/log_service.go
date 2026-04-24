@@ -1301,13 +1301,44 @@ func isQuantityLabel(label string) bool {
 }
 
 func toSizeMultiplier(value interface{}) *float64 {
-	if numeric := toFloat64(value); numeric != nil && *numeric > 0 {
-		return numeric
+	switch typed := value.(type) {
+	case float64:
+		if typed > 0 {
+			return &typed
+		}
+		return nil
+	case float32:
+		converted := float64(typed)
+		if converted > 0 {
+			return &converted
+		}
+		return nil
+	case int:
+		converted := float64(typed)
+		if converted > 0 {
+			return &converted
+		}
+		return nil
+	case int32:
+		converted := float64(typed)
+		if converted > 0 {
+			return &converted
+		}
+		return nil
+	case int64:
+		converted := float64(typed)
+		if converted > 0 {
+			return &converted
+		}
+		return nil
 	}
 
 	text := strings.TrimSpace(fmt.Sprint(value))
 	if text == "" || text == "<nil>" {
 		return nil
+	}
+	if strict := parseStrictPositiveNumber(text); strict != nil {
+		return strict
 	}
 	normalized := strings.ToLower(text)
 	normalized = strings.ReplaceAll(normalized, "×", "x")
@@ -1340,6 +1371,23 @@ func toSizeMultiplier(value interface{}) *float64 {
 		return nil
 	}
 	return &product
+}
+
+func parseStrictPositiveNumber(value string) *float64 {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return nil
+	}
+	for _, ch := range value {
+		if (ch < '0' || ch > '9') && ch != '.' {
+			return nil
+		}
+	}
+	var parsed float64
+	if _, err := fmt.Sscanf(value, "%f", &parsed); err != nil || parsed <= 0 {
+		return nil
+	}
+	return &parsed
 }
 
 func firstNumericToken(value string) string {

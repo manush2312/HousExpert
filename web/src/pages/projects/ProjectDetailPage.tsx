@@ -59,7 +59,7 @@ import {
   isTotalCostFieldLabel,
   isUnitCostFieldLabel,
 } from '../../utils/logPricing'
-import { isSizeLikeLabel } from '../../utils/sizeFormat'
+import { isSizeLikeLabel, deriveSqft } from '../../utils/sizeFormat'
 
 type Tab = 'overview' | 'logs' | 'floorplans' | 'team'
 
@@ -1968,7 +1968,9 @@ function extractEntryDetails(entry: LogEntry) {
   const unit = find(/(unit|uom|measure)/)
   let cost = entry.total_cost ?? toNum(find(/(^cost$|total|amount paid|total cost|value)/))
   const unitCost = toNum(find(/(rate|cost\s*per|unit\s*cost|price)/))
-  if (cost == null && unitCost != null && quantity != null) cost = unitCost * quantity
+  const sizeValue = find(/(size|dimension|measurement)/)
+  const sizeMultiplier = typeof sizeValue === 'string' ? deriveSqft(sizeValue) : null
+  if (cost == null && unitCost != null && quantity != null) cost = unitCost * quantity * (sizeMultiplier ?? 1)
   const vendor = find(/(vendor|supplier|contractor|agency|provider)/)
   return { name, quantity, unit, cost, vendor }
 }
