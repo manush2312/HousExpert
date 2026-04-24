@@ -4,6 +4,8 @@ import { Plus, Trash2, GripVertical, FolderPlus, Save } from 'lucide-react'
 import { createQuotation, type QuotationSectionInput, type QuotationItemInput } from '../../services/quotationService'
 import { listProducts, type Product } from '../../services/productService'
 import SearchableSelect from '../../components/SearchableSelect'
+import SizeTextInput from '../../components/SizeTextInput'
+import { deriveSqft, deriveSqftString, parseSizeInches } from '../../utils/sizeFormat'
 
 // ── Local draft types ─────────────────────────────────────────────────────────
 
@@ -74,55 +76,6 @@ function calcTotal(sections: DraftSection[]): number {
 
 function fmtINR(n: number): string {
   return '₹' + n.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
-}
-
-function normalizeSizeInput(value: string): string {
-  let next = value.toUpperCase().replace(/\*/g, ' X ').replace(/\s*[X]\s*/g, ' X ')
-  next = next.replace(/\s{2,}/g, ' ')
-
-  const parts = next.split(' X ')
-  if (parts.length > 2) {
-    next = `${parts[0]} X ${parts.slice(1).join('')}`
-  }
-
-  return next.trimStart()
-}
-
-function applySizeSeparator(value: string): string {
-  const trimmed = value.trim()
-  if (!trimmed || /\bX\b/.test(trimmed)) return value
-  return `${trimmed} X `
-}
-
-function deriveSqft(size: string, fallback?: string): number | null {
-  const parsed = parseSizeInches(size)
-  if (parsed) {
-    const [width, height] = parsed
-    return roundSqft((width * height) / 144)
-  }
-  if (fallback && fallback.trim()) {
-    const num = Number(fallback)
-    return Number.isFinite(num) ? roundSqft(num) : null
-  }
-  return null
-}
-
-function deriveSqftString(size: string, fallback?: string): string {
-  const sqft = deriveSqft(size, fallback)
-  return sqft == null ? '' : String(sqft)
-}
-
-function parseSizeInches(size: string): [number, number] | null {
-  const match = size.trim().match(/^(\d+(?:\.\d+)?)\s*[Xx]\s*(\d+(?:\.\d+)?)$/)
-  if (!match) return null
-  const width = Number(match[1])
-  const height = Number(match[2])
-  if (!Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0) return null
-  return [width, height]
-}
-
-function roundSqft(value: number): number {
-  return Math.round(value * 100) / 100
 }
 
 // ── Page ──────────────────────────────────────────────────────────────────────
@@ -444,22 +397,12 @@ function ItemRow({ item, rowIndex, products, onChange, onRemove, onApplyProduct,
       </div>
 
       {/* Size */}
-      <input
+      <SizeTextInput
         className="input"
         style={{ fontSize: 12 }}
         placeholder="e.g. 102 X 12"
         value={item.size}
-        onChange={(e) => {
-          const nextSize = normalizeSizeInput(e.target.value)
-          onChange({ size: nextSize, sqft: deriveSqftString(nextSize, item.sqft) })
-        }}
-        onKeyDown={(e) => {
-          if (['x', 'X', '*', ' '].includes(e.key)) {
-            e.preventDefault()
-            const nextSize = applySizeSeparator(item.size)
-            onChange({ size: nextSize, sqft: deriveSqftString(nextSize, item.sqft) })
-          }
-        }}
+        onChange={(nextSize) => onChange({ size: nextSize, sqft: deriveSqftString(nextSize, item.sqft) })}
       />
 
       {/* Sqft — auto-computed from size, or manually editable when no size */}

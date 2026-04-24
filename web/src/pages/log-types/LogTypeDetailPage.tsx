@@ -1,18 +1,22 @@
 import { useEffect, useMemo, useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
-import { Check, Edit2, Plus, RotateCcw, Save, Search, Trash2, X } from 'lucide-react'
+import { Check, ChevronRight, Edit2, Plus, RotateCcw, Save, Search, Trash2, X } from 'lucide-react'
 import DatePicker from '../../components/DatePicker'
 import SearchableSelect from '../../components/SearchableSelect'
+import SizeTextInput from '../../components/SizeTextInput'
 import {
   archiveLogCategory,
   archiveLogItem,
   createLogCategory,
   createLogItem,
+  deletePricingRule,
   getLogType,
+  getPricingRule,
   listLogCategories,
   listLogItems,
   restoreLogCategory,
   restoreLogItem,
+  savePricingRule,
   updateLogItem,
   updateLogTypeSchema,
   type FieldType,
@@ -21,8 +25,12 @@ import {
   type LogCostMode,
   type LogItem,
   type LogType,
+  type PricingRateEntry,
+  type PricingRule,
   type SchemaField,
 } from '../../services/logService'
+import { buildPricingRateRows } from '../../utils/logPricing'
+import { isSizeLikeLabel } from '../../utils/sizeFormat'
 
 interface SchemaDraft {
   field_id?: string
@@ -31,6 +39,10 @@ interface SchemaDraft {
   required: boolean
   options: string
   added_at?: string
+}
+
+interface PricingDimensionOption extends SchemaField {
+  source: 'item' | 'entry'
 }
 
 const FIELD_TYPES: { value: FieldType; label: string }[] = [
@@ -73,6 +85,14 @@ export default function LogTypeDetailPage() {
   const [itemSchemaDrafts, setItemSchemaDrafts] = useState<SchemaDraft[]>([])
   const [entrySchemaDrafts, setEntrySchemaDrafts] = useState<SchemaDraft[]>([])
   const [savingSchema, setSavingSchema] = useState(false)
+  const [pricingRule, setPricingRule] = useState<PricingRule | null>(null)
+  const [editingPricingRule, setEditingPricingRule] = useState(false)
+  const [pricingRuleNameDraft, setPricingRuleNameDraft] = useState('')
+  const [pricingDimensionFieldsDraft, setPricingDimensionFieldsDraft] = useState<string[]>([])
+  const [pricingRatesDraft, setPricingRatesDraft] = useState<PricingRateEntry[]>([])
+  const [savingPricingRuleDraft, setSavingPricingRuleDraft] = useState(false)
+  const [deletingPricingRuleDraft, setDeletingPricingRuleDraft] = useState(false)
+  const [expandedPricingRuleVersion, setExpandedPricingRuleVersion] = useState<number | null>(null)
 
   const [itemDraftsByCategory, setItemDraftsByCategory] = useState<Record<string, Record<string, unknown>>>({})
   const [addingItemFor, setAddingItemFor] = useState<string | null>(null)
@@ -85,22 +105,31 @@ export default function LogTypeDetailPage() {
   const fetchAll = async () => {
     if (!id) return
     try {
-      const [ltRes, catRes] = await Promise.all([
+      const [ltRes, catRes, pricingRuleRes] = await Promise.all([
         getLogType(id),
         listLogCategories(id, { include_archived: true }),
+        getPricingRule(id),
       ])
       const nextLogType = ltRes.data.data
       const itemSchema = getItemSchema(nextLogType)
       const entrySchema = getEntrySchema(nextLogType)
       const nextCategories = catRes.data.data
+      const nextPricingRule = pricingRuleRes.data.data
       setLogType(nextLogType)
       setCategories(nextCategories)
+      setPricingRule(nextPricingRule)
+      setExpandedPricingRuleVersion((prev) => prev ?? nextPricingRule?.current_version ?? null)
       setCostModeDraft(getEffectiveCostMode(nextLogType))
       if (!editingItemSchema) {
         setItemSchemaDrafts(itemSchema.map(toSchemaDraft))
       }
       if (!editingEntrySchema) {
         setEntrySchemaDrafts(entrySchema.map(toSchemaDraft))
+      }
+      if (!editingPricingRule) {
+        setPricingRuleNameDraft(nextPricingRule?.name ?? `${nextLogType.name} pricing`)
+        setPricingDimensionFieldsDraft(nextPricingRule?.dimension_fields ?? [])
+        setPricingRatesDraft(nextPricingRule?.rates ?? [])
       }
       const itemPairs = await Promise.all(
         nextCategories.map(async (cat) => {
@@ -137,6 +166,35 @@ export default function LogTypeDetailPage() {
     () => filterCategories(orderedCategories, categorySearch),
     [orderedCategories, categorySearch],
   )
+  const pricingDimensionOptions = useMemo<PricingDimensionOption[]>(
+    () => [
+      ...itemSchema
+        .filter((field) => field.field_type === 'dropdown')
+        .map((field) => ({ ...field, source: 'item' as const })),
+      ...entrySchema
+        .filter((field) => field.field_type === 'dropdown')
+        .map((field) => ({ ...field, source: 'entry' as const })),
+    ],
+    [itemSchema, entrySchema],
+  )
+  const selectedPricingFields = useMemo(
+    () => pricingDimensionFieldsDraft
+      .map((fieldID) => pricingDimensionOptions.find((field) => field.field_id === fieldID))
+      .filter((field): field is PricingDimensionOption => Boolean(field)),
+    [pricingDimensionFieldsDraft, pricingDimensionOptions],
+  )
+  const pricingRateRows = useMemo(
+    () => buildPricingRateRows(pricingDimensionOptions, pricingDimensionFieldsDraft, pricingRatesDraft),
+    [pricingDimensionOptions, pricingDimensionFieldsDraft, pricingRatesDraft],
+  )
+
+  useEffect(() => {
+    if (!pricingRule) {
+      setExpandedPricingRuleVersion(null)
+      return
+    }
+    setExpandedPricingRuleVersion(pricingRule.current_version)
+  }, [pricingRule?.id, pricingRule?.current_version])
 
   const handleAddCategory = async (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault()
@@ -252,6 +310,97 @@ export default function LogTypeDetailPage() {
     }
     setEntrySchemaDrafts(entrySchema.map(toSchemaDraft))
     setEditingEntrySchema(false)
+  }
+
+  const startEditingPricingRule = () => {
+    if (!logType) return
+    setPricingRuleNameDraft(pricingRule?.name ?? `${logType.name} pricing`)
+    setPricingDimensionFieldsDraft(pricingRule?.dimension_fields ?? [])
+    setPricingRatesDraft(pricingRule?.rates ?? [])
+    setEditingPricingRule(true)
+  }
+
+  const cancelEditingPricingRule = () => {
+    if (!logType) return
+    setPricingRuleNameDraft(pricingRule?.name ?? `${logType.name} pricing`)
+    setPricingDimensionFieldsDraft(pricingRule?.dimension_fields ?? [])
+    setPricingRatesDraft(pricingRule?.rates ?? [])
+    setEditingPricingRule(false)
+  }
+
+  const togglePricingDimension = (fieldId: string) => {
+    setPricingDimensionFieldsDraft((prev) => {
+      const next = prev.includes(fieldId)
+        ? prev.filter((item) => item !== fieldId)
+        : [...prev, fieldId]
+      setPricingRatesDraft((currentRates) => buildPricingRateRows(pricingDimensionOptions, next, currentRates))
+      return next
+    })
+  }
+
+  const updatePricingRate = (rowIndex: number, value: string) => {
+    setPricingRatesDraft((prev) => prev.map((row, index) => (
+      index === rowIndex
+        ? { ...row, rate: value === '' ? 0 : Number(value) }
+        : row
+    )))
+  }
+
+  const handleSavePricingRule = async () => {
+    if (!id || !logType) return
+    if (costModeDraft !== 'quantity_x_unit_cost') {
+      alert('Pricing rules are only used with the "Quantity x unit cost" mode.')
+      return
+    }
+    if (!pricingRuleNameDraft.trim()) {
+      alert('Give the pricing rule a name.')
+      return
+    }
+    if (pricingDimensionFieldsDraft.length === 0) {
+      alert('Pick at least one dropdown field as a pricing dimension.')
+      return
+    }
+    if (selectedPricingFields.length !== pricingDimensionFieldsDraft.length) {
+      alert('One or more selected pricing dimensions no longer exist in the schema.')
+      return
+    }
+    if (pricingRateRows.length === 0) {
+      alert('Selected dimensions need dropdown options before rates can be configured.')
+      return
+    }
+    if (pricingRateRows.some((row) => !Number.isFinite(row.rate) || row.rate < 0)) {
+      alert('Each pricing row needs a valid rate.')
+      return
+    }
+
+    setSavingPricingRuleDraft(true)
+    try {
+      await savePricingRule(id, {
+        name: pricingRuleNameDraft.trim(),
+        dimension_fields: pricingDimensionFieldsDraft,
+        rates: pricingRateRows,
+      })
+      setEditingPricingRule(false)
+      await fetchAll()
+    } catch {
+      alert('Failed to save pricing rule.')
+    } finally {
+      setSavingPricingRuleDraft(false)
+    }
+  }
+
+  const handleDeletePricingRule = async () => {
+    if (!pricingRule || !confirm(`Delete pricing rule "${pricingRule.name}"?`)) return
+    setDeletingPricingRuleDraft(true)
+    try {
+      await deletePricingRule(pricingRule.id)
+      setEditingPricingRule(false)
+      await fetchAll()
+    } catch {
+      alert('Failed to delete pricing rule.')
+    } finally {
+      setDeletingPricingRuleDraft(false)
+    }
   }
 
   const updateItemDraft = (categoryId: string, fieldId: string, value: unknown) => {
@@ -386,11 +535,285 @@ export default function LogTypeDetailPage() {
         </section>
 
         <section>
+          <div className="card p-4">
+            <div className="text-[14px] font-semibold mb-1" style={{ color: 'var(--ink)' }}>How To Set This Up</div>
+            <p className="text-[12.5px] mb-4" style={{ color: 'var(--ink-3)' }}>
+              Decide whether your team picks a saved item first, or enters everything directly while logging.
+            </p>
+            <div className="grid gap-3 md:grid-cols-3">
+              <div className="rounded-xl border px-3 py-3" style={{ borderColor: 'var(--line-2)', background: 'var(--bg-sunken)' }}>
+                <div className="text-[12px] font-semibold" style={{ color: 'var(--ink)' }}>Item fields</div>
+                <p className="mt-1 text-[11.5px]" style={{ color: 'var(--ink-4)' }}>
+                  Use these only for reusable saved records like sheet codes, material names, vendors, or preset specifications.
+                </p>
+                <p className="mt-2 text-[11.5px]" style={{ color: 'var(--ink-3)' }}>
+                  If your team logs plywood manually each time, you can leave item fields empty.
+                </p>
+              </div>
+              <div className="rounded-xl border px-3 py-3" style={{ borderColor: 'var(--line-2)', background: 'var(--bg-sunken)' }}>
+                <div className="text-[12px] font-semibold" style={{ color: 'var(--ink)' }}>Daily entry fields</div>
+                <p className="mt-1 text-[11.5px]" style={{ color: 'var(--ink-4)' }}>
+                  Put values here when the user should choose or type them while entering each log.
+                </p>
+                <p className="mt-2 text-[11.5px]" style={{ color: 'var(--ink-3)' }}>
+                  For plywood-style logs, fields like thickness, quality, and size usually belong here.
+                </p>
+              </div>
+              <div className="rounded-xl border px-3 py-3" style={{ borderColor: 'var(--line-2)', background: 'var(--bg-sunken)' }}>
+                <div className="text-[12px] font-semibold" style={{ color: 'var(--ink)' }}>Quantity</div>
+                <p className="mt-1 text-[11.5px]" style={{ color: 'var(--ink-4)' }}>
+                  This built-in field is the number multiplied by the rate.
+                </p>
+                <p className="mt-2 text-[11.5px]" style={{ color: 'var(--ink-3)' }}>
+                  If your use case is based on size, ask users to enter square feet or units in quantity.
+                </p>
+              </div>
+            </div>
+            {costModeDraft === 'quantity_x_unit_cost' && (
+              <div className="mt-4 rounded-xl border px-3 py-3 text-[12px]" style={{ borderColor: 'color-mix(in oklab, var(--accent) 16%, var(--line))', background: 'var(--accent-wash)', color: 'var(--accent-ink)' }}>
+                Recommended for rate-table setups like plywood:
+                keep reusable master data in item fields only when needed, put pricing dimensions in daily entry fields, then enter size in quantity.
+              </div>
+            )}
+          </div>
+        </section>
+
+        <section>
+          <div className="flex items-start justify-between gap-4 mb-4">
+            <div>
+              <h2 className="text-[14px] font-semibold mb-1" style={{ color: 'var(--ink)' }}>Pricing rule</h2>
+              <p className="text-[12.5px]" style={{ color: 'var(--ink-3)' }}>
+                Optional. Use dropdown fields like thickness and quality to derive a rate automatically while quantity is entered separately.
+              </p>
+            </div>
+            {!editingPricingRule ? (
+              <button
+                type="button"
+                onClick={startEditingPricingRule}
+                className="btn btn-outline btn-sm"
+                disabled={logType.status === 'archived' || costModeDraft !== 'quantity_x_unit_cost'}
+              >
+                {pricingRule ? 'Edit pricing rule' : 'Set up pricing rule'}
+              </button>
+            ) : (
+              <div className="flex items-center gap-2">
+                {pricingRule && (
+                  <button
+                    type="button"
+                    onClick={() => void handleDeletePricingRule()}
+                    className="btn btn-ghost btn-sm"
+                    disabled={deletingPricingRuleDraft}
+                    style={{ color: 'var(--bad)' }}
+                  >
+                    <Trash2 size={13} /> {deletingPricingRuleDraft ? 'Deleting…' : 'Delete'}
+                  </button>
+                )}
+                <button type="button" onClick={cancelEditingPricingRule} className="btn btn-ghost btn-sm">
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  onClick={() => void handleSavePricingRule()}
+                  disabled={savingPricingRuleDraft}
+                  className="btn btn-accent btn-sm"
+                >
+                  <Save size={13} /> {savingPricingRuleDraft ? 'Saving…' : 'Save pricing rule'}
+                </button>
+              </div>
+            )}
+          </div>
+
+          {costModeDraft !== 'quantity_x_unit_cost' ? (
+            <div className="card px-4 py-4 text-[12.5px]" style={{ color: 'var(--ink-4)' }}>
+              Switch the cost mode to <strong style={{ color: 'var(--ink)' }}>Quantity x unit cost</strong> to enable automatic rate lookup from pricing dimensions.
+            </div>
+          ) : !editingPricingRule ? (
+            pricingRule ? (
+              <div className="card p-4 space-y-4">
+                <div>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <div className="text-[13px] font-medium" style={{ color: 'var(--ink)' }}>{pricingRule.name}</div>
+                    <span className="chip chip-accent">v{pricingRule.current_version}</span>
+                  </div>
+                  <div className="mt-1 text-[12px]" style={{ color: 'var(--ink-4)' }}>
+                    Dimensions: {pricingRule.dimension_fields
+                      .map((fieldId) => pricingDimensionOptions.find((field) => field.field_id === fieldId)?.label)
+                      .filter(Boolean)
+                      .join(' + ') || '—'}
+                  </div>
+                </div>
+                <PricingRuleRatesTable
+                  dimensionFields={pricingRule.dimension_fields}
+                  rates={pricingRule.rates}
+                  dimensionOptions={pricingDimensionOptions}
+                />
+              </div>
+            ) : (
+              <div className="card px-4 py-4 text-[12.5px]" style={{ color: 'var(--ink-4)' }}>
+                No pricing rule yet. Manual unit cost fields will continue to work normally.
+              </div>
+            )
+          ) : (
+            <div className="card p-4 space-y-4">
+              <div className="grid gap-3 md:grid-cols-[minmax(0,280px)_1fr]">
+                <label className="space-y-1.5">
+                  <span className="text-[11px] font-medium" style={{ color: 'var(--ink-3)' }}>Rule name</span>
+                  <input
+                    type="text"
+                    value={pricingRuleNameDraft}
+                    onChange={(e) => setPricingRuleNameDraft(e.target.value)}
+                    className="input"
+                    placeholder="e.g. Plywood rates"
+                  />
+                </label>
+                <div className="space-y-1.5">
+                  <span className="text-[11px] font-medium" style={{ color: 'var(--ink-3)' }}>Pricing dimensions</span>
+                  {pricingDimensionOptions.length === 0 ? (
+                    <div className="input flex items-center text-[12px]" style={{ color: 'var(--ink-4)' }}>
+                      Add dropdown fields to the item or daily entry schema first.
+                    </div>
+                  ) : (
+                    <div className="flex flex-wrap gap-2">
+                      {pricingDimensionOptions.map((field) => {
+                        const active = pricingDimensionFieldsDraft.includes(field.field_id)
+                        return (
+                          <button
+                            key={field.field_id}
+                            type="button"
+                            onClick={() => togglePricingDimension(field.field_id)}
+                            className="rounded-lg border px-3 py-2 text-left text-[12px] transition-colors"
+                            style={{
+                              borderColor: active ? 'var(--accent)' : 'var(--line)',
+                              background: active ? 'var(--accent-wash)' : 'var(--bg-elev)',
+                              color: active ? 'var(--accent-ink)' : 'var(--ink-2)',
+                            }}
+                          >
+                            {field.label}
+                            <span className="ml-2 text-[11px]" style={{ color: 'var(--ink-4)' }}>
+                              {field.source === 'item' ? 'Item field' : 'Daily field'}
+                            </span>
+                          </button>
+                        )
+                      })}
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              {pricingRule && (
+                <div className="rounded-xl border px-3 py-3 text-[12px]" style={{ borderColor: 'color-mix(in oklab, var(--accent) 16%, var(--line))', background: 'var(--accent-wash)', color: 'var(--accent-ink)' }}>
+                  Editing the current pricing table. You can change one rate and save without rebuilding the whole rule.
+                </div>
+              )}
+
+              {selectedPricingFields.length === 0 ? (
+                <div className="rounded-xl border px-3 py-3 text-[12px]" style={{ borderColor: 'var(--line-2)', background: 'var(--bg-sunken)', color: 'var(--ink-4)' }}>
+                  Select one or more dropdown fields to generate the rate table.
+                </div>
+              ) : pricingRateRows.length === 0 ? (
+                <div className="rounded-xl border px-3 py-3 text-[12px]" style={{ borderColor: 'var(--line-2)', background: 'var(--bg-sunken)', color: 'var(--ink-4)' }}>
+                  Selected fields need dropdown options before rate rows can be generated.
+                </div>
+              ) : (
+                <div className="overflow-x-auto">
+                  <table className="w-full min-w-[560px] text-[12.5px]">
+                    <thead>
+                      <tr style={{ background: 'var(--bg-sunken)' }}>
+                        {selectedPricingFields.map((field) => (
+                          <th key={field.field_id} className="px-3 py-2 text-left eyebrow">{field.label}</th>
+                        ))}
+                        <th className="px-3 py-2 text-right eyebrow">Rate</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {pricingRateRows.map((row, index) => (
+                        <tr key={selectedPricingFields.map((field) => row.keys[field.field_id]).join('|')} style={{ borderTop: '1px solid var(--line-2)' }}>
+                          {selectedPricingFields.map((field) => (
+                            <td key={`${index}-${field.field_id}`} className="px-3 py-2.5" style={{ color: 'var(--ink-2)' }}>
+                              {row.keys[field.field_id]}
+                            </td>
+                          ))}
+                          <td className="px-3 py-2.5">
+                            <input
+                              type="number"
+                              min="0"
+                              step="any"
+                              className="input text-right numeral"
+                              value={row.rate}
+                              onChange={(e) => updatePricingRate(index, e.target.value)}
+                            />
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </div>
+          )}
+        </section>
+
+        {pricingRule && pricingRule.version_history.length > 1 && (
+          <section>
+            <h2 className="text-[14px] font-semibold mb-1" style={{ color: 'var(--ink)' }}>Pricing rule history</h2>
+            <p className="text-[12.5px] mb-4" style={{ color: 'var(--ink-3)' }}>
+              Every pricing-rule save creates a new version so older rate tables remain auditable.
+            </p>
+            <div className="card overflow-hidden">
+              {[...pricingRule.version_history].reverse().map((version, index) => (
+                <div key={version.version} className="px-4 py-3" style={index > 0 ? { borderTop: '1px solid var(--line-2)' } : {}}>
+                  <button
+                    type="button"
+                    onClick={() => setExpandedPricingRuleVersion((prev) => prev === version.version ? null : version.version)}
+                    className="w-full text-left"
+                  >
+                    <div className="flex items-center justify-between gap-3">
+                      <div className="flex items-center gap-2 min-w-0">
+                        <ChevronRight
+                          size={14}
+                          style={{
+                            color: 'var(--ink-4)',
+                            transform: expandedPricingRuleVersion === version.version ? 'rotate(90deg)' : 'rotate(0deg)',
+                            transition: 'transform 160ms ease',
+                          }}
+                        />
+                        <span className="chip chip-accent">v{version.version}</span>
+                        {version.version === pricingRule.current_version && (
+                          <span className="text-[11px] font-medium" style={{ color: 'var(--ok-ink)' }}>Current</span>
+                        )}
+                        <span className="truncate text-[12px]" style={{ color: 'var(--ink-2)' }}>{version.name}</span>
+                      </div>
+                      <span className="text-[11.5px] shrink-0" style={{ color: 'var(--ink-4)' }}>
+                        {new Date(version.created_at).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' })}
+                      </span>
+                    </div>
+                    <div className="mt-2 text-[12px]" style={{ color: 'var(--ink-4)' }}>
+                      Dimensions: {version.dimension_fields
+                        .map((fieldId) => pricingDimensionOptions.find((field) => field.field_id === fieldId)?.label ?? fieldId)
+                        .join(' + ') || '—'}
+                    </div>
+                  </button>
+                  {expandedPricingRuleVersion === version.version && (
+                    <div className="mt-3">
+                      <PricingRuleRatesTable
+                        dimensionFields={version.dimension_fields}
+                        rates={version.rates}
+                        dimensionOptions={pricingDimensionOptions}
+                      />
+                    </div>
+                  )}
+                </div>
+              ))}
+            </div>
+          </section>
+        )}
+
+        <section>
           <div className="flex items-start justify-between gap-4 mb-4">
             <div>
               <h2 className="text-[14px] font-semibold mb-1" style={{ color: 'var(--ink)' }}>Item fields</h2>
               <p className="text-[12.5px]" style={{ color: 'var(--ink-3)' }}>
-                Version {logType.current_version} · used while creating items under each category.
+                Version {logType.current_version} · used only when you create reusable saved items under each category.
               </p>
             </div>
             {!editingItemSchema ? (
@@ -415,7 +838,10 @@ export default function LogTypeDetailPage() {
           {!editingItemSchema ? (
             itemSchema.length === 0 ? (
               <div className="card flex flex-col items-center justify-center py-10 text-center">
-                <p className="text-[13px]" style={{ color: 'var(--ink-3)' }}>No fields defined yet.</p>
+                <p className="text-[13px]" style={{ color: 'var(--ink-3)' }}>No item fields defined yet.</p>
+                <p className="mt-1 text-[12px]" style={{ color: 'var(--ink-4)' }}>
+                  That is perfectly fine if this log type is entered manually each time.
+                </p>
               </div>
             ) : (
               <div className="card overflow-hidden">
@@ -460,7 +886,7 @@ export default function LogTypeDetailPage() {
             <div>
               <h2 className="text-[14px] font-semibold mb-1" style={{ color: 'var(--ink)' }}>Daily entry fields</h2>
               <p className="text-[12.5px]" style={{ color: 'var(--ink-3)' }}>
-                These appear when your team logs daily activity. Leave empty if quantity and notes are enough.
+                These appear when your team logs daily activity. Use them for values the user should choose every time.
               </p>
             </div>
             {!editingEntrySchema ? (
@@ -486,6 +912,9 @@ export default function LogTypeDetailPage() {
             entrySchema.length === 0 ? (
               <div className="card flex flex-col items-center justify-center py-10 text-center">
                 <p className="text-[13px]" style={{ color: 'var(--ink-3)' }}>No daily entry fields defined.</p>
+                <p className="mt-1 text-[12px]" style={{ color: 'var(--ink-4)' }}>
+                  Use this only if quantity and notes are enough, or add fields like thickness, quality, or remarks here.
+                </p>
               </div>
             ) : (
               <div className="card overflow-hidden">
@@ -943,6 +1372,47 @@ function SchemaEditor({
   )
 }
 
+function PricingRuleRatesTable({
+  dimensionFields,
+  rates,
+  dimensionOptions,
+}: {
+  dimensionFields: string[]
+  rates: PricingRateEntry[]
+  dimensionOptions: PricingDimensionOption[]
+}) {
+  return (
+    <div className="overflow-x-auto">
+      <table className="w-full min-w-[480px] text-[12.5px]">
+        <thead>
+          <tr style={{ background: 'var(--bg-sunken)' }}>
+            {dimensionFields.map((fieldId) => (
+              <th key={fieldId} className="px-3 py-2 text-left eyebrow">
+                {dimensionOptions.find((field) => field.field_id === fieldId)?.label ?? 'Field'}
+              </th>
+            ))}
+            <th className="px-3 py-2 text-right eyebrow">Rate</th>
+          </tr>
+        </thead>
+        <tbody>
+          {rates.map((rate, index) => (
+            <tr key={`${index}-${dimensionFields.map((fieldId) => rate.keys[fieldId] ?? '').join('|')}`} style={{ borderTop: '1px solid var(--line-2)' }}>
+              {dimensionFields.map((fieldId) => (
+                <td key={`${index}-${fieldId}`} className="px-3 py-2.5" style={{ color: 'var(--ink-2)' }}>
+                  {rate.keys[fieldId]}
+                </td>
+              ))}
+              <td className="px-3 py-2.5 text-right numeral" style={{ color: 'var(--ink)' }}>
+                {rate.rate}
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  )
+}
+
 function FieldInput({
   field,
   value,
@@ -976,6 +1446,9 @@ function FieldInput({
         <span className="text-[13px]" style={{ color: 'var(--ink-2)' }}>Yes</span>
       </label>
     )
+  }
+  if (isSizeLikeLabel(field.label)) {
+    return <SizeTextInput className="input" value={(value as string) ?? ''} onChange={onChange as (next: string) => void} />
   }
   return <input type="text" className="input" value={(value as string) ?? ''} onChange={(e) => onChange(e.target.value)} />
 }

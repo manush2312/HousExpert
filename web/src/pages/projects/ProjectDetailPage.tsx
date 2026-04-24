@@ -20,6 +20,7 @@ import {
 } from 'lucide-react'
 import DatePicker from '../../components/DatePicker'
 import SearchableSelect from '../../components/SearchableSelect'
+import SizeTextInput from '../../components/SizeTextInput'
 import {
   addFloorPlan,
   getProject,
@@ -31,6 +32,7 @@ import {
   createLogEntry,
   deleteLogEntry,
   getLogType,
+  getPricingRule,
   listLogCategories,
   listLogEntries,
   listLogItems,
@@ -42,8 +44,22 @@ import {
   type LogEntry,
   type LogItem,
   type LogType,
+  type PricingRule,
   type SchemaField,
 } from '../../services/logService'
+import {
+  computeLogTotalCost,
+  findDirectAmountLabel,
+  findResolvedUnitCost,
+  findSizeFieldLabel,
+  findTotalCostLabel,
+  findUnitCostLabel,
+  isDirectAmountFieldLabel,
+  isQuantityFieldLabel,
+  isTotalCostFieldLabel,
+  isUnitCostFieldLabel,
+} from '../../utils/logPricing'
+import { isSizeLikeLabel } from '../../utils/sizeFormat'
 
 type Tab = 'overview' | 'logs' | 'floorplans' | 'team'
 
@@ -78,6 +94,7 @@ export default function ProjectDetailPage() {
   const [allLogTypes, setAllLogTypes] = useState<LogType[]>([])
   const [categoriesByType, setCategoriesByType] = useState<Record<string, LogCategory[]>>({})
   const [itemsByCategory, setItemsByCategory] = useState<Record<string, LogItem[]>>({})
+  const [pricingRulesByType, setPricingRulesByType] = useState<Record<string, PricingRule | null>>({})
 
   const [pageLoading, setPageLoading] = useState(true)
   const [logsLoading, setLogsLoading] = useState(false)
@@ -161,6 +178,16 @@ export default function ProjectDetailPage() {
       setItemsByCategory((prev) => ({ ...prev, [categoryId]: [] }))
     }
   }, [itemsByCategory])
+
+  const ensurePricingRule = useCallback(async (logTypeId: string) => {
+    if (!logTypeId || Object.prototype.hasOwnProperty.call(pricingRulesByType, logTypeId)) return
+    try {
+      const res = await getPricingRule(logTypeId)
+      setPricingRulesByType((prev) => ({ ...prev, [logTypeId]: res.data.data }))
+    } catch {
+      setPricingRulesByType((prev) => ({ ...prev, [logTypeId]: null }))
+    }
+  }, [pricingRulesByType])
 
   const filteredEntries = useMemo(() => {
     return entries.filter((entry) => {
@@ -267,7 +294,12 @@ export default function ProjectDetailPage() {
       return { ...draft, ...patch }
     }))
 
-    if (patch.log_type_id) await ensureCategories(patch.log_type_id)
+    if (patch.log_type_id) {
+      await Promise.all([
+        ensureCategories(patch.log_type_id),
+        ensurePricingRule(patch.log_type_id),
+      ])
+    }
     if (patch.category_id) await ensureItems(patch.category_id)
   }
 
@@ -303,7 +335,14 @@ export default function ProjectDetailPage() {
     }
 
     const parsedQuantity = parseOptionalNumber(draft.quantity)
-    const computedTotalCost = computeDraftTotalCost(costMode, entrySchema, selectedItem?.fields ?? [], draft.values, parsedQuantity)
+    const computedTotalCost = computeLogTotalCost(
+      costMode,
+      entrySchema,
+      selectedItem?.fields ?? [],
+      draft.values,
+      parsedQuantity,
+      pricingRulesByType[draft.log_type_id],
+    )
     const fields: FieldValue[] = buildDraftFieldPayload(entrySchema, draft.values, {
       costMode,
       quantity: parsedQuantity,
@@ -359,7 +398,10 @@ export default function ProjectDetailPage() {
       notes: entry.notes ?? '',
       values,
     })
-    await ensureCategories(entry.log_type_id)
+    await Promise.all([
+      ensureCategories(entry.log_type_id),
+      ensurePricingRule(entry.log_type_id),
+    ])
     await ensureItems(entry.category_id)
 
     const localLogType = allLogTypes.find((item) => item.id === entry.log_type_id)
@@ -395,7 +437,14 @@ export default function ProjectDetailPage() {
       const costMode = getEffectiveCostMode(activeLogType)
       const selectedItem = (itemsByCategory[editingDraft.category_id] ?? []).find((item) => item.id === editingDraft.item_id)
       const parsedQuantity = parseOptionalNumber(editingDraft.quantity)
-      const totalCost = computeDraftTotalCost(costMode, entrySchema, selectedItem?.fields ?? [], editingDraft.values, parsedQuantity)
+      const totalCost = computeLogTotalCost(
+        costMode,
+        entrySchema,
+        selectedItem?.fields ?? [],
+        editingDraft.values,
+        parsedQuantity,
+        pricingRulesByType[editingDraft.log_type_id],
+      )
       const fields: FieldValue[] = buildDraftFieldPayload(entrySchema, editingDraft.values, {
         costMode,
         quantity: parsedQuantity,
@@ -581,6 +630,7 @@ export default function ProjectDetailPage() {
               editLogType={editLogType}
               categoriesByType={categoriesByType}
               itemsByCategory={itemsByCategory}
+              pricingRulesByType={pricingRulesByType}
               onAdd={newDraft}
               onUpdateDraft={updateDraft}
               onCancelDraft={cancelDraft}
@@ -846,6 +896,7 @@ function LogsSection({
   editLogType,
   categoriesByType,
   itemsByCategory,
+  pricingRulesByType,
   onAdd,
   onUpdateDraft,
   onCancelDraft,
@@ -871,6 +922,7 @@ function LogsSection({
   editLogType: LogType | null
   categoriesByType: Record<string, LogCategory[]>
   itemsByCategory: Record<string, LogItem[]>
+  pricingRulesByType: Record<string, PricingRule | null>
   onAdd: () => void
   onUpdateDraft: (id: string, patch: Partial<DraftEntry>) => void | Promise<void>
   onCancelDraft: (id: string) => void
@@ -949,6 +1001,7 @@ function LogsSection({
               logTypes={allLogTypes}
               categories={categoriesByType[draft.log_type_id] ?? []}
               items={itemsByCategory[draft.category_id] ?? []}
+              pricingRule={pricingRulesByType[draft.log_type_id] ?? null}
               onUpdate={onUpdateDraft}
               onCancel={onCancelDraft}
               onSave={onSaveDraft}
@@ -1062,6 +1115,7 @@ function LogsSection({
                                   logTypes={editLogType && !allLogTypes.some((item) => item.id === editLogType.id) ? [editLogType, ...allLogTypes] : allLogTypes}
                                   categories={categoriesByType[editingDraft.log_type_id] ?? []}
                                   items={itemsByCategory[editingDraft.category_id] ?? []}
+                                  pricingRule={pricingRulesByType[editingDraft.log_type_id] ?? null}
                                   onUpdate={onUpdateEdit}
                                   onCancel={onCancelEdit}
                                   onSave={() => onSaveEdit()}
@@ -1093,6 +1147,7 @@ function InlineDraftComposer({
   logTypes,
   categories,
   items,
+  pricingRule,
   onUpdate,
   onCancel,
   onSave,
@@ -1106,6 +1161,7 @@ function InlineDraftComposer({
   logTypes: LogType[]
   categories: LogCategory[]
   items: LogItem[]
+  pricingRule: PricingRule | null
   onUpdate: (id: string, patch: Partial<DraftEntry>) => void | Promise<void>
   onCancel: (id: string) => void
   onSave: (id: string) => void | Promise<void>
@@ -1118,6 +1174,7 @@ function InlineDraftComposer({
   const logType = logTypes.find((item) => item.id === draft.log_type_id)
   const itemSchema = getItemSchema(logType)
   const entrySchema = getEntrySchema(logType)
+  const pricingFields = [...itemSchema, ...entrySchema]
   const costMode = getEffectiveCostMode(logType)
   const itemSelectorField = findItemSelectorField(itemSchema)
   const itemSelectionEnabled = Boolean(draft.category_id && items.length > 0)
@@ -1127,10 +1184,17 @@ function InlineDraftComposer({
   const missingRequired = entrySchema.find((field) => field.required && isDraftFieldEmpty(field, draft.values[field.field_id]))
   const quantityRequired = quantityVisible && isQuantityRequired(entrySchema, selectedItem?.fields ?? [])
   const parsedQuantity = parseOptionalNumber(draft.quantity)
-  const unitCost = findUnitCostValue(entrySchema, selectedItem?.fields ?? [], draft.values)
-  const totalCost = computeDraftTotalCost(costMode, entrySchema, selectedItem?.fields ?? [], draft.values, parsedQuantity)
+  const unitCost = findResolvedUnitCost(entrySchema, selectedItem?.fields ?? [], draft.values, pricingRule)
+  const sizeFieldLabel = findSizeFieldLabel(entrySchema, selectedItem?.fields ?? [])
+  const totalCost = computeLogTotalCost(costMode, entrySchema, selectedItem?.fields ?? [], draft.values, parsedQuantity, pricingRule)
   const missingQuantity = quantityRequired && parsedQuantity == null
   const canSave = !!draft.log_type_id && !!draft.category_id && !missingRequired && !missingQuantity && !saving
+  const quantityLabel = sizeFieldLabel ? 'Quantity' : pricingRule ? 'Size / quantity' : 'Quantity'
+  const quantityHint = sizeFieldLabel
+    ? `${sizeFieldLabel} will be multiplied with this quantity and the matched rate.`
+    : pricingRule
+    ? 'Enter the measurable amount here, such as square feet or units'
+    : 'Confirm the amount that should be multiplied by the rate.'
   const completedSteps = [
     Boolean(draft.log_date && draft.log_type_id),
     Boolean(draft.category_id && (!itemSelectionEnabled || draft.item_id)),
@@ -1235,7 +1299,7 @@ function InlineDraftComposer({
               ) : (
                 <div className="rounded-xl border px-3 py-3 text-[12px]" style={{ borderColor: 'var(--line-2)', background: 'var(--bg-sunken)', color: 'var(--ink-3)' }}>
                   {draft.category_id
-                    ? 'No saved items under this category yet. The main field will be entered manually below.'
+                    ? 'No saved items under this category yet. That is okay for manual-entry flows. Continue with the daily fields below, or add items later if you want reusable presets.'
                     : 'Saved items will appear here once a category is selected.'}
                 </div>
               )}
@@ -1259,9 +1323,14 @@ function InlineDraftComposer({
             <div className="grid gap-3 md:grid-cols-[180px_1fr]">
               <label className="space-y-1.5">
                 <span className="text-[11px] font-medium" style={{ color: 'var(--ink-3)' }}>
-                  Quantity
+                  {quantityLabel}
                   {quantityRequired && <span style={{ color: 'var(--bad)' }}> *</span>}
                 </span>
+                {quantityVisible && (
+                  <div className="text-[11px]" style={{ color: 'var(--ink-4)' }}>
+                    {quantityHint}
+                  </div>
+                )}
                 {quantityVisible ? (
                   <input
                     type="number"
@@ -1288,8 +1357,10 @@ function InlineDraftComposer({
                     ? `Taken from ${findDirectAmountLabel(entrySchema) || 'daily amount'}`
                     : costMode === 'manual_total'
                       ? `Taken from ${findTotalCostLabel(entrySchema) || 'total cost'}`
-                      : unitCost != null
-                        ? `Calculated from quantity × ${findUnitCostLabel(entrySchema, selectedItem?.fields ?? []) || 'cost'}`
+                    : unitCost != null
+                        ? sizeFieldLabel
+                          ? `Calculated from ${sizeFieldLabel} × ${quantityLabel.toLowerCase()} × ${findUnitCostLabel(entrySchema, selectedItem?.fields ?? [], pricingRule, pricingFields) || 'cost'}`
+                          : `Calculated from ${quantityLabel.toLowerCase()} × ${findUnitCostLabel(entrySchema, selectedItem?.fields ?? [], pricingRule, pricingFields) || 'cost'}`
                         : 'Add a numeric cost/rate field value to calculate total cost.'}
                 </div>
               </div>
@@ -1303,16 +1374,25 @@ function InlineDraftComposer({
                 No extra fields left to fill. You can review and save.
               </div>
             ) : (
-              <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
-                {visibleFields.map((field) => (
-                  <DraftFieldInput
-                    key={field.field_id}
-                    field={field}
-                    value={draft.values[field.field_id]}
-                    onChange={(value) => handleFieldChange(field, value)}
-                  />
-                ))}
-              </div>
+              <>
+                {pricingRule && (
+                  <div className="rounded-xl border px-3 py-3 text-[12px]" style={{ borderColor: 'color-mix(in oklab, var(--accent) 16%, var(--line))', background: 'var(--accent-wash)', color: 'var(--accent-ink)' }}>
+                    {sizeFieldLabel
+                      ? `Pick the dropdown values below to choose the correct rate, enter ${sizeFieldLabel}, then enter quantity above.`
+                      : 'Pick the dropdown values below to choose the correct rate, then enter the size or quantity above.'}
+                  </div>
+                )}
+                <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
+                  {visibleFields.map((field) => (
+                    <DraftFieldInput
+                      key={field.field_id}
+                      field={field}
+                      value={draft.values[field.field_id]}
+                      onChange={(value) => handleFieldChange(field, value)}
+                    />
+                  ))}
+                </div>
+              </>
             )}
           </section>
         </div>
@@ -1330,7 +1410,7 @@ function InlineDraftComposer({
             <ReviewLine label="Type" value={logType?.name || 'Pick a log type'} />
             <ReviewLine label="Category" value={categories.find((category) => category.id === draft.category_id)?.name || 'Pick a category'} />
             <ReviewLine label="Item" value={selectedItem?.name || (itemSelectionEnabled ? 'Pick an item' : 'Manual entry')} />
-            {quantityVisible && <ReviewLine label="Quantity" value={parsedQuantity != null ? String(parsedQuantity) : '—'} />}
+            {quantityVisible && <ReviewLine label={quantityLabel} value={parsedQuantity != null ? String(parsedQuantity) : '—'} />}
             <ReviewLine label="Total" value={totalCost != null ? fmtMoney(totalCost) : '—'} />
             {logType && visibleFields.slice(0, 4).map((field) => (
               <ReviewLine
@@ -1355,7 +1435,7 @@ function InlineDraftComposer({
             <div className="rounded-xl border px-3 py-2.5 text-[12px]" style={{ borderColor: 'color-mix(in oklab, var(--warn) 24%, var(--line))', background: 'var(--warn-wash)', color: 'var(--warn-ink)' }}>
               {missingRequired
                 ? <>Complete <strong>{missingRequired.label}</strong> before saving.</>
-                : <>Add <strong>Quantity</strong> before saving.</>}
+                : <>Add <strong>{quantityLabel}</strong> before saving.</>}
             </div>
           ) : (
             <div className="rounded-xl border px-3 py-2.5 text-[12px]" style={{ borderColor: 'color-mix(in oklab, var(--ok) 24%, var(--line))', background: 'var(--ok-wash)', color: 'var(--ok-ink)' }}>
@@ -1489,7 +1569,11 @@ function DraftFieldInput({
   return (
     <label className="flex min-w-[132px] flex-col gap-1">
       <span className="text-[9.5px] font-medium uppercase tracking-wider" style={{ color: 'var(--ink-4)' }}>{label}</span>
-      <input type="text" className="input h-8 text-[12px]" value={(value as string) ?? ''} onChange={(e) => onChange(e.target.value)} />
+      {isSizeLikeLabel(field.label) ? (
+        <SizeTextInput className="input h-8 text-[12px]" value={(value as string) ?? ''} onChange={onChange as (next: string) => void} />
+      ) : (
+        <input type="text" className="input h-8 text-[12px]" value={(value as string) ?? ''} onChange={(e) => onChange(e.target.value)} />
+      )}
     </label>
   )
 }
@@ -1811,10 +1895,10 @@ function getEffectiveCostMode(logType?: LogType | null): LogCostMode {
   if (logType.cost_mode) return logType.cost_mode
   const itemSchema = getItemSchema(logType)
   const entrySchema = getEntrySchema(logType)
-  if (itemSchema.some((field) => isUnitCostField(field.label)) || entrySchema.some((field) => isUnitCostField(field.label))) {
+  if (itemSchema.some((field) => isUnitCostFieldLabel(field.label)) || entrySchema.some((field) => isUnitCostFieldLabel(field.label))) {
     return 'quantity_x_unit_cost'
   }
-  if (entrySchema.some((field) => isDirectAmountField(field.label))) {
+  if (entrySchema.some((field) => isDirectAmountFieldLabel(field.label))) {
     return 'direct_amount'
   }
   return 'manual_total'
@@ -1865,67 +1949,13 @@ function isNameLikeField(label: string): boolean {
 }
 
 function isQuantityRequired(schema: SchemaField[], itemFields: FieldValue[]): boolean {
-  return schema.some((field) => isUnitCostField(field.label)) || itemFields.some((field) => isUnitCostField(field.label))
+  return schema.some((field) => isUnitCostFieldLabel(field.label)) || itemFields.some((field) => isUnitCostFieldLabel(field.label))
 }
 
 function parseOptionalNumber(value: string): number | null {
   if (!value.trim()) return null
   const num = Number(value)
   return Number.isFinite(num) && num > 0 ? num : null
-}
-
-function findUnitCostValue(schema: SchemaField[], itemFields: FieldValue[], values: Record<string, unknown>): number | null {
-  const field = schema.find((item) => isUnitCostField(item.label))
-  if (field) {
-    const value = values[field.field_id]
-    if (typeof value === 'number' && Number.isFinite(value)) return value
-    if (typeof value === 'string' && value.trim()) {
-      const parsed = Number(value)
-      if (Number.isFinite(parsed)) return parsed
-    }
-  }
-  const itemField = itemFields.find((item) => isUnitCostField(item.label))
-  if (!itemField) return null
-  if (typeof itemField.value === 'number' && Number.isFinite(itemField.value)) return itemField.value
-  if (typeof itemField.value === 'string' && itemField.value.trim()) {
-    const parsed = Number(itemField.value)
-    return Number.isFinite(parsed) ? parsed : null
-  }
-  return null
-}
-
-function findUnitCostLabel(schema: SchemaField[], itemFields: FieldValue[]): string | null {
-  return schema.find((field) => isUnitCostField(field.label))?.label
-    ?? itemFields.find((field) => isUnitCostField(field.label))?.label
-    ?? null
-}
-
-function findDirectAmountLabel(schema: SchemaField[]): string | null {
-  return schema.find((field) => isDirectAmountField(field.label))?.label ?? null
-}
-
-function findTotalCostLabel(schema: SchemaField[]): string | null {
-  return schema.find((field) => isTotalCostField(field.label))?.label ?? null
-}
-
-function isUnitCostField(label: string): boolean {
-  const value = label.toLowerCase().trim()
-  return value === 'cost' || value.includes('unit cost') || value.includes('cost per unit') || value.includes('rate') || value.includes('price')
-}
-
-function isDirectAmountField(label: string): boolean {
-  const value = label.toLowerCase().trim()
-  return value.includes('daily cost') || value.includes('daily payment') || value.includes('payment') || value.includes('amount paid') || value.includes('wage') || value.includes('charges')
-}
-
-function isTotalCostField(label: string): boolean {
-  const value = label.toLowerCase().trim()
-  return value === 'total' || value === 'total cost' || value.includes('total cost')
-}
-
-function isQuantityField(label: string): boolean {
-  const value = label.toLowerCase().trim()
-  return value === 'quantity' || value === 'qty' || value.includes('quantity') || value.includes('qty')
 }
 
 function extractEntryDetails(entry: LogEntry) {
@@ -1961,37 +1991,10 @@ function mergeItemValuesIntoEntryFields(
 
 function getVisibleEntryFields(schema: SchemaField[], costMode: LogCostMode): SchemaField[] {
   return schema.filter((field) => {
-    if (costMode === 'quantity_x_unit_cost' && isQuantityField(field.label)) return false
-    if (costMode !== 'manual_total' && isTotalCostField(field.label)) return false
+    if (costMode === 'quantity_x_unit_cost' && isQuantityFieldLabel(field.label)) return false
+    if (costMode !== 'manual_total' && isTotalCostFieldLabel(field.label)) return false
     return true
   })
-}
-
-function computeDraftTotalCost(
-  costMode: LogCostMode,
-  schema: SchemaField[],
-  itemFields: FieldValue[],
-  values: Record<string, unknown>,
-  quantity: number | null,
-): number | null {
-  if (costMode === 'direct_amount') return findDirectAmountValue(schema, values) ?? findSchemaTotalCostValue(schema, values)
-  if (costMode === 'manual_total') return findSchemaTotalCostValue(schema, values)
-  if (quantity == null) return null
-  const unitCost = findUnitCostValue(schema, itemFields, values)
-  if (unitCost == null) return null
-  return quantity * unitCost
-}
-
-function findDirectAmountValue(schema: SchemaField[], values: Record<string, unknown>): number | null {
-  const field = schema.find((item) => isDirectAmountField(item.label))
-  if (!field) return null
-  return toNum(values[field.field_id])
-}
-
-function findSchemaTotalCostValue(schema: SchemaField[], values: Record<string, unknown>): number | null {
-  const field = schema.find((item) => isTotalCostField(item.label))
-  if (!field) return null
-  return toNum(values[field.field_id])
 }
 
 function buildDraftFieldPayload(
@@ -2000,10 +2003,10 @@ function buildDraftFieldPayload(
   options: { costMode: LogCostMode; quantity: number | null; totalCost: number | null },
 ): Array<{ field_id: string; label: string; value: unknown }> {
   return schema.map((field) => {
-    if (options.costMode === 'quantity_x_unit_cost' && isQuantityField(field.label)) {
+    if (options.costMode === 'quantity_x_unit_cost' && isQuantityFieldLabel(field.label)) {
       return { field_id: field.field_id, label: field.label, value: options.quantity }
     }
-    if (options.costMode !== 'manual_total' && isTotalCostField(field.label)) {
+    if (options.costMode !== 'manual_total' && isTotalCostFieldLabel(field.label)) {
       return { field_id: field.field_id, label: field.label, value: options.totalCost }
     }
     return { field_id: field.field_id, label: field.label, value: values[field.field_id] ?? null }

@@ -23,6 +23,7 @@ import (
 
 func RegisterExportRoutes(r *gin.RouterGroup) {
 	r.GET("/projects/:id/export-logs", exportLogsPDF)
+	r.GET("/quotations/:id/export", exportQuotationPDF)
 }
 
 // ── Handler ───────────────────────────────────────────────────────────────────

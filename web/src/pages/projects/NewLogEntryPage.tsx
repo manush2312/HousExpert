@@ -3,11 +3,31 @@ import { useParams, useNavigate } from 'react-router-dom'
 import { Info } from 'lucide-react'
 import DatePicker from '../../components/DatePicker'
 import SearchableSelect from '../../components/SearchableSelect'
+import SizeTextInput from '../../components/SizeTextInput'
 import {
-  listLogTypes, listLogCategories, listLogItems, createLogEntry,
-  type LogType, type LogCategory, type LogItem, type SchemaField, type FieldValue, type LogCostMode,
+  createLogEntry,
+  getPricingRule,
+  listLogCategories,
+  listLogItems,
+  listLogTypes,
+  type FieldValue,
+  type LogCategory,
+  type LogCostMode,
+  type LogItem,
+  type LogType,
+  type PricingRule,
+  type SchemaField,
 } from '../../services/logService'
 import { getProject, type Project } from '../../services/projectService'
+import {
+  computeLogTotalCost,
+  findSizeFieldLabel,
+  isDirectAmountFieldLabel,
+  isQuantityFieldLabel,
+  isTotalCostFieldLabel,
+  isUnitCostFieldLabel,
+} from '../../utils/logPricing'
+import { isSizeLikeLabel } from '../../utils/sizeFormat'
 
 export default function NewLogEntryPage() {
   const { id: projectId } = useParams<{ id: string }>()
@@ -25,6 +45,7 @@ export default function NewLogEntryPage() {
   const [quantity, setQuantity] = useState('')
   const [notes, setNotes] = useState('')
   const [fieldValues, setFieldValues] = useState<Record<string, unknown>>({})
+  const [pricingRule, setPricingRule] = useState<PricingRule | null>(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
 
@@ -36,10 +57,19 @@ export default function NewLogEntryPage() {
   const quantityVisible = costMode === 'quantity_x_unit_cost'
   const quantityRequired = quantityVisible && isQuantityRequired(entrySchema, selectedItem?.fields ?? [])
   const parsedQuantity = parseOptionalNumber(quantity)
+  const sizeFieldLabel = findSizeFieldLabel(entrySchema, selectedItem?.fields ?? [])
   const totalCost = parsedQuantity != null
-    ? computeTotalCost(costMode, entrySchema, selectedItem?.fields ?? [], fieldValues, parsedQuantity)
-    : computeTotalCost(costMode, entrySchema, selectedItem?.fields ?? [], fieldValues, null)
+    ? computeLogTotalCost(costMode, entrySchema, selectedItem?.fields ?? [], fieldValues, parsedQuantity, pricingRule)
+    : computeLogTotalCost(costMode, entrySchema, selectedItem?.fields ?? [], fieldValues, null, pricingRule)
   const visibleEntryFields = getVisibleEntryFields(entrySchema, costMode)
+  const quantityLabel = sizeFieldLabel ? 'Quantity' : pricingRule ? 'Size / quantity' : 'Quantity'
+  const quantityHint = sizeFieldLabel
+    ? `${sizeFieldLabel} will be multiplied with this quantity and the matched rate`
+    : pricingRule
+    ? 'Enter the measurable amount used for this log, such as square feet or units'
+    : quantityRequired
+      ? 'required for costed logs'
+      : undefined
 
   useEffect(() => {
     if (!projectId) return
@@ -56,8 +86,12 @@ export default function NewLogEntryPage() {
     setItems([])
     setQuantity('')
     setFieldValues({})
+    setPricingRule(null)
     if (!selectedTypeId) return
-    listLogCategories(selectedTypeId).then((r) => setCategories(r.data.data))
+    Promise.all([
+      listLogCategories(selectedTypeId).then((r) => setCategories(r.data.data)),
+      getPricingRule(selectedTypeId).then((r) => setPricingRule(r.data.data)),
+    ]).catch(() => setPricingRule(null))
   }, [selectedTypeId])
 
   useEffect(() => {
@@ -143,7 +177,7 @@ export default function NewLogEntryPage() {
       {project && <div className="eyebrow mb-1">{project.name}</div>}
       <h1 className="text-[26px] font-semibold tracking-tight numeral mb-1.5" style={{ color: 'var(--ink)' }}>Add daily log entry</h1>
       <p className="text-[13.5px] mb-8" style={{ color: 'var(--ink-3)' }}>
-        Pick a log type and category, then fill in the daily-entry fields. Saved items load dynamically from the selected category.
+        Pick a log type and category, then fill in the daily-entry fields. Saved items are optional and only needed when you want reusable presets.
       </p>
 
       <form onSubmit={handleSubmit}>
@@ -156,7 +190,7 @@ export default function NewLogEntryPage() {
               </FormField>
 
               {quantityVisible && (
-                <FormField label="Quantity" required={quantityRequired} hint={quantityRequired ? 'required for costed logs' : undefined}>
+                <FormField label={quantityLabel} required={quantityRequired} hint={quantityHint}>
                   <input type="number" min="0" step="any" className="input" value={quantity} onChange={(e) => setQuantity(e.target.value)} />
                 </FormField>
               )}
@@ -256,7 +290,7 @@ export default function NewLogEntryPage() {
               {selectedCatId && items.length === 0 && (
                 <FormField label="Items">
                   <p className="text-[12.5px] px-3 py-2 rounded-lg" style={{ background: 'var(--bg-sunken)', color: 'var(--ink-3)' }}>
-                    No items under this category yet. Add items in the log type detail page if you want reusable saved records like raw materials or labour contacts.
+                    No saved items under this category yet. That is okay if this log type is entered manually. Continue with the daily fields below, or add items later if you want reusable presets.
                   </p>
                 </FormField>
               )}
@@ -266,7 +300,11 @@ export default function NewLogEntryPage() {
             {selectedType && visibleEntryFields.length > 0 && (
               <FormSection
                 title={`${selectedType.name} details`}
-                description={`Entry schema v${selectedType.current_version} · ${visibleEntryFields.length} fields. Required fields marked with *`}
+                description={pricingRule
+                  ? sizeFieldLabel
+                    ? `Choose the pricing dimensions below, enter ${sizeFieldLabel}, then enter quantity above. Required fields marked with *`
+                    : `Choose the pricing dimensions below, then enter the size/quantity above. Required fields marked with *`
+                  : `Entry schema v${selectedType.current_version} · ${visibleEntryFields.length} fields. Required fields marked with *`}
               >
                 {visibleEntryFields.map((f) => (
                   <FormField key={f.field_id} label={f.label} required={f.required}>
@@ -328,7 +366,7 @@ export default function NewLogEntryPage() {
             <div className="mt-3 pt-3 space-y-1.5" style={{ borderTop: '1px solid var(--line-2)' }}>
               {quantityVisible && (
                 <div className="flex items-start gap-2 text-[12px]">
-                  <span className="shrink-0 w-28 truncate" style={{ color: 'var(--ink-4)' }}>Quantity</span>
+                  <span className="shrink-0 w-28 truncate" style={{ color: 'var(--ink-4)' }}>{quantityLabel}</span>
                   <span style={{ color: parsedQuantity == null ? 'var(--ink-5)' : 'var(--ink)', fontWeight: parsedQuantity == null ? 400 : 500 }}>
                     {parsedQuantity == null ? '—' : parsedQuantity}
                   </span>
@@ -413,6 +451,8 @@ function DynamicField({
         <span className="text-[13px]" style={{ color: 'var(--ink-2)' }}>Yes</span>
       </label>
     )
+  if (isSizeLikeLabel(field.label))
+    return <SizeTextInput className="input" value={(value as string) ?? ''} onChange={onChange as (next: string) => void} />
   return <input type="text" className="input" value={(value as string) ?? ''} onChange={(e) => onChange(e.target.value)} required={field.required} />
 }
 
@@ -469,10 +509,10 @@ function getEffectiveCostMode(logType?: LogType | null): LogCostMode {
   if (logType.cost_mode) return logType.cost_mode
   const itemSchema = getItemSchema(logType)
   const entrySchema = getEntrySchema(logType)
-  if (itemSchema.some((field) => isUnitCostField(field.label)) || entrySchema.some((field) => isUnitCostField(field.label))) {
+  if (itemSchema.some((field) => isUnitCostFieldLabel(field.label)) || entrySchema.some((field) => isUnitCostFieldLabel(field.label))) {
     return 'quantity_x_unit_cost'
   }
-  if (entrySchema.some((field) => isDirectAmountField(field.label))) {
+  if (entrySchema.some((field) => isDirectAmountFieldLabel(field.label))) {
     return 'direct_amount'
   }
   return 'manual_total'
@@ -487,66 +527,13 @@ function findItemSelectorField(schema: SchemaField[]): SchemaField | null {
 }
 
 function isQuantityRequired(schema: SchemaField[], itemFields: FieldValue[]): boolean {
-  return schema.some((field) => isUnitCostField(field.label)) || itemFields.some((field) => isUnitCostField(field.label))
+  return schema.some((field) => isUnitCostFieldLabel(field.label)) || itemFields.some((field) => isUnitCostFieldLabel(field.label))
 }
 
 function parseOptionalNumber(value: string): number | null {
   if (!value.trim()) return null
   const num = Number(value)
   return Number.isFinite(num) && num > 0 ? num : null
-}
-
-function computeTotalCost(
-  costMode: LogCostMode,
-  schema: SchemaField[],
-  itemFields: FieldValue[],
-  values: Record<string, unknown>,
-  quantity: number | null,
-): number | null {
-  if (costMode === 'direct_amount') {
-    return findDirectAmountValue(schema, values) ?? findTotalCostValue(schema, values)
-  }
-  if (costMode === 'manual_total') {
-    return findTotalCostValue(schema, values)
-  }
-  if (quantity == null) return null
-  const unitCost = findUnitCostValue(schema, itemFields, values)
-  if (unitCost == null) return null
-  return unitCost * quantity
-}
-
-function findUnitCostValue(
-  schema: SchemaField[],
-  itemFields: FieldValue[],
-  values: Record<string, unknown>,
-): number | null {
-  const costField = schema.find((field) => isUnitCostField(field.label))
-  if (costField) {
-    const raw = values[costField.field_id]
-    const unitCost = typeof raw === 'number' ? raw : typeof raw === 'string' && raw.trim() ? Number(raw) : NaN
-    if (Number.isFinite(unitCost)) return unitCost
-  }
-  const itemField = itemFields.find((field) => isUnitCostField(field.label))
-  if (!itemField) return null
-  const raw = itemField.value
-  if (typeof raw === 'number' && Number.isFinite(raw)) return raw
-  if (typeof raw === 'string' && raw.trim()) {
-    const parsed = Number(raw)
-    return Number.isFinite(parsed) ? parsed : null
-  }
-  return null
-}
-
-function findDirectAmountValue(schema: SchemaField[], values: Record<string, unknown>): number | null {
-  const amountField = schema.find((field) => isDirectAmountField(field.label))
-  if (!amountField) return null
-  return toNumericValue(values[amountField.field_id])
-}
-
-function findTotalCostValue(schema: SchemaField[], values: Record<string, unknown>): number | null {
-  const totalField = schema.find((field) => isTotalCostField(field.label))
-  if (!totalField) return null
-  return toNumericValue(values[totalField.field_id])
 }
 
 function mergeItemValuesIntoEntryFields(
@@ -567,8 +554,8 @@ function mergeItemValuesIntoEntryFields(
 
 function getVisibleEntryFields(schema: SchemaField[], costMode: LogCostMode): SchemaField[] {
   return schema.filter((field) => {
-    if (costMode === 'quantity_x_unit_cost' && isQuantityField(field.label)) return false
-    if (costMode !== 'manual_total' && isTotalCostField(field.label)) return false
+    if (costMode === 'quantity_x_unit_cost' && isQuantityFieldLabel(field.label)) return false
+    if (costMode !== 'manual_total' && isTotalCostFieldLabel(field.label)) return false
     return true
   })
 }
@@ -579,53 +566,14 @@ function buildEntryFieldPayload(
   options: { costMode: LogCostMode; quantity: number | null; totalCost: number | null },
 ): Array<{ field_id: string; label: string; value: unknown }> {
   return schema.map((field) => {
-    if (options.costMode === 'quantity_x_unit_cost' && isQuantityField(field.label)) {
+    if (options.costMode === 'quantity_x_unit_cost' && isQuantityFieldLabel(field.label)) {
       return { field_id: field.field_id, label: field.label, value: options.quantity }
     }
-    if (options.costMode !== 'manual_total' && isTotalCostField(field.label)) {
+    if (options.costMode !== 'manual_total' && isTotalCostFieldLabel(field.label)) {
       return { field_id: field.field_id, label: field.label, value: options.totalCost }
     }
     return { field_id: field.field_id, label: field.label, value: values[field.field_id] ?? null }
   })
-}
-
-function isQuantityField(label: string): boolean {
-  const value = label.toLowerCase().trim()
-  return value === 'quantity' || value === 'qty' || value.includes('quantity') || value.includes('qty')
-}
-
-function isDirectAmountField(label: string): boolean {
-  const value = label.toLowerCase().trim()
-  return value.includes('daily cost') || value.includes('daily payment') || value.includes('payment') || value.includes('amount paid') || value.includes('wage') || value.includes('charges')
-}
-
-function isTotalCostField(label: string): boolean {
-  const value = label.toLowerCase().trim()
-  return value === 'total' || value === 'total cost' || value.includes('total cost')
-}
-
-function toNumericValue(value: unknown): number | null {
-  if (typeof value === 'number' && Number.isFinite(value)) return value
-  if (typeof value === 'string' && value.trim()) {
-    const parsed = Number(value)
-    return Number.isFinite(parsed) ? parsed : null
-  }
-  return null
-}
-
-function isUnitCostField(label: string): boolean {
-  const value = label.toLowerCase().trim()
-  return (
-    value === 'cost' ||
-    value === 'amount' ||
-    value === 'payment' ||
-    value.includes('unit cost') ||
-    value.includes('cost per unit') ||
-    value.includes('rate') ||
-    value.includes('price') ||
-    value.includes('payment') ||
-    value.includes('amount')
-  )
 }
 
 function fmtMoney(value: number): string {

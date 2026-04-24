@@ -1,11 +1,12 @@
 import { useEffect, useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
-import { ArrowRight, Pencil, Send, ThumbsUp, ThumbsDown, Trash2, FolderOpen } from 'lucide-react'
+import { ArrowRight, Download, Pencil, Send, ThumbsUp, ThumbsDown, Trash2, FolderOpen } from 'lucide-react'
 import {
   getQuotation, updateQuotationStatus, deleteQuotation,
   type Quotation, type QuotationStatus,
 } from '../../services/quotationService'
 import { StatusPill, fmtAmount } from './QuotationsPage'
+import api from '../../services/api'
 
 export default function QuotationDetailPage() {
   const { id } = useParams<{ id: string }>()
@@ -13,6 +14,7 @@ export default function QuotationDetailPage() {
   const [quotation, setQuotation] = useState<Quotation | null>(null)
   const [loading, setLoading] = useState(true)
   const [actionLoading, setActionLoading] = useState(false)
+  const [exportLoading, setExportLoading] = useState(false)
 
   useEffect(() => {
     if (!id) return
@@ -37,6 +39,30 @@ export default function QuotationDetailPage() {
     if (!quotation || !confirm('Delete this draft quotation? This cannot be undone.')) return
     await deleteQuotation(quotation.quotation_id)
     navigate('/quotations')
+  }
+
+  const handleExportPDF = async () => {
+    if (!quotation) return
+    setExportLoading(true)
+    try {
+      const res = await api.get(`/quotations/${quotation.quotation_id}/export`, {
+        responseType: 'blob',
+      })
+      const url = URL.createObjectURL(new Blob([res.data], { type: 'application/pdf' }))
+      const a = document.createElement('a')
+      a.href = url
+      const safeName = quotation.client_name.replace(/\s+/g, '-').replace(/[^a-zA-Z0-9-_]/g, '')
+      const dateStr = new Date(quotation.created_at).toISOString().slice(0, 10)
+      a.download = `${quotation.quotation_id}-${safeName}-${dateStr}.pdf`
+      document.body.appendChild(a)
+      a.click()
+      document.body.removeChild(a)
+      URL.revokeObjectURL(url)
+    } catch {
+      alert('PDF export failed — check that the backend is running.')
+    } finally {
+      setExportLoading(false)
+    }
   }
 
   const handleConvertToProject = () => {
@@ -108,6 +134,9 @@ export default function QuotationDetailPage() {
 
         {/* Action buttons */}
         <div className="flex items-center gap-2 shrink-0 flex-wrap justify-end">
+          <button onClick={handleExportPDF} disabled={exportLoading} className="btn btn-outline">
+            <Download size={14} /> {exportLoading ? 'Exporting…' : 'Download PDF'}
+          </button>
           {isEditable && (
             <button onClick={() => navigate(`/quotations/${quotation.quotation_id}/edit`)} className="btn btn-outline">
               <Pencil size={14} /> Edit

@@ -68,6 +68,8 @@ func RegisterLogRoutes(rg *gin.RouterGroup) {
 	p.POST("/:id/logs", createLogEntry)
 	p.PUT("/:id/logs/:entry_id", updateLogEntry)
 	p.DELETE("/:id/logs/:entry_id", deleteLogEntry)
+
+	RegisterPricingRuleRoutes(rg)
 }
 
 // ── Log Type handlers ─────────────────────────────────────────────────────────

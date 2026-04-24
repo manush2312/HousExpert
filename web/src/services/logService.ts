@@ -84,6 +84,31 @@ export interface LogEntry {
   created_at: string
 }
 
+export interface PricingRateEntry {
+  keys: Record<string, string>
+  rate: number
+}
+
+export interface PricingRuleVersion {
+  version: number
+  name: string
+  dimension_fields: string[]
+  rates: PricingRateEntry[]
+  created_at: string
+}
+
+export interface PricingRule {
+  id: string
+  log_type_id: string
+  name: string
+  dimension_fields: string[]
+  rates: PricingRateEntry[]
+  current_version: number
+  version_history: PricingRuleVersion[]
+  created_at: string
+  updated_at: string
+}
+
 // ── Log Type API ──────────────────────────────────────────────────────────────
 
 export const listLogTypes = (params?: { include_archived?: boolean }) =>
@@ -108,6 +133,18 @@ export const archiveLogType = (id: string) =>
 
 export const restoreLogType = (id: string) =>
   api.post(`/log-types/${id}/restore`)
+
+export const getPricingRule = (logTypeId: string) =>
+  api.get<{ success: boolean; data: PricingRule | null }>(`/log-types/${logTypeId}/pricing-rule`)
+
+export const savePricingRule = (logTypeId: string, payload: {
+  name: string
+  dimension_fields: string[]
+  rates: PricingRateEntry[]
+}) => api.post<{ success: boolean; data: PricingRule }>(`/log-types/${logTypeId}/pricing-rule`, payload)
+
+export const deletePricingRule = (pricingRuleId: string) =>
+  api.delete(`/pricing-rules/${pricingRuleId}`)
 
 // ── Log Category API ──────────────────────────────────────────────────────────
 

@@ -86,6 +86,7 @@ func logTypeCol() *mongo.Collection     { return database.Collection("log_types"
 func logCategoryCol() *mongo.Collection { return database.Collection("log_categories") }
 func logItemCol() *mongo.Collection     { return database.Collection("log_items") }
 func logEntryCol() *mongo.Collection    { return database.Collection("log_entries") }
+func pricingRuleCol() *mongo.Collection { return database.Collection("pricing_rules") }
 
 // ── LogType ───────────────────────────────────────────────────────────────────
 
@@ -642,7 +643,7 @@ func CreateLogEntry(projectOID primitive.ObjectID, input CreateLogEntryInput) (*
 		itemName = item.Name
 		itemFields = item.Fields
 	}
-	totalCost := computeEntryTotalCost(normalizedFields, itemFields, quantity, effectiveCostMode(lt))
+	totalCost := computeEntryTotalCostForLogType(lt, normalizedFields, itemFields, quantity)
 
 	now := time.Now()
 	entry := &models.LogEntry{
@@ -759,12 +760,12 @@ func UpdateLogEntry(entryOID primitive.ObjectID, input UpdateLogEntryInput) (*mo
 		if current.ItemID != nil {
 			var item models.LogItem
 			if err := logItemCol().FindOne(context.Background(), bson.M{"_id": *current.ItemID}).Decode(&item); err == nil {
-				set["total_cost"] = computeEntryTotalCost(normalizedFields, item.Fields, currentQuantity, effectiveCostMode(logType))
+				set["total_cost"] = computeEntryTotalCostForLogType(logType, normalizedFields, item.Fields, currentQuantity)
 			} else {
-				set["total_cost"] = computeEntryTotalCost(normalizedFields, nil, currentQuantity, effectiveCostMode(logType))
+				set["total_cost"] = computeEntryTotalCostForLogType(logType, normalizedFields, nil, currentQuantity)
 			}
 		} else {
-			set["total_cost"] = computeEntryTotalCost(normalizedFields, nil, currentQuantity, effectiveCostMode(logType))
+			set["total_cost"] = computeEntryTotalCostForLogType(logType, normalizedFields, nil, currentQuantity)
 		}
 	}
 	if input.Notes != nil {
@@ -795,7 +796,7 @@ func UpdateLogEntry(entryOID primitive.ObjectID, input UpdateLogEntryInput) (*mo
 		}
 		var logType models.LogType
 		if err := logTypeCol().FindOne(context.Background(), bson.M{"_id": current.LogTypeID}).Decode(&logType); err == nil {
-			set["total_cost"] = computeEntryTotalCost(current.Fields, itemFields, currentQuantity, effectiveCostMode(logType))
+			set["total_cost"] = computeEntryTotalCostForLogType(logType, current.Fields, itemFields, currentQuantity)
 		} else {
 			set["total_cost"] = computeEntryTotalCost(current.Fields, itemFields, currentQuantity, models.LogCostModeQuantityXUnitCost)
 		}
@@ -1104,9 +1105,107 @@ func computeEntryTotalCost(fields []models.FieldValue, itemFields []models.Field
 		if unitCost == nil {
 			return nil
 		}
-		total := *quantity * *unitCost
+		totalUnits := *quantity
+		if sizeMultiplier := extractSizeMultiplier(fields, itemFields); sizeMultiplier != nil {
+			totalUnits *= *sizeMultiplier
+		}
+		total := totalUnits * *unitCost
 		return &total
 	}
+}
+
+func computeEntryTotalCostForLogType(logType models.LogType, fields []models.FieldValue, itemFields []models.FieldValue, quantity *float64) *float64 {
+	costMode := effectiveCostMode(logType)
+	totalCost := computeEntryTotalCost(fields, itemFields, quantity, costMode)
+	if totalCost != nil || costMode != models.LogCostModeQuantityXUnitCost || quantity == nil {
+		return totalCost
+	}
+
+	ruleRate := extractPricingRuleUnitCost(logType.ID, fields, itemFields)
+	if ruleRate == nil {
+		return nil
+	}
+	totalUnits := *quantity
+	if sizeMultiplier := extractSizeMultiplier(fields, itemFields); sizeMultiplier != nil {
+		totalUnits *= *sizeMultiplier
+	}
+	total := totalUnits * *ruleRate
+	return &total
+}
+
+func extractSizeMultiplier(fields []models.FieldValue, itemFields []models.FieldValue) *float64 {
+	if value := extractSizeMultiplierFromFields(fields); value != nil {
+		return value
+	}
+	return extractSizeMultiplierFromFields(itemFields)
+}
+
+func extractSizeMultiplierFromFields(fields []models.FieldValue) *float64 {
+	for _, field := range fields {
+		if !hasSizeLabel(field.Label) {
+			continue
+		}
+		value := toSizeMultiplier(field.Value)
+		if value != nil {
+			return value
+		}
+	}
+	return nil
+}
+
+func extractPricingRuleUnitCost(logTypeID primitive.ObjectID, fields []models.FieldValue, itemFields []models.FieldValue) *float64 {
+	var rule models.PricingRule
+	err := pricingRuleCol().FindOne(context.Background(), bson.M{"log_type_id": logTypeID}).Decode(&rule)
+	if err != nil || len(rule.DimensionFields) == 0 || len(rule.Rates) == 0 {
+		return nil
+	}
+
+	selectedKeys := make(map[string]string, len(rule.DimensionFields))
+	for _, fieldID := range rule.DimensionFields {
+		value := findFieldStringValue(fieldID, fields)
+		if value == "" {
+			value = findFieldStringValue(fieldID, itemFields)
+		}
+		if value == "" {
+			return nil
+		}
+		selectedKeys[fieldID] = value
+	}
+
+	for _, rate := range rule.Rates {
+		if pricingRateMatches(rule.DimensionFields, selectedKeys, rate.Keys) {
+			value := rate.Rate
+			return &value
+		}
+	}
+
+	return nil
+}
+
+func findFieldStringValue(fieldID string, fields []models.FieldValue) string {
+	for _, field := range fields {
+		if field.FieldID != fieldID {
+			continue
+		}
+		value := strings.TrimSpace(fmt.Sprint(field.Value))
+		if value == "" || value == "<nil>" {
+			return ""
+		}
+		return value
+	}
+	return ""
+}
+
+func pricingRateMatches(dimensionFields []string, selectedKeys map[string]string, candidate map[string]string) bool {
+	if len(candidate) == 0 {
+		return false
+	}
+	for _, fieldID := range dimensionFields {
+		if candidate[fieldID] != selectedKeys[fieldID] {
+			return false
+		}
+	}
+	return true
 }
 
 func extractUnitCost(fields []models.FieldValue) *float64 {
@@ -1191,9 +1290,80 @@ func hasTotalCostLabel(label string) bool {
 	return value == "total cost" || value == "total" || strings.Contains(value, "total cost")
 }
 
+func hasSizeLabel(label string) bool {
+	value := strings.ToLower(strings.TrimSpace(label))
+	return strings.Contains(value, "size") || strings.Contains(value, "dimension") || strings.Contains(value, "measurement")
+}
+
 func isQuantityLabel(label string) bool {
 	value := strings.ToLower(strings.TrimSpace(label))
 	return value == "quantity" || value == "qty" || strings.Contains(value, "quantity") || strings.Contains(value, "qty")
+}
+
+func toSizeMultiplier(value interface{}) *float64 {
+	if numeric := toFloat64(value); numeric != nil && *numeric > 0 {
+		return numeric
+	}
+
+	text := strings.TrimSpace(fmt.Sprint(value))
+	if text == "" || text == "<nil>" {
+		return nil
+	}
+	normalized := strings.ToLower(text)
+	normalized = strings.ReplaceAll(normalized, "×", "x")
+	normalized = strings.ReplaceAll(normalized, "*", "x")
+	normalized = strings.ReplaceAll(normalized, " by ", " x ")
+	parts := strings.Split(normalized, "x")
+	if len(parts) == 0 {
+		return nil
+	}
+
+	product := 1.0
+	foundNumericPart := false
+	for _, part := range parts {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
+		numberText := firstNumericToken(part)
+		if numberText == "" {
+			return nil
+		}
+		var parsed float64
+		if _, err := fmt.Sscanf(numberText, "%f", &parsed); err != nil || parsed <= 0 {
+			return nil
+		}
+		product *= parsed
+		foundNumericPart = true
+	}
+	if !foundNumericPart {
+		return nil
+	}
+	return &product
+}
+
+func firstNumericToken(value string) string {
+	start := -1
+	dotSeen := false
+	for idx, ch := range value {
+		if ch >= '0' && ch <= '9' {
+			if start == -1 {
+				start = idx
+			}
+			continue
+		}
+		if ch == '.' && start != -1 && !dotSeen {
+			dotSeen = true
+			continue
+		}
+		if start != -1 {
+			return value[start:idx]
+		}
+	}
+	if start == -1 {
+		return ""
+	}
+	return value[start:]
 }
 
 func toFloat64(value interface{}) *float64 {
