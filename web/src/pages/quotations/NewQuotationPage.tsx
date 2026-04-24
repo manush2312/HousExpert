@@ -405,14 +405,13 @@ function ItemRow({ item, rowIndex, products, onChange, onRemove, onApplyProduct,
         onChange={(nextSize) => onChange({ size: nextSize, sqft: deriveSqftString(nextSize, item.sqft) })}
       />
 
-      {/* Sqft — auto-computed from size, or manually editable when no size */}
+      {/* Sqft — auto-computed from size */}
       <input
         className="input"
         style={{ fontSize: 12, background: parseSizeInches(item.size) ? 'var(--bg-sunken)' : undefined }}
         placeholder="—"
         value={deriveSqftString(item.size, item.sqft)}
-        readOnly={!!parseSizeInches(item.size)}
-        onChange={(e) => onChange({ sqft: e.target.value })}
+        readOnly
       />
 
       {/* Qty */}

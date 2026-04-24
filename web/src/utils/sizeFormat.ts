@@ -26,6 +26,9 @@ export function parseSizeInches(size: string): [number, number] | null {
 }
 
 export function deriveSqft(size: string, fallback?: string): number | null {
+  if (!size.trim()) {
+    return null
+  }
   const parsed = parseSizeInches(size)
   if (parsed) {
     const [width, height] = parsed
