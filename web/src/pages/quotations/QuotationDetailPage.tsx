@@ -237,7 +237,14 @@ export default function QuotationDetailPage() {
                     style={{ gridTemplateColumns: '24px 2fr 80px 60px 60px 90px 1fr 100px', borderBottom: '1px solid var(--line-2)', color: 'var(--ink-2)', minWidth: 660 }}
                   >
                     <span className="numeral text-[11px]" style={{ color: 'var(--ink-5)' }}>{idx + 1}</span>
-                    <span className="font-medium" style={{ color: 'var(--ink)' }}>{item.description}</span>
+                    <div className="min-w-0">
+                      <div className="font-medium" style={{ color: 'var(--ink)' }}>{item.description}</div>
+                      {item.use_quantity_rate && (
+                        <span className="mt-1 inline-flex rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide" style={{ background: 'var(--accent-wash)', color: 'var(--accent-ink)' }}>
+                          Qty x rate
+                        </span>
+                      )}
+                    </div>
                     <span className="numeral">{item.size || '—'}</span>
                     <span className="numeral">{item.sqft != null ? item.sqft : '—'}</span>
                     <span className="numeral">{item.qty}</span>

@@ -23,13 +23,14 @@ var inchesSizePattern = regexp.MustCompile(`^\s*(\d+(?:\.\d+)?)\s*[Xx]\s*(\d+(?:
 // ── Input types ──────────────────────────────────────────────────────────────
 
 type QuotationItemInput struct {
-	ProductID   string   `json:"product_id"`
-	Description string   `json:"description" binding:"required"`
-	Size        string   `json:"size"`
-	Sqft        *float64 `json:"sqft"`
-	Qty         float64  `json:"qty"`
-	Rate        float64  `json:"rate"`
-	Note        string   `json:"note"`
+	ProductID       string   `json:"product_id"`
+	Description     string   `json:"description" binding:"required"`
+	Size            string   `json:"size"`
+	Sqft            *float64 `json:"sqft"`
+	Qty             float64  `json:"qty"`
+	UseQuantityRate bool     `json:"use_quantity_rate"`
+	Rate            float64  `json:"rate"`
+	Note            string   `json:"note"`
 }
 
 type QuotationSectionInput struct {
@@ -91,17 +92,18 @@ func buildSections(inputs []QuotationSectionInput) ([]models.QuotationSection, f
 				qty = 1
 			}
 			sqft := deriveQuotationSqft(ii.Size, ii.Sqft)
-			amount := ii.Rate * sqftValueOrZero(sqft)
+			amount := computeQuotationItemAmount(qty, ii.Rate, sqft, ii.UseQuantityRate)
 			item := models.QuotationItem{
-				ItemID:      primitive.NewObjectID(),
-				ProductID:   ii.ProductID,
-				Description: ii.Description,
-				Size:        ii.Size,
-				Sqft:        sqft,
-				Qty:         qty,
-				Rate:        ii.Rate,
-				Amount:      amount,
-				Note:        ii.Note,
+				ItemID:          primitive.NewObjectID(),
+				ProductID:       ii.ProductID,
+				Description:     ii.Description,
+				Size:            ii.Size,
+				Sqft:            sqft,
+				Qty:             qty,
+				UseQuantityRate: ii.UseQuantityRate,
+				Rate:            ii.Rate,
+				Amount:          amount,
+				Note:            ii.Note,
 			}
 			total += amount
 			sec.Items = append(sec.Items, item)
@@ -120,7 +122,7 @@ func deriveQuotationSqft(size string, fallback *float64) *float64 {
 		if _, err := fmt.Sscanf(matches[1], "%f", &width); err == nil {
 			if _, err := fmt.Sscanf(matches[2], "%f", &height); err == nil {
 				if width > 0 && height > 0 {
-					value := math.Round(((width * height) / 144) * 100) / 100
+					value := math.Round(((width*height)/144)*100) / 100
 					return &value
 				}
 			}
@@ -138,6 +140,16 @@ func sqftValueOrZero(value *float64) float64 {
 		return 0
 	}
 	return *value
+}
+
+func computeQuotationItemAmount(qty float64, rate float64, sqft *float64, useQuantityRate bool) float64 {
+	if qty == 0 {
+		qty = 1
+	}
+	if useQuantityRate || sqft == nil {
+		return qty * rate
+	}
+	return qty * sqftValueOrZero(sqft) * rate
 }
 
 // ── Service functions ─────────────────────────────────────────────────────────

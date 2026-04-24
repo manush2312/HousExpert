@@ -20,6 +20,7 @@ interface DraftItem {
   size: string
   sqft: string
   qty: string
+  use_quantity_rate: boolean
   rate: string
   note: string
 }
@@ -34,7 +35,7 @@ let _uid = 0
 const uid = () => `edit-${++_uid}`
 
 const emptyItem = (overrides?: Partial<DraftItem>): DraftItem => ({
-  _id: uid(), product_id: '', description: '', size: '', sqft: '', qty: '1', rate: '', note: '', ...overrides,
+  _id: uid(), product_id: '', description: '', size: '', sqft: '', qty: '1', use_quantity_rate: false, rate: '', note: '', ...overrides,
 })
 
 const emptySection = (roomName = ''): DraftSection => ({
@@ -54,6 +55,7 @@ function toServicePayload(sections: DraftSection[]): QuotationSectionInput[] {
           size: i.size.trim() || undefined,
           sqft: deriveSqft(i.size, i.sqft),
           qty: Number(i.qty) || 1,
+          use_quantity_rate: i.use_quantity_rate,
           rate: Number(i.rate) || 0,
           note: i.note.trim() || undefined,
         })),
@@ -61,9 +63,11 @@ function toServicePayload(sections: DraftSection[]): QuotationSectionInput[] {
 }
 
 function calcRowAmount(item: DraftItem): number {
-  const sqft = deriveSqft(item.size, item.sqft) ?? 0
+  const sqft = deriveSqft(item.size, item.sqft)
+  const qty = Number(item.qty) || 1
   const rate = Number(item.rate) || 0
-  return sqft * rate
+  if (item.use_quantity_rate || sqft == null) return qty * rate
+  return qty * sqft * rate
 }
 
 function calcTotal(sections: DraftSection[]): number {
@@ -88,6 +92,7 @@ function quotationToDraftSections(quotation: Quotation): DraftSection[] {
         size: item.size || '',
         sqft: deriveSqftString(item.size || '', item.sqft != null ? String(item.sqft) : ''),
         qty: String(item.qty || 1),
+        use_quantity_rate: Boolean(item.use_quantity_rate),
         rate: String(item.rate || ''),
         note: item.note || '',
       }))
@@ -317,11 +322,12 @@ function SectionBlock({ section, products, onRoomNameChange, onRemoveSection, on
         )}
       </div>
 
-      <div className="grid items-center px-4 py-1.5 text-[10.5px] font-semibold uppercase tracking-wider gap-2" style={{ color: 'var(--ink-4)', background: 'var(--bg-sunken)', borderBottom: '1px solid var(--line-2)', gridTemplateColumns: '2fr 80px 60px 60px 90px 1fr 90px 32px' }}>
+      <div className="grid items-center px-4 py-1.5 text-[10.5px] font-semibold uppercase tracking-wider gap-2" style={{ color: 'var(--ink-4)', background: 'var(--bg-sunken)', borderBottom: '1px solid var(--line-2)', gridTemplateColumns: '2fr 80px 60px 60px 78px 90px 1fr 90px 32px' }}>
         <span>Product</span>
         <span>Size (inches)</span>
         <span>Sq.Ft</span>
         <span>Qty</span>
+        <span>Qty x rate</span>
         <span>Rate (₹)</span>
         <span>Note</span>
         <span className="text-right">Amount</span>
@@ -374,7 +380,7 @@ function ItemRow({ item, rowIndex, products, onChange, onRemove, onApplyProduct,
     <div
       className="group grid items-center px-4 py-1.5 gap-2 hover-bg transition-colors"
       style={{
-        gridTemplateColumns: '2fr 80px 60px 60px 90px 1fr 90px 32px',
+        gridTemplateColumns: '2fr 80px 60px 60px 78px 90px 1fr 90px 32px',
         borderBottom: '1px solid var(--line-2)',
         fontSize: 13,
       }}
@@ -416,6 +422,14 @@ function ItemRow({ item, rowIndex, products, onChange, onRemove, onApplyProduct,
       />
       <input className="input" style={{ fontSize: 12 }} placeholder="—" value={deriveSqftString(item.size, item.sqft)} readOnly />
       <input type="number" className="input" style={{ fontSize: 12 }} min="0" step="1" value={item.qty} onChange={(e) => onChange({ qty: e.target.value })} />
+      <label className="flex h-[38px] items-center justify-center rounded-lg border px-2" style={{ borderColor: 'var(--line-2)', background: item.use_quantity_rate ? 'var(--accent-wash)' : 'var(--bg-elev)' }} title="Use quantity x rate only for this row">
+        <input
+          type="checkbox"
+          aria-label="Use quantity x rate only"
+          checked={item.use_quantity_rate}
+          onChange={(e) => onChange({ use_quantity_rate: e.target.checked })}
+        />
+      </label>
       <input type="number" className="input" style={{ fontSize: 12 }} placeholder="0" min="0" value={item.rate} onChange={(e) => onChange({ rate: e.target.value })} />
       <input className="input" style={{ fontSize: 12 }} placeholder="Optional" value={item.note} onChange={(e) => onChange({ note: e.target.value })} />
 

@@ -9,6 +9,7 @@ export interface QuotationItem {
   size?: string
   sqft?: number | null
   qty: number
+  use_quantity_rate?: boolean
   rate: number
   amount: number
   note?: string
@@ -50,6 +51,7 @@ export interface QuotationItemInput {
   size?: string
   sqft?: number | null
   qty: number
+  use_quantity_rate?: boolean
   rate: number
   note?: string
 }
