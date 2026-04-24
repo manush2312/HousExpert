@@ -201,10 +201,17 @@ function AddProductForm({ onSave, onCancel }: { onSave: (name: string, size: str
             </span>
             <input
               className="input"
-              placeholder="e.g. 6x6.5"
+              placeholder="e.g. 6 X 6.5"
               value={size}
-              onChange={(e) => setSize(e.target.value)}
-              onKeyDown={(e) => e.key === 'Enter' && handleSave()}
+              onChange={(e) => setSize(normalizeSizeInput(e.target.value))}
+              onKeyDown={(e) => {
+                if (['x', 'X', '*', ' '].includes(e.key)) {
+                  e.preventDefault()
+                  setSize(applySizeSeparator(size))
+                } else if (e.key === 'Enter') {
+                  handleSave()
+                }
+              }}
             />
           </label>
         </div>
@@ -220,6 +227,22 @@ function AddProductForm({ onSave, onCancel }: { onSave: (name: string, size: str
       </div>
     </div>
   )
+}
+
+// ── Size formatting helpers ───────────────────────────────────────────────────
+
+function normalizeSizeInput(value: string): string {
+  let next = value.toUpperCase().replace(/\*/g, ' X ').replace(/\s*[X]\s*/g, ' X ')
+  next = next.replace(/\s{2,}/g, ' ')
+  const parts = next.split(' X ')
+  if (parts.length > 2) next = `${parts[0]} X ${parts.slice(1).join('')}`
+  return next.trimStart()
+}
+
+function applySizeSeparator(value: string): string {
+  const trimmed = value.trim()
+  if (!trimmed || /\bX\b/.test(trimmed)) return value
+  return `${trimmed} X `
 }
 
 // ── Inline edit row ───────────────────────────────────────────────────────────
@@ -267,10 +290,17 @@ function EditProductRow({ product, onSave, onCancel }: {
           </span>
           <input
             className="input"
-            placeholder="e.g. 6x6.5"
+            placeholder="e.g. 6 X 6.5"
             value={size}
-            onChange={(e) => setSize(e.target.value)}
-            onKeyDown={(e) => e.key === 'Enter' && handleSave()}
+            onChange={(e) => setSize(normalizeSizeInput(e.target.value))}
+            onKeyDown={(e) => {
+              if (['x', 'X', '*', ' '].includes(e.key)) {
+                e.preventDefault()
+                setSize(applySizeSeparator(size))
+              } else if (e.key === 'Enter') {
+                handleSave()
+              }
+            }}
           />
         </label>
 

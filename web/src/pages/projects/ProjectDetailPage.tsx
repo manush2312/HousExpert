@@ -1,4 +1,5 @@
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
+import api from '../../services/api'
 import { useNavigate, useParams } from 'react-router-dom'
 import {
   Calendar,
@@ -91,6 +92,8 @@ export default function ProjectDetailPage() {
   const [editLogType, setEditLogType] = useState<LogType | null>(null)
   const [editSaving, setEditSaving] = useState(false)
 
+  const [exportLoading, setExportLoading] = useState(false)
+
   const [dragOver, setDragOver] = useState<string | null>(null)
   const [pendingUploadBhk, setPendingUploadBhk] = useState('')
   const [uploadingByBhk, setUploadingByBhk] = useState<Record<string, boolean>>({})
@@ -171,6 +174,36 @@ export default function ProjectDetailPage() {
       return true
     })
   }, [entries, logTypeFilter, dateFilter, q])
+
+  const handleExport = async () => {
+    if (!project) return
+    setExportLoading(true)
+    try {
+      const logTypeName = allLogTypes.find((lt) => lt.id === logTypeFilter)?.name
+      const res = await api.get(`/projects/${project.project_id}/export-logs`, {
+        responseType: 'blob',
+        params: {
+          ...(logTypeFilter   && { log_type_id:   logTypeFilter }),
+          ...(logTypeName     && { log_type_name:  logTypeName }),
+          ...(dateFilter      && { date:            dateFilter }),
+          ...(q               && { q }),
+        },
+      })
+      const url = URL.createObjectURL(new Blob([res.data], { type: 'application/pdf' }))
+      const a = document.createElement('a')
+      a.href = url
+      a.download = `${project.project_id}-logs-${new Date().toISOString().slice(0, 10)}.pdf`
+      document.body.appendChild(a)
+      a.click()
+      document.body.removeChild(a)
+      URL.revokeObjectURL(url)
+    } catch (err) {
+      console.error('Export failed:', err)
+      alert('Export failed — check that the backend is running.')
+    } finally {
+      setExportLoading(false)
+    }
+  }
 
   const activitySeries = useMemo(() => buildActivitySeries(entries, 30), [entries])
   const recentEntries = useMemo(
@@ -485,9 +518,9 @@ export default function ProjectDetailPage() {
             )}
           </div>
           <div className="flex items-center gap-2 shrink-0">
-            <button className="btn btn-outline">
+            <button onClick={handleExport} disabled={exportLoading} className="btn btn-outline">
               <Download size={15} />
-              Export report
+              {exportLoading ? 'Generating…' : 'Export report'}
             </button>
             <button onClick={newDraft} className="btn btn-accent">
               <Plus size={15} />

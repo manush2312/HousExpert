@@ -54,6 +54,7 @@ func main() {
 	handlers.RegisterLogRoutes(v1)
 	handlers.RegisterProductRoutes(v1)
 	handlers.RegisterQuotationRoutes(v1)
+	handlers.RegisterExportRoutes(v1)
 
 	port := os.Getenv("PORT")
 	if port == "" {

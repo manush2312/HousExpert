@@ -60,9 +60,12 @@ function toServicePayload(sections: DraftSection[]): QuotationSectionInput[] {
 }
 
 function calcRowAmount(item: DraftItem): number {
-  const sqft = deriveSqft(item.size, item.sqft) ?? 0
+  const sqft = deriveSqft(item.size, item.sqft)
+  const qty = Number(item.qty) || 1
   const rate = Number(item.rate) || 0
-  return sqft * rate
+  // If sqft is available: qty × sqft × rate
+  // Otherwise (no dimensions): qty × rate
+  return sqft != null ? qty * sqft * rate : qty * rate
 }
 
 function calcTotal(sections: DraftSection[]): number {
@@ -459,13 +462,14 @@ function ItemRow({ item, rowIndex, products, onChange, onRemove, onApplyProduct,
         }}
       />
 
-      {/* Sqft */}
+      {/* Sqft — auto-computed from size, or manually editable when no size */}
       <input
         className="input"
-        style={{ fontSize: 12 }}
+        style={{ fontSize: 12, background: parseSizeInches(item.size) ? 'var(--bg-sunken)' : undefined }}
         placeholder="—"
         value={deriveSqftString(item.size, item.sqft)}
-        readOnly
+        readOnly={!!parseSizeInches(item.size)}
+        onChange={(e) => onChange({ sqft: e.target.value })}
       />
 
       {/* Qty */}
@@ -473,10 +477,10 @@ function ItemRow({ item, rowIndex, products, onChange, onRemove, onApplyProduct,
         type="number"
         className="input"
         style={{ fontSize: 12 }}
-        min="0"
+        min="1"
         step="1"
         value={item.qty}
-        onChange={(e) => onChange({ qty: e.target.value })}
+        onChange={(e) => onChange({ qty: String(Math.max(1, Number(e.target.value) || 1)) })}
       />
 
       {/* Rate */}
