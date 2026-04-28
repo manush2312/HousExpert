@@ -45,6 +45,14 @@ interface PricingDimensionOption extends SchemaField {
   source: 'item' | 'entry'
 }
 
+function normalizePricingRateDraft(
+  fields: SchemaField[],
+  selectedFieldIds: string[],
+  rates: PricingRateEntry[],
+): PricingRateEntry[] {
+  return buildPricingRateRows(fields, selectedFieldIds, rates)
+}
+
 const FIELD_TYPES: { value: FieldType; label: string }[] = [
   { value: 'text', label: 'Text' },
   { value: 'number', label: 'Number' },
@@ -113,6 +121,14 @@ export default function LogTypeDetailPage() {
       const nextLogType = ltRes.data.data
       const itemSchema = getItemSchema(nextLogType)
       const entrySchema = getEntrySchema(nextLogType)
+      const nextPricingDimensionOptions: PricingDimensionOption[] = [
+        ...itemSchema
+          .filter((field) => field.field_type === 'dropdown')
+          .map((field) => ({ ...field, source: 'item' as const })),
+        ...entrySchema
+          .filter((field) => field.field_type === 'dropdown')
+          .map((field) => ({ ...field, source: 'entry' as const })),
+      ]
       const nextCategories = catRes.data.data
       const nextPricingRule = pricingRuleRes.data.data
       setLogType(nextLogType)
@@ -129,7 +145,13 @@ export default function LogTypeDetailPage() {
       if (!editingPricingRule) {
         setPricingRuleNameDraft(nextPricingRule?.name ?? `${nextLogType.name} pricing`)
         setPricingDimensionFieldsDraft(nextPricingRule?.dimension_fields ?? [])
-        setPricingRatesDraft(nextPricingRule?.rates ?? [])
+        setPricingRatesDraft(
+          normalizePricingRateDraft(
+            nextPricingDimensionOptions,
+            nextPricingRule?.dimension_fields ?? [],
+            nextPricingRule?.rates ?? [],
+          ),
+        )
       }
       const itemPairs = await Promise.all(
         nextCategories.map(async (cat) => {
@@ -183,11 +205,6 @@ export default function LogTypeDetailPage() {
       .filter((field): field is PricingDimensionOption => Boolean(field)),
     [pricingDimensionFieldsDraft, pricingDimensionOptions],
   )
-  const pricingRateRows = useMemo(
-    () => buildPricingRateRows(pricingDimensionOptions, pricingDimensionFieldsDraft, pricingRatesDraft),
-    [pricingDimensionOptions, pricingDimensionFieldsDraft, pricingRatesDraft],
-  )
-
   useEffect(() => {
     if (!pricingRule) {
       setExpandedPricingRuleVersion(null)
@@ -316,7 +333,13 @@ export default function LogTypeDetailPage() {
     if (!logType) return
     setPricingRuleNameDraft(pricingRule?.name ?? `${logType.name} pricing`)
     setPricingDimensionFieldsDraft(pricingRule?.dimension_fields ?? [])
-    setPricingRatesDraft(pricingRule?.rates ?? [])
+    setPricingRatesDraft(
+      normalizePricingRateDraft(
+        pricingDimensionOptions,
+        pricingRule?.dimension_fields ?? [],
+        pricingRule?.rates ?? [],
+      ),
+    )
     setEditingPricingRule(true)
   }
 
@@ -324,7 +347,13 @@ export default function LogTypeDetailPage() {
     if (!logType) return
     setPricingRuleNameDraft(pricingRule?.name ?? `${logType.name} pricing`)
     setPricingDimensionFieldsDraft(pricingRule?.dimension_fields ?? [])
-    setPricingRatesDraft(pricingRule?.rates ?? [])
+    setPricingRatesDraft(
+      normalizePricingRateDraft(
+        pricingDimensionOptions,
+        pricingRule?.dimension_fields ?? [],
+        pricingRule?.rates ?? [],
+      ),
+    )
     setEditingPricingRule(false)
   }
 
@@ -333,14 +362,14 @@ export default function LogTypeDetailPage() {
       const next = prev.includes(fieldId)
         ? prev.filter((item) => item !== fieldId)
         : [...prev, fieldId]
-      setPricingRatesDraft((currentRates) => buildPricingRateRows(pricingDimensionOptions, next, currentRates))
+      setPricingRatesDraft((currentRates) => normalizePricingRateDraft(pricingDimensionOptions, next, currentRates))
       return next
     })
   }
 
-  const updatePricingRate = (rowIndex: number, value: string) => {
-    setPricingRatesDraft((prev) => prev.map((row, index) => (
-      index === rowIndex
+  const updatePricingRate = (rowKey: string, value: string) => {
+    setPricingRatesDraft((prev) => prev.map((row) => (
+      selectedPricingFields.map((field) => row.keys[field.field_id]).join('|') === rowKey
         ? { ...row, rate: value === '' ? 0 : Number(value) }
         : row
     )))
@@ -364,11 +393,11 @@ export default function LogTypeDetailPage() {
       alert('One or more selected pricing dimensions no longer exist in the schema.')
       return
     }
-    if (pricingRateRows.length === 0) {
+    if (pricingRatesDraft.length === 0) {
       alert('Selected dimensions need dropdown options before rates can be configured.')
       return
     }
-    if (pricingRateRows.some((row) => !Number.isFinite(row.rate) || row.rate < 0)) {
+    if (pricingRatesDraft.some((row) => !Number.isFinite(row.rate) || row.rate < 0)) {
       alert('Each pricing row needs a valid rate.')
       return
     }
@@ -378,7 +407,7 @@ export default function LogTypeDetailPage() {
       await savePricingRule(id, {
         name: pricingRuleNameDraft.trim(),
         dimension_fields: pricingDimensionFieldsDraft,
-        rates: pricingRateRows,
+        rates: pricingRatesDraft,
       })
       setEditingPricingRule(false)
       await fetchAll()
@@ -710,7 +739,7 @@ export default function LogTypeDetailPage() {
                 <div className="rounded-xl border px-3 py-3 text-[12px]" style={{ borderColor: 'var(--line-2)', background: 'var(--bg-sunken)', color: 'var(--ink-4)' }}>
                   Select one or more dropdown fields to generate the rate table.
                 </div>
-              ) : pricingRateRows.length === 0 ? (
+              ) : pricingRatesDraft.length === 0 ? (
                 <div className="rounded-xl border px-3 py-3 text-[12px]" style={{ borderColor: 'var(--line-2)', background: 'var(--bg-sunken)', color: 'var(--ink-4)' }}>
                   Selected fields need dropdown options before rate rows can be generated.
                 </div>
@@ -726,10 +755,10 @@ export default function LogTypeDetailPage() {
                       </tr>
                     </thead>
                     <tbody>
-                      {pricingRateRows.map((row, index) => (
+                      {pricingRatesDraft.map((row) => (
                         <tr key={selectedPricingFields.map((field) => row.keys[field.field_id]).join('|')} style={{ borderTop: '1px solid var(--line-2)' }}>
                           {selectedPricingFields.map((field) => (
-                            <td key={`${index}-${field.field_id}`} className="px-3 py-2.5" style={{ color: 'var(--ink-2)' }}>
+                            <td key={`${field.field_id}-${row.keys[field.field_id]}`} className="px-3 py-2.5" style={{ color: 'var(--ink-2)' }}>
                               {row.keys[field.field_id]}
                             </td>
                           ))}
@@ -740,7 +769,7 @@ export default function LogTypeDetailPage() {
                               step="any"
                               className="input text-right numeral"
                               value={row.rate}
-                              onChange={(e) => updatePricingRate(index, e.target.value)}
+                              onChange={(e) => updatePricingRate(selectedPricingFields.map((field) => row.keys[field.field_id]).join('|'), e.target.value)}
                             />
                           </td>
                         </tr>
