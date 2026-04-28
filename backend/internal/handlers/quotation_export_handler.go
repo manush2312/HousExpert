@@ -1,3 +1,4 @@
+// this file has code for --> turn a saved quotation into a styled downloadable PDF. this file manages presentation on paper/PDF
 package handlers
 
 import (
@@ -17,19 +18,20 @@ import (
 // ── Portrait A4 layout constants ──────────────────────────────────────────────
 
 const (
-	qpw = 210.0             // A4 portrait width mm
-	qph = 297.0             // A4 portrait height mm
-	qml = 14.0              // left margin
-	qmr = 14.0              // right margin
-	qcw = qpw - qml - qmr  // 182mm content width
-	qrH = 11.0              // item row height
-	qhH = 7.0               // column header row height
-	qsH = 9.5               // section header row height
-	qpX = 3.0               // horizontal cell padding
+	qpw = 210.0           // A4 portrait width mm
+	qph = 297.0           // A4 portrait height mm
+	qml = 14.0            // left margin
+	qmr = 14.0            // right margin
+	qcw = qpw - qml - qmr // 182mm content width
+	qrH = 11.0            // item row height
+	qhH = 7.0             // column header row height
+	qsH = 9.5             // section header row height
+	qpX = 3.0             // horizontal cell padding
 )
 
 // Quotation item columns  (x + widths sum to qcw = 182mm ✓)
-//   7 + 61 + 20 + 18 + 13 + 29 + 34 = 182
+//
+//	7 + 61 + 20 + 18 + 13 + 29 + 34 = 182
 var qCols = struct {
 	idx, desc, size, sqft, qty, rate, amount col
 }{
@@ -70,6 +72,7 @@ func exportQuotationPDF(c *gin.Context) {
 
 // ── Portrait writer init ──────────────────────────────────────────────────────
 
+// this function basically builds a blank pdf.
 func newPortraitPDFWriter() *pdfWriter {
 	doc := gofpdf.NewCustom(&gofpdf.InitType{
 		OrientationStr: "P",
@@ -299,7 +302,7 @@ func (p *pdfWriter) drawQuotTableHeader(y float64) float64 {
 	}
 	headers := []thDef{
 		{qCols.idx, "#", "L"},
-		{qCols.desc, "DESCRIPTION", "L"},
+		{qCols.desc, "DESCRIPTION / NOTE", "L"},
 		{qCols.size, "SIZE", "L"},
 		{qCols.sqft, "SQ.FT", "R"},
 		{qCols.qty, "QTY", "R"},
@@ -363,7 +366,7 @@ func (p *pdfWriter) drawQuotItemRow(y float64, idx int, item models.QuotationIte
 		p.setFont("", 7)
 		p.setColor(cINK4)
 		p.cell(qCols.desc.x+qpX, line2Y, qCols.desc.w-qpX*2,
-			p.truncate(item.Note, qCols.desc.w-qpX*2), "L")
+			p.truncate("Note: "+item.Note, qCols.desc.w-qpX*2), "L")
 	}
 
 	// Size

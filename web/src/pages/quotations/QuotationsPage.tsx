@@ -253,7 +253,7 @@ export function StatusPill({ status }: { status: QuotationStatus }) {
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 export function fmtAmount(n: number): string {
-  if (n >= 10_00_000) return `₹${(n / 10_00_000).toFixed(2)} Cr`
+  if (n >= 1_00_00_000) return `₹${(n / 1_00_00_000).toFixed(2)} Cr`
   if (n >= 1_00_000) return `₹${(n / 1_00_000).toFixed(1)} L`
   return `₹${n.toLocaleString('en-IN')}`
 }
