@@ -138,13 +138,10 @@ function Sidebar({ collapsed, theme, onToggleTheme, onOpenPalette, projects, mob
         style={{ borderBottom: '1px solid var(--line)' }}
       >
         <div
-          className="w-8 h-8 rounded-lg flex items-center justify-center shrink-0"
-          style={{ background: 'var(--ink)' }}
+          className="w-8 h-8 rounded-lg flex items-center justify-center shrink-0 overflow-hidden"
+          style={{ background: 'white', border: '1px solid var(--line-2)' }}
         >
-          <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
-            <path d="M2 14V7l6-4 6 4v7" stroke="white" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
-            <path d="M6 14V10h4v4" stroke="white" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
-          </svg>
+          <img src="/logo.png" alt="HousExpert logo" className="w-full h-full object-contain" />
         </div>
         {!collapsed && (
           <div className="flex flex-col leading-none min-w-0">
