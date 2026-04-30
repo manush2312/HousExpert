@@ -119,8 +119,8 @@ function Sidebar({ collapsed, theme, onToggleTheme, onOpenPalette, projects, mob
     { to: '/projects', label: 'Projects', Icon: Folder },
     { to: '/quotations', label: 'Quotations', Icon: FileText },
     { to: '/products', label: 'Products', Icon: Package },
-    { to: '/furniture', label: 'Furniture Designer', Icon: Armchair },
     { to: '/inventory', label: 'Inventory', Icon: Boxes },
+    { to: '/furniture', label: 'Furniture Designer', Icon: Armchair },
     { to: '/log-types', label: 'Log Types', Icon: Layers },
   ]
 
