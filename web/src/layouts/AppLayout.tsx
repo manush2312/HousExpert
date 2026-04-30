@@ -2,7 +2,7 @@ import { useState, useEffect, useRef, useMemo, useCallback } from 'react'
 import { Outlet, useNavigate, useLocation, NavLink } from 'react-router-dom'
 import {
   Search, Layers, Plus, Sun, Moon, AlignJustify,
-  Building2, ChevronRight, Folder, Package, FileText,
+  Building2, ChevronRight, Folder, Package, FileText, Armchair,
 } from 'lucide-react'
 import { listProjects, type Project } from '../services/projectService'
 import { listLogTypes, type LogType } from '../services/logService'
@@ -118,6 +118,7 @@ function Sidebar({ collapsed, theme, onToggleTheme, onOpenPalette, projects, mob
     { to: '/projects', label: 'Projects', Icon: Folder },
     { to: '/quotations', label: 'Quotations', Icon: FileText },
     { to: '/products', label: 'Products', Icon: Package },
+    { to: '/furniture', label: 'Furniture Designer', Icon: Armchair },
     { to: '/log-types', label: 'Log Types', Icon: Layers },
   ]
 
@@ -261,6 +262,10 @@ function Topbar({ onToggleSidebar }: { collapsed: boolean; onToggleSidebar: () =
       result.push({ label: 'Log Types', to: '/log-types' })
       if (parts[1] === 'new') result.push({ label: 'New log type' })
       else if (parts[1]) result.push({ label: parts[1] })
+    } else if (parts[0] === 'furniture') {
+      result.push({ label: 'Furniture Designer', to: '/furniture' })
+      if (parts[1] === 'new') result.push({ label: 'New design' })
+      else if (parts[1]) result.push({ label: 'Edit design' })
     }
     return result
   }, [location.pathname])

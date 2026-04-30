@@ -12,6 +12,8 @@ import QuotationsPage from './pages/quotations/QuotationsPage'
 import NewQuotationPage from './pages/quotations/NewQuotationPage'
 import QuotationDetailPage from './pages/quotations/QuotationDetailPage'
 import EditQuotationPage from './pages/quotations/EditQuotationPage'
+import FurnitureListPage from './pages/furniture/FurnitureListPage'
+import FurnitureDesignerPage from './pages/furniture/FurnitureDesignerPage'
 
 export default function App() {
   return (
@@ -39,6 +41,11 @@ export default function App() {
           <Route path="quotations/new" element={<NewQuotationPage />} />
           <Route path="quotations/:id/edit" element={<EditQuotationPage />} />
           <Route path="quotations/:id" element={<QuotationDetailPage />} />
+
+          {/* Furniture Designer */}
+          <Route path="furniture" element={<FurnitureListPage />} />
+          <Route path="furniture/new" element={<FurnitureDesignerPage />} />
+          <Route path="furniture/:id" element={<FurnitureDesignerPage />} />
         </Route>
       </Routes>
     </BrowserRouter>
