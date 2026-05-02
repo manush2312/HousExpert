@@ -95,6 +95,7 @@ func createIndexes() {
 		{Keys: bson.D{{Key: "category_id", Value: 1}, {Key: "name", Value: 1}}, Options: options.Index().SetUnique(true)},
 		{Keys: bson.D{{Key: "log_type_id", Value: 1}}},
 		{Keys: bson.D{{Key: "category_id", Value: 1}}},
+		{Keys: bson.D{{Key: "inventory_link.inventory_item_id", Value: 1}}},
 		{Keys: bson.D{{Key: "status", Value: 1}}},
 	})
 
@@ -123,6 +124,23 @@ func createIndexes() {
 	DB.Collection("products").Indexes().CreateMany(ctx, []mongo.IndexModel{
 		{Keys: bson.D{{Key: "product_id", Value: 1}}, Options: options.Index().SetUnique(true)},
 		{Keys: bson.D{{Key: "vendor_id", Value: 1}}},
+	})
+
+	// Inventory
+	DB.Collection("inventory_items").Indexes().CreateMany(ctx, []mongo.IndexModel{
+		{Keys: bson.D{{Key: "item_id", Value: 1}}, Options: options.Index().SetUnique(true)},
+		{Keys: bson.D{{Key: "name", Value: 1}}},
+		{Keys: bson.D{{Key: "category", Value: 1}}},
+		{Keys: bson.D{{Key: "sku", Value: 1}}},
+	})
+	DB.Collection("inventory_movements").Indexes().CreateMany(ctx, []mongo.IndexModel{
+		{Keys: bson.D{{Key: "movement_id", Value: 1}}, Options: options.Index().SetUnique(true)},
+		{Keys: bson.D{{Key: "item_id", Value: 1}}},
+		{Keys: bson.D{{Key: "type", Value: 1}}},
+		{Keys: bson.D{{Key: "reason", Value: 1}}},
+		{Keys: bson.D{{Key: "transaction_date", Value: -1}}},
+		{Keys: bson.D{{Key: "item_id", Value: 1}, {Key: "transaction_date", Value: -1}}},
+		{Keys: bson.D{{Key: "created_at", Value: -1}}},
 	})
 
 	log.Println("MongoDB indexes created successfully")

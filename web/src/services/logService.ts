@@ -52,11 +52,20 @@ export interface LogItem {
   category_id: string
   name: string
   description?: string
+  inventory_link?: LogItemInventoryLink
   schema_version: number
   fields: FieldValue[]
   entry_count: number
   status: 'active' | 'archived'
   created_at: string
+}
+
+export interface LogItemInventoryLink {
+  inventory_item_id: string
+  inventory_item_name: string
+  inventory_unit: string
+  quantity_unit: string
+  usage_per_quantity: number
 }
 
 export interface FieldValue {
@@ -77,11 +86,20 @@ export interface LogEntry {
   schema_version: number
   quantity?: number
   total_cost?: number
+  inventory_consumption?: InventoryConsumption
   fields: FieldValue[]
   log_date: string
   notes?: string
   created_by: string
   created_at: string
+}
+
+export interface InventoryConsumption {
+  inventory_item_id: string
+  inventory_item_name: string
+  inventory_unit: string
+  usage_per_quantity: number
+  consumed_quantity: number
 }
 
 export interface PricingRateEntry {
@@ -165,10 +183,10 @@ export const restoreLogCategory = (id: string) =>
 export const listLogItems = (categoryId: string, params?: { include_archived?: boolean }) =>
   api.get<{ success: boolean; data: LogItem[] }>(`/log-categories/${categoryId}/items`, { params })
 
-export const createLogItem = (categoryId: string, payload: { description?: string; fields: FieldValue[] }) =>
+export const createLogItem = (categoryId: string, payload: { description?: string; fields: FieldValue[]; inventory_link?: { inventory_item_id: string; quantity_unit?: string; usage_per_quantity: number } | null }) =>
   api.post<{ success: boolean; data: LogItem }>(`/log-categories/${categoryId}/items`, payload)
 
-export const updateLogItem = (id: string, payload: { fields: FieldValue[] }) =>
+export const updateLogItem = (id: string, payload: { fields: FieldValue[]; inventory_link?: { inventory_item_id: string; quantity_unit?: string; usage_per_quantity: number } | null }) =>
   api.put<{ success: boolean; data: LogItem }>(`/log-items/${id}`, payload)
 
 export const archiveLogItem = (id: string) =>

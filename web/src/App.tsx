@@ -8,6 +8,7 @@ import LogTypesPage from './pages/log-types/LogTypesPage'
 import NewLogTypePage from './pages/log-types/NewLogTypePage'
 import LogTypeDetailPage from './pages/log-types/LogTypeDetailPage'
 import ProductsPage from './pages/products/ProductsPage'
+import InventoryPage from './pages/inventory/InventoryPage'
 import QuotationsPage from './pages/quotations/QuotationsPage'
 import NewQuotationPage from './pages/quotations/NewQuotationPage'
 import QuotationDetailPage from './pages/quotations/QuotationDetailPage'
@@ -33,6 +34,7 @@ export default function App() {
 
           {/* Products catalog */}
           <Route path="products" element={<ProductsPage />} />
+          <Route path="inventory" element={<InventoryPage />} />
 
           {/* Quotations */}
           <Route path="quotations" element={<QuotationsPage />} />

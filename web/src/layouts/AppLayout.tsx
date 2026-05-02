@@ -2,7 +2,7 @@ import { useState, useEffect, useRef, useMemo, useCallback } from 'react'
 import { Outlet, useNavigate, useLocation, NavLink } from 'react-router-dom'
 import {
   Search, Layers, Plus, Sun, Moon, AlignJustify,
-  Building2, ChevronRight, Folder, Package, FileText,
+  Building2, ChevronRight, Folder, Package, FileText, Boxes,
 } from 'lucide-react'
 import { listProjects, type Project } from '../services/projectService'
 import { listLogTypes, type LogType } from '../services/logService'
@@ -118,6 +118,7 @@ function Sidebar({ collapsed, theme, onToggleTheme, onOpenPalette, projects, mob
     { to: '/projects', label: 'Projects', Icon: Folder },
     { to: '/quotations', label: 'Quotations', Icon: FileText },
     { to: '/products', label: 'Products', Icon: Package },
+    { to: '/inventory', label: 'Inventory', Icon: Boxes },
     { to: '/log-types', label: 'Log Types', Icon: Layers },
   ]
 
@@ -261,6 +262,14 @@ function Topbar({ onToggleSidebar }: { collapsed: boolean; onToggleSidebar: () =
       result.push({ label: 'Log Types', to: '/log-types' })
       if (parts[1] === 'new') result.push({ label: 'New log type' })
       else if (parts[1]) result.push({ label: parts[1] })
+    } else if (parts[0] === 'products') {
+      result.push({ label: 'Products', to: '/products' })
+    } else if (parts[0] === 'inventory') {
+      result.push({ label: 'Inventory', to: '/inventory' })
+    } else if (parts[0] === 'quotations') {
+      result.push({ label: 'Quotations', to: '/quotations' })
+      if (parts[1] === 'new') result.push({ label: 'New quotation' })
+      else if (parts[1]) result.push({ label: parts[1] })
     }
     return result
   }, [location.pathname])
@@ -364,6 +373,8 @@ function CommandPalette({ open, onClose, projects, logTypes }: PaletteProps) {
   const items = useMemo<PaletteItem[]>(() => {
     const out: PaletteItem[] = [
       { section: 'Navigate', label: 'All projects', Icon: Folder, action: () => navigate('/projects') },
+      { section: 'Navigate', label: 'Inventory', Icon: Boxes, action: () => navigate('/inventory') },
+      { section: 'Navigate', label: 'Products', Icon: Package, action: () => navigate('/products') },
       { section: 'Navigate', label: 'All log types', Icon: Layers, action: () => navigate('/log-types') },
       { section: 'Actions', label: 'New project', Icon: Plus, action: () => navigate('/projects/new'), kbd: ['N', 'P'] },
       { section: 'Actions', label: 'New log type', Icon: Plus, action: () => navigate('/log-types/new'), kbd: ['N', 'T'] },

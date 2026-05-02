@@ -1,9 +1,10 @@
 import { useEffect, useMemo, useState } from 'react'
-import { useNavigate, useParams } from 'react-router-dom'
+import { useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import { Check, ChevronRight, Edit2, Plus, RotateCcw, Save, Search, Trash2, X } from 'lucide-react'
 import DatePicker from '../../components/DatePicker'
 import SearchableSelect from '../../components/SearchableSelect'
 import SizeTextInput from '../../components/SizeTextInput'
+import { listInventoryItems, type InventoryItem } from '../../services/inventoryService'
 import {
   archiveLogCategory,
   archiveLogItem,
@@ -74,9 +75,92 @@ const COST_MODES: { value: LogCostMode; label: string; description: string }[] =
   { value: 'manual_total', label: 'Manual total', description: 'The team enters total cost directly in the daily-entry schema.' },
 ]
 
+type InventoryLinkMode = 'stock' | 'usage' | 'custom'
+
+type InventoryLinkDraft = {
+  inventoryItemId: string
+  quantityMode: InventoryLinkMode
+  quantityUnit: string
+  usagePerQuantity: string
+}
+
+function defaultInventoryLinkDraft(): InventoryLinkDraft {
+  return {
+    inventoryItemId: '',
+    quantityMode: 'stock',
+    quantityUnit: '',
+    usagePerQuantity: '1',
+  }
+}
+
+function findInventoryItemById(inventoryItems: InventoryItem[], itemId: string) {
+  return inventoryItems.find((item) => item.item_id === itemId)
+}
+
+function usageRatioForInventoryItem(item?: InventoryItem | null) {
+  if (!item?.usage_unit || !item.usage_units_per_stock_unit || item.usage_units_per_stock_unit <= 0) {
+    return null
+  }
+  return 1 / item.usage_units_per_stock_unit
+}
+
+function inferInventoryLinkDraft(link: LogItem['inventory_link'], inventoryItems: InventoryItem[]): InventoryLinkDraft {
+  if (!link?.inventory_item_id) return defaultInventoryLinkDraft()
+  const inventoryItem = findInventoryItemById(inventoryItems, link.inventory_item_id)
+  const usageRatio = usageRatioForInventoryItem(inventoryItem)
+  const quantityUnit = link.quantity_unit || inventoryItem?.unit || ''
+  const isStockMode = quantityUnit === (inventoryItem?.unit ?? quantityUnit) && Math.abs(link.usage_per_quantity - 1) < 0.000001
+  const isUsageMode = Boolean(
+    inventoryItem?.usage_unit &&
+    quantityUnit === inventoryItem.usage_unit &&
+    usageRatio != null &&
+    Math.abs(link.usage_per_quantity - usageRatio) < 0.000001,
+  )
+
+  return {
+    inventoryItemId: link.inventory_item_id,
+    quantityMode: isStockMode ? 'stock' : isUsageMode ? 'usage' : 'custom',
+    quantityUnit,
+    usagePerQuantity: String(link.usage_per_quantity),
+  }
+}
+
+function buildInventoryLinkPayload(draft: InventoryLinkDraft, inventoryItems: InventoryItem[]) {
+  if (!draft.inventoryItemId) return null
+  const inventoryItem = findInventoryItemById(inventoryItems, draft.inventoryItemId)
+  if (!inventoryItem) return null
+
+  if (draft.quantityMode === 'usage') {
+    const usageRatio = usageRatioForInventoryItem(inventoryItem)
+    if (usageRatio == null || !inventoryItem.usage_unit) return null
+    return {
+      inventory_item_id: draft.inventoryItemId,
+      quantity_unit: inventoryItem.usage_unit,
+      usage_per_quantity: usageRatio,
+    }
+  }
+
+  if (draft.quantityMode === 'stock') {
+    return {
+      inventory_item_id: draft.inventoryItemId,
+      quantity_unit: inventoryItem.unit,
+      usage_per_quantity: 1,
+    }
+  }
+
+  return {
+    inventory_item_id: draft.inventoryItemId,
+    quantity_unit: draft.quantityUnit.trim() || inventoryItem.unit,
+    usage_per_quantity: Number(draft.usagePerQuantity || 0),
+  }
+}
+
 export default function LogTypeDetailPage() {
   const { id } = useParams<{ id: string }>()
   const navigate = useNavigate()
+  const [searchParams] = useSearchParams()
+  const focusedCategoryId = searchParams.get('category')
+  const focusedItemId = searchParams.get('item')
 
   const [logType, setLogType] = useState<LogType | null>(null)
   const [categories, setCategories] = useState<LogCategory[]>([])
@@ -109,14 +193,19 @@ export default function LogTypeDetailPage() {
   const [savingItemId, setSavingItemId] = useState<string | null>(null)
   const [itemSearchByCategory, setItemSearchByCategory] = useState<Record<string, string>>({})
   const [categorySearch, setCategorySearch] = useState('')
+  const [inventoryItems, setInventoryItems] = useState<InventoryItem[]>([])
+  const [itemInventoryLinksByCategory, setItemInventoryLinksByCategory] = useState<Record<string, InventoryLinkDraft>>({})
+  const [editingItemInventoryLink, setEditingItemInventoryLink] = useState<InventoryLinkDraft>(defaultInventoryLinkDraft())
+  const [highlightedItemId, setHighlightedItemId] = useState<string | null>(null)
 
   const fetchAll = async () => {
     if (!id) return
     try {
-      const [ltRes, catRes, pricingRuleRes] = await Promise.all([
+      const [ltRes, catRes, pricingRuleRes, inventoryRes] = await Promise.all([
         getLogType(id),
         listLogCategories(id, { include_archived: true }),
         getPricingRule(id),
+        listInventoryItems(),
       ])
       const nextLogType = ltRes.data.data
       const itemSchema = getItemSchema(nextLogType)
@@ -131,6 +220,7 @@ export default function LogTypeDetailPage() {
       ]
       const nextCategories = catRes.data.data
       const nextPricingRule = pricingRuleRes.data.data
+      setInventoryItems(inventoryRes.data.data)
       setLogType(nextLogType)
       setCategories(nextCategories)
       setPricingRule(nextPricingRule)
@@ -167,12 +257,29 @@ export default function LogTypeDetailPage() {
         })
         return next
       })
+      setItemInventoryLinksByCategory((prev) => {
+        const next = { ...prev }
+        nextCategories.forEach((cat) => {
+          if (!next[cat.id]) next[cat.id] = defaultInventoryLinkDraft()
+        })
+        return next
+      })
     } finally {
       setLoading(false)
     }
   }
 
   useEffect(() => { void fetchAll() }, [id])
+
+  useEffect(() => {
+    if (!focusedItemId) return
+    const target = document.getElementById(`log-item-${focusedItemId}`)
+    if (!target) return
+    target.scrollIntoView({ behavior: 'smooth', block: 'center' })
+    setHighlightedItemId(focusedItemId)
+    const timeout = window.setTimeout(() => setHighlightedItemId((current) => current === focusedItemId ? null : current), 2600)
+    return () => window.clearTimeout(timeout)
+  }, [focusedItemId, itemsByCategory])
 
   const itemSchema = useMemo(() => getItemSchema(logType), [logType])
   const entrySchema = useMemo(() => getEntrySchema(logType), [logType])
@@ -442,6 +549,17 @@ export default function LogTypeDetailPage() {
     }))
   }
 
+  const updateItemInventoryLinkDraft = (categoryId: string, patch: Partial<InventoryLinkDraft>) => {
+    setItemInventoryLinksByCategory((prev) => ({
+      ...prev,
+      [categoryId]: {
+        ...defaultInventoryLinkDraft(),
+        ...(prev[categoryId] ?? {}),
+        ...patch,
+      },
+    }))
+  }
+
   const handleAddItem = async (e: React.FormEvent<HTMLFormElement>, categoryId: string) => {
     e.preventDefault()
     if (!logType) return
@@ -464,8 +582,13 @@ export default function LogTypeDetailPage() {
         label: field.label,
         value: normalizeFieldDraftValue(field, draft[field.field_id]),
       }))
-      await createLogItem(categoryId, { fields })
+      const inventoryLinkDraft = itemInventoryLinksByCategory[categoryId] ?? defaultInventoryLinkDraft()
+      await createLogItem(categoryId, {
+        fields,
+        inventory_link: buildInventoryLinkPayload(inventoryLinkDraft, inventoryItems),
+      })
       setItemDraftsByCategory((prev) => ({ ...prev, [categoryId]: initialItemDraft(itemSchema) }))
+      setItemInventoryLinksByCategory((prev) => ({ ...prev, [categoryId]: defaultInventoryLinkDraft() }))
       await fetchAll()
     } finally {
       setAddingItemFor(null)
@@ -475,11 +598,13 @@ export default function LogTypeDetailPage() {
   const startEditingItem = (item: LogItem) => {
     setEditingItemId(item.id)
     setEditingItemValues(Object.fromEntries(item.fields.map((field) => [field.field_id, field.value])))
+    setEditingItemInventoryLink(inferInventoryLinkDraft(item.inventory_link, inventoryItems))
   }
 
   const cancelEditingItem = () => {
     setEditingItemId(null)
     setEditingItemValues({})
+    setEditingItemInventoryLink(defaultInventoryLinkDraft())
   }
 
   const saveEditingItem = async (item: LogItem) => {
@@ -502,7 +627,10 @@ export default function LogTypeDetailPage() {
         label: field.label,
         value: normalizeFieldDraftValue(field, editingItemValues[field.field_id]),
       }))
-      await updateLogItem(item.id, { fields })
+      await updateLogItem(item.id, {
+        fields,
+        inventory_link: buildInventoryLinkPayload(editingItemInventoryLink, inventoryItems),
+      })
       cancelEditingItem()
       await fetchAll()
     } finally {
@@ -1052,6 +1180,9 @@ export default function LogTypeDetailPage() {
                     <div className="flex-1 min-w-0">
                       <span className="font-medium text-[13px]" style={{ color: 'var(--ink)' }}>{category.name}</span>
                       {category.status === 'archived' && <span className="chip chip-bad ml-2">Archived</span>}
+                      {focusedCategoryId === category.id && (
+                        <span className="chip ml-2" style={{ background: 'var(--accent-wash)', color: 'var(--accent-ink)' }}>Linked from inventory</span>
+                      )}
                       {category.description && (
                         <span className="text-[12px] ml-2" style={{ color: 'var(--ink-4)' }}>{category.description}</span>
                       )}
@@ -1113,6 +1244,11 @@ export default function LogTypeDetailPage() {
                             </div>
                           ))}
                         </div>
+                        <InventoryLinkEditor
+                          draft={itemInventoryLinksByCategory[category.id] ?? defaultInventoryLinkDraft()}
+                          inventoryItems={inventoryItems}
+                          onChange={(patch) => updateItemInventoryLinkDraft(category.id, patch)}
+                        />
                         <div className="flex justify-end">
                           <button
                             type="submit"
@@ -1162,6 +1298,8 @@ export default function LogTypeDetailPage() {
                                       {field.label}
                                     </th>
                                   ))}
+                                <th className="px-3 py-2 text-left eyebrow">Inventory link</th>
+                                <th className="px-3 py-2 text-left eyebrow">Usage / qty</th>
                                 <th className="px-3 py-2 text-right eyebrow">Entries</th>
                                 <th className="px-3 py-2 text-right eyebrow">Actions</th>
                               </tr>
@@ -1173,7 +1311,17 @@ export default function LogTypeDetailPage() {
                               ).map((item) => {
                                 const isEditing = editingItemId === item.id
                                 return (
-                                  <tr key={item.id} style={{ borderTop: '1px solid var(--line-2)' }}>
+                                  <tr
+                                    id={`log-item-${item.id}`}
+                                    key={item.id}
+                                    style={highlightedItemId === item.id
+                                      ? {
+                                          borderTop: '1px solid var(--line-2)',
+                                          background: 'color-mix(in oklab, var(--accent) 10%, white)',
+                                          boxShadow: 'inset 4px 0 0 var(--accent)',
+                                        }
+                                      : { borderTop: '1px solid var(--line-2)' }}
+                                  >
                                     <td className="px-3 py-3 align-top" style={{ color: 'var(--ink)', fontWeight: 500 }}>
                                       {isEditing ? (
                                         <FieldInput
@@ -1184,6 +1332,9 @@ export default function LogTypeDetailPage() {
                                       ) : (
                                         <div className="flex items-center gap-2">
                                           <span>{item.name}</span>
+                                          {highlightedItemId === item.id && (
+                                            <span className="chip" style={{ background: 'var(--accent-wash)', color: 'var(--accent-ink)' }}>Inventory link</span>
+                                          )}
                                           {item.status === 'archived' && <span className="chip chip-bad">Archived</span>}
                                         </div>
                                       )}
@@ -1208,6 +1359,40 @@ export default function LogTypeDetailPage() {
                                           </td>
                                         )
                                       })}
+                                    <td className="px-3 py-3 align-top" style={{ color: 'var(--ink-3)' }}>
+                                      {isEditing ? (
+                                        <InventoryLinkEditor
+                                          draft={editingItemInventoryLink}
+                                          inventoryItems={inventoryItems}
+                                          compact
+                                          onChange={(patch) => setEditingItemInventoryLink((prev) => ({ ...prev, ...patch }))}
+                                        />
+                                      ) : item.inventory_link ? (
+                                        <div>
+                                          <div style={{ color: 'var(--ink)' }}>{item.inventory_link.inventory_item_name}</div>
+                                          <div className="text-[11px] numeral" style={{ color: 'var(--ink-4)' }}>
+                                            {item.inventory_link.inventory_item_id}
+                                          </div>
+                                        </div>
+                                      ) : (
+                                        <span style={{ color: 'var(--ink-5)' }}>—</span>
+                                      )}
+                                    </td>
+                                    <td className="px-3 py-3 align-top" style={{ color: 'var(--ink-3)' }}>
+                                      {isEditing ? (
+                                        <span style={{ color: 'var(--ink-4)' }}>
+                                          {editingItemInventoryLink.inventoryItemId
+                                            ? editingItemInventoryLink.quantityMode === 'custom'
+                                              ? `${editingItemInventoryLink.usagePerQuantity || '—'} stock unit per ${editingItemInventoryLink.quantityUnit || 'qty'}`
+                                              : `${buildInventoryLinkPayload(editingItemInventoryLink, inventoryItems)?.usage_per_quantity ?? '—'} ${(findInventoryItemById(inventoryItems, editingItemInventoryLink.inventoryItemId)?.unit ?? 'stock unit')} per ${(buildInventoryLinkPayload(editingItemInventoryLink, inventoryItems)?.quantity_unit ?? 'qty')}`
+                                            : '—'}
+                                        </span>
+                                      ) : item.inventory_link ? (
+                                        `${item.inventory_link.usage_per_quantity} ${item.inventory_link.inventory_unit} per ${item.inventory_link.quantity_unit}`
+                                      ) : (
+                                        <span style={{ color: 'var(--ink-5)' }}>—</span>
+                                      )}
+                                    </td>
                                     <td className="px-3 py-3 text-right align-top" style={{ color: 'var(--ink-4)' }}>
                                       {item.entry_count} {item.entry_count === 1 ? 'entry' : 'entries'}
                                     </td>
@@ -1438,6 +1623,133 @@ function PricingRuleRatesTable({
           ))}
         </tbody>
       </table>
+    </div>
+  )
+}
+
+function InventoryLinkEditor({
+  draft,
+  inventoryItems,
+  onChange,
+  compact = false,
+}: {
+  draft: InventoryLinkDraft
+  inventoryItems: InventoryItem[]
+  onChange: (patch: Partial<InventoryLinkDraft>) => void
+  compact?: boolean
+}) {
+  const selectedInventoryItem = findInventoryItemById(inventoryItems, draft.inventoryItemId)
+  const hasUsagePreset = Boolean(
+    selectedInventoryItem?.usage_unit &&
+    selectedInventoryItem.usage_units_per_stock_unit &&
+    selectedInventoryItem.usage_units_per_stock_unit > 0,
+  )
+  const resolvedLink = buildInventoryLinkPayload(draft, inventoryItems)
+
+  return (
+    <div className="space-y-2">
+      <div className="space-y-1.5">
+        {!compact && (
+          <label className="text-[11px] font-medium" style={{ color: 'var(--ink-3)' }}>
+            Linked inventory item
+          </label>
+        )}
+        <SearchableSelect
+          value={draft.inventoryItemId}
+          onChange={(value) => {
+            const inventoryItem = findInventoryItemById(inventoryItems, value)
+            onChange({
+              inventoryItemId: value,
+              quantityMode: inventoryItem?.usage_unit ? 'usage' : 'stock',
+              quantityUnit: inventoryItem?.usage_unit || inventoryItem?.unit || '',
+              usagePerQuantity: inventoryItem?.usage_unit && inventoryItem.usage_units_per_stock_unit
+                ? String(1 / inventoryItem.usage_units_per_stock_unit)
+                : '1',
+            })
+          }}
+          options={inventoryItems.map((item) => ({
+            value: item.item_id,
+            label: item.name,
+            keywords: [item.item_id, item.category ?? '', item.sku ?? ''],
+          }))}
+          placeholder="Optional inventory link"
+          searchPlaceholder="Search inventory…"
+          emptyMessage="No inventory items found"
+        />
+      </div>
+
+      {selectedInventoryItem && (
+        <>
+          <div className={`grid gap-2 ${compact ? '' : 'md:grid-cols-[180px_minmax(0,1fr)]'}`}>
+            <div className="space-y-1.5">
+              {!compact && (
+                <label className="text-[11px] font-medium" style={{ color: 'var(--ink-3)' }}>
+                  Log quantity means
+                </label>
+              )}
+              <select
+                className="input"
+                value={draft.quantityMode}
+                onChange={(e) => onChange({ quantityMode: e.target.value as InventoryLinkMode })}
+              >
+                <option value="stock">{selectedInventoryItem.unit}</option>
+                {hasUsagePreset && (
+                  <option value="usage">{selectedInventoryItem.usage_unit}</option>
+                )}
+                <option value="custom">Custom</option>
+              </select>
+            </div>
+
+            {draft.quantityMode === 'custom' ? (
+              <div className={`grid gap-2 ${compact ? '' : 'md:grid-cols-[minmax(0,1fr)_180px]'}`}>
+                <div className="space-y-1.5">
+                  {!compact && (
+                    <label className="text-[11px] font-medium" style={{ color: 'var(--ink-3)' }}>
+                      Quantity unit
+                    </label>
+                  )}
+                  <input
+                    type="text"
+                    className="input"
+                    value={draft.quantityUnit}
+                    onChange={(e) => onChange({ quantityUnit: e.target.value })}
+                    placeholder={`e.g. ${selectedInventoryItem.usage_unit || 'handle'}`}
+                  />
+                </div>
+                <div className="space-y-1.5">
+                  {!compact && (
+                    <label className="text-[11px] font-medium" style={{ color: 'var(--ink-3)' }}>
+                      Stock used per qty
+                    </label>
+                  )}
+                  <input
+                    type="number"
+                    min="0"
+                    step="any"
+                    className="input numeral"
+                    value={draft.usagePerQuantity}
+                    onChange={(e) => onChange({ usagePerQuantity: e.target.value })}
+                    placeholder="1"
+                  />
+                </div>
+              </div>
+            ) : (
+              <div className="rounded-lg px-3 py-2 text-[11.5px]" style={{ background: 'var(--bg-sunken)', color: 'var(--ink-3)' }}>
+                {draft.quantityMode === 'stock'
+                  ? `1 logged ${selectedInventoryItem.unit} will deduct 1 ${selectedInventoryItem.unit} from inventory.`
+                  : `1 logged ${selectedInventoryItem.usage_unit} will deduct ${resolvedLink?.usage_per_quantity ?? '—'} ${selectedInventoryItem.unit} from inventory.`}
+              </div>
+            )}
+          </div>
+
+          <div className="text-[11.5px]" style={{ color: 'var(--ink-4)' }}>
+            Stock is tracked in <strong style={{ color: 'var(--ink-2)' }}>{selectedInventoryItem.unit}</strong>.
+            {hasUsagePreset
+              ? ` Inventory says 1 ${selectedInventoryItem.unit} = ${selectedInventoryItem.usage_units_per_stock_unit} ${selectedInventoryItem.usage_unit}.`
+              : ' Add a usage unit on the inventory item if you want piece-level deduction without custom math.'}
+          </div>
+        </>
+      )}
     </div>
   )
 }
