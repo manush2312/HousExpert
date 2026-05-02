@@ -234,7 +234,7 @@ func createLogItem(c *gin.Context) {
 
 	item, err := services.CreateLogItem(input)
 	if err != nil {
-		utils.InternalError(c, err.Error())
+		utils.BadRequest(c, err.Error())
 		return
 	}
 	utils.Created(c, item)

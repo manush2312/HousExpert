@@ -53,6 +53,7 @@ func main() {
 	handlers.RegisterProjectRoutes(v1)
 	handlers.RegisterLogRoutes(v1)
 	handlers.RegisterProductRoutes(v1)
+	handlers.RegisterInventoryRoutes(v1)
 	handlers.RegisterQuotationRoutes(v1)
 	handlers.RegisterExportRoutes(v1)
 

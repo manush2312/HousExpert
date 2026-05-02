@@ -305,7 +305,7 @@ func (p *pdfWriter) drawQuotTableHeader(y float64) float64 {
 		{qCols.desc, "DESCRIPTION / NOTE", "L"},
 		{qCols.size, "SIZE", "L"},
 		{qCols.sqft, "SQ.FT", "R"},
-		{qCols.qty, "QTY", "R"},
+		{qCols.qty, "QTY/R.Ft", "R"},
 		{qCols.rate, "RATE", "R"},
 		{qCols.amount, "AMOUNT", "R"},
 	}
@@ -364,7 +364,7 @@ func (p *pdfWriter) drawQuotItemRow(y float64, idx int, item models.QuotationIte
 
 	if hasNote {
 		p.setFont("", 7)
-		p.setColor(cINK4)
+		p.setColor(cINK2)
 		p.cell(qCols.desc.x+qpX, line2Y, qCols.desc.w-qpX*2,
 			p.truncate("Note: "+item.Note, qCols.desc.w-qpX*2), "L")
 	}
@@ -372,10 +372,10 @@ func (p *pdfWriter) drawQuotItemRow(y float64, idx int, item models.QuotationIte
 	// Size
 	p.setFont("", 8)
 	if item.Size != "" {
-		p.setColor(cINK3)
+		p.setColor(cINK2)
 		p.cell(qCols.size.x+qpX, singleY, qCols.size.w-qpX, item.Size, "L")
 	} else {
-		p.setColor(cINK5)
+		p.setColor(cINK3)
 		p.cell(qCols.size.x+qpX, singleY, qCols.size.w-qpX, p.dash, "L")
 	}
 
@@ -385,7 +385,7 @@ func (p *pdfWriter) drawQuotItemRow(y float64, idx int, item models.QuotationIte
 		p.setColor(cINK2)
 		p.cell(qCols.sqft.x, singleY, qCols.sqft.w-qpX, formatNum(*item.Sqft), "R")
 	} else {
-		p.setColor(cINK5)
+		p.setColor(cINK3)
 		p.cell(qCols.sqft.x, singleY, qCols.sqft.w-qpX, p.dash, "R")
 	}
 
@@ -396,7 +396,7 @@ func (p *pdfWriter) drawQuotItemRow(y float64, idx int, item models.QuotationIte
 
 	// Rate
 	p.setFont("", 8)
-	p.setColor(cINK2)
+	p.setColor(cINK)
 	p.cell(qCols.rate.x, singleY, qCols.rate.w-qpX, p.rupee+" "+formatNum(item.Rate), "R")
 
 	// Amount
@@ -452,7 +452,7 @@ func (p *pdfWriter) drawQuotNotes(y float64, notes string) {
 	doc.CellFormat(qcw, 5, "Notes", "", 1, "L", false, 0, "")
 
 	p.setFont("", 8)
-	p.setColor(cINK3)
+	p.setColor(cINK2)
 	doc.SetXY(qml, doc.GetY()+1)
 	doc.MultiCell(qcw, 4.5, notes, "", "L", false)
 }
