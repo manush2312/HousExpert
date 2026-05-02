@@ -51,6 +51,10 @@ func NextID(entity string) (string, error) {
 		return fmt.Sprintf("PRD-%03d", result.Seq), nil
 	case "quotation":
 		return fmt.Sprintf("QT-%03d", result.Seq), nil
+	case "inventory_item":
+		return fmt.Sprintf("INV-%03d", result.Seq), nil
+	case "inventory_movement":
+		return fmt.Sprintf("MVT-%03d", result.Seq), nil
 	default:
 		return fmt.Sprintf("%s-%03d", entity, result.Seq), nil
 	}

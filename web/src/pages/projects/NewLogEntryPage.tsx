@@ -54,22 +54,35 @@ export default function NewLogEntryPage() {
   const entrySchema = getEntrySchema(selectedType)
   const costMode = getEffectiveCostMode(selectedType)
   const selectedItem = items.find((item) => item.id === selectedItemId)
-  const quantityVisible = costMode === 'quantity_x_unit_cost'
-  const quantityRequired = quantityVisible && isQuantityRequired(entrySchema, selectedItem?.fields ?? [])
+  const inventoryLinked = Boolean(selectedItem?.inventory_link)
+  const inventoryQuantityUnit = selectedItem?.inventory_link?.quantity_unit?.trim()
+  const quantityVisible = costMode === 'quantity_x_unit_cost' || inventoryLinked
+  const quantityRequired = quantityVisible && (isQuantityRequired(entrySchema, selectedItem?.fields ?? []) || inventoryLinked)
   const parsedQuantity = parseOptionalNumber(quantity)
   const sizeFieldLabel = findSizeFieldLabel(entrySchema, selectedItem?.fields ?? [])
   const totalCost = parsedQuantity != null
     ? computeLogTotalCost(costMode, entrySchema, selectedItem?.fields ?? [], fieldValues, parsedQuantity, pricingRule)
     : computeLogTotalCost(costMode, entrySchema, selectedItem?.fields ?? [], fieldValues, null, pricingRule)
   const visibleEntryFields = getVisibleEntryFields(entrySchema, costMode)
-  const quantityLabel = sizeFieldLabel ? 'Quantity' : pricingRule ? 'Size / quantity' : 'Quantity'
+  const quantityLabel = sizeFieldLabel
+    ? `Quantity${inventoryQuantityUnit ? ` (${inventoryQuantityUnit})` : ''}`
+    : pricingRule
+    ? 'Size / quantity'
+    : inventoryLinked && inventoryQuantityUnit
+      ? `Quantity (${inventoryQuantityUnit})`
+      : 'Quantity'
   const quantityHint = sizeFieldLabel
     ? `${sizeFieldLabel} will be multiplied with this quantity and the matched rate`
     : pricingRule
     ? 'Enter the measurable amount used for this log, such as square feet or units'
+    : inventoryLinked
+      ? `Enter quantity in ${inventoryQuantityUnit || 'the linked unit'}. This entry will consume stock from ${selectedItem?.inventory_link?.inventory_item_name}.`
     : quantityRequired
       ? 'required for costed logs'
       : undefined
+  const inventoryConsumption = inventoryLinked && parsedQuantity != null
+    ? parsedQuantity * (selectedItem?.inventory_link?.usage_per_quantity ?? 0)
+    : null
 
   useEffect(() => {
     if (!projectId) return
@@ -284,6 +297,13 @@ export default function NewLogEntryPage() {
                       .map((field) => `${field.label}: ${displayValue(field.value)}`)
                       .join(' · ') || 'No saved item details.'}
                   </div>
+                  {selectedItem.inventory_link && (
+                    <div className="mt-2" style={{ color: 'var(--accent-ink)' }}>
+                      Linked inventory: <strong>{selectedItem.inventory_link.inventory_item_name}</strong>
+                      {' · '}
+                      {selectedItem.inventory_link.usage_per_quantity} {selectedItem.inventory_link.inventory_unit} per {selectedItem.inventory_link.quantity_unit}
+                    </div>
+                  )}
                 </div>
               )}
 
@@ -382,6 +402,16 @@ export default function NewLogEntryPage() {
                 <div className="flex items-start gap-2 text-[12px]">
                   <span className="shrink-0 w-28 truncate" style={{ color: 'var(--ink-4)' }}>Item</span>
                   <span style={{ color: 'var(--ink)', fontWeight: 500 }}>{selectedItem.name}</span>
+                </div>
+              )}
+              {selectedItem?.inventory_link && (
+                <div className="flex items-start gap-2 text-[12px]">
+                  <span className="shrink-0 w-28 truncate" style={{ color: 'var(--ink-4)' }}>Inventory</span>
+                  <span style={{ color: inventoryConsumption == null ? 'var(--ink-5)' : 'var(--ink)', fontWeight: inventoryConsumption == null ? 400 : 500 }}>
+                    {inventoryConsumption == null
+                      ? `${selectedItem.inventory_link.inventory_item_name} linked`
+                      : `${inventoryConsumption} ${selectedItem.inventory_link.inventory_unit} from ${selectedItem.inventory_link.inventory_item_name} for ${parsedQuantity} ${selectedItem.inventory_link.quantity_unit}`}
+                  </span>
                 </div>
               )}
               {visibleEntryFields.map((f) => {

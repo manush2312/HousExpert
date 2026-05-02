@@ -329,9 +329,12 @@ export default function ProjectDetailPage() {
       alert(`Please complete "${missingRequired.label}" before saving.`)
       return
     }
-    if (costMode === 'quantity_x_unit_cost' && isQuantityRequired(entrySchema, selectedItem?.fields ?? []) && parseOptionalNumber(draft.quantity) == null) {
-      alert('Please add quantity before saving.')
-      return
+    const inventoryLinked = Boolean(selectedItem?.inventory_link)
+    if ((costMode === 'quantity_x_unit_cost' && isQuantityRequired(entrySchema, selectedItem?.fields ?? [])) || inventoryLinked) {
+      if (parseOptionalNumber(draft.quantity) == null) {
+        alert('Please add quantity before saving.')
+        return
+      }
     }
 
     const parsedQuantity = parseOptionalNumber(draft.quantity)
@@ -437,6 +440,14 @@ export default function ProjectDetailPage() {
       const costMode = getEffectiveCostMode(activeLogType)
       const selectedItem = (itemsByCategory[editingDraft.category_id] ?? []).find((item) => item.id === editingDraft.item_id)
       const parsedQuantity = parseOptionalNumber(editingDraft.quantity)
+      const inventoryLinked = Boolean(selectedItem?.inventory_link)
+      if ((costMode === 'quantity_x_unit_cost' && isQuantityRequired(entrySchema, selectedItem?.fields ?? [])) || inventoryLinked) {
+        if (parsedQuantity == null) {
+          alert('Please add quantity before saving.')
+          setEditSaving(false)
+          return
+        }
+      }
       const totalCost = computeLogTotalCost(
         costMode,
         entrySchema,
@@ -1095,7 +1106,9 @@ function LogsSection({
                               </div>
                             </td>
                             <td className="max-w-[180px] truncate px-4 py-2.5" style={{ color: 'var(--ink-3)' }}>{entry.notes || <Null />}</td>
-                            <td className="px-4 py-2.5" style={{ color: 'var(--ink-3)' }}>{entry.created_by}</td>
+                            <td className="px-4 py-2.5" style={{ color: 'var(--ink-3)' }}>
+                              {isPlaceholderCreator(entry.created_by) ? 'null' : entry.created_by}
+                            </td>
                             <td className="px-4 py-2.5">
                               <div className="flex items-center justify-end gap-0.5 opacity-0 transition-opacity group-hover:opacity-100">
                                 <button onClick={() => onEdit(entry)} className="btn btn-ghost btn-sm btn-icon" title="Edit">
@@ -1178,23 +1191,33 @@ function InlineDraftComposer({
   const costMode = getEffectiveCostMode(logType)
   const itemSelectorField = findItemSelectorField(itemSchema)
   const itemSelectionEnabled = Boolean(draft.category_id && items.length > 0)
-  const quantityVisible = costMode === 'quantity_x_unit_cost'
-  const visibleFields = getVisibleEntryFields(entrySchema, costMode)
   const selectedItem = items.find((item) => item.id === draft.item_id)
+  const inventoryLinked = Boolean(selectedItem?.inventory_link)
+  const inventoryQuantityUnit = selectedItem?.inventory_link?.quantity_unit?.trim()
+  const quantityVisible = costMode === 'quantity_x_unit_cost' || inventoryLinked
+  const visibleFields = getVisibleEntryFields(entrySchema, costMode)
   const missingRequired = entrySchema.find((field) => field.required && isDraftFieldEmpty(field, draft.values[field.field_id]))
-  const quantityRequired = quantityVisible && isQuantityRequired(entrySchema, selectedItem?.fields ?? [])
+  const quantityRequired = quantityVisible && (isQuantityRequired(entrySchema, selectedItem?.fields ?? []) || inventoryLinked)
   const parsedQuantity = parseOptionalNumber(draft.quantity)
   const unitCost = findResolvedUnitCost(entrySchema, selectedItem?.fields ?? [], draft.values, pricingRule)
   const sizeFieldLabel = findSizeFieldLabel(entrySchema, selectedItem?.fields ?? [])
   const totalCost = computeLogTotalCost(costMode, entrySchema, selectedItem?.fields ?? [], draft.values, parsedQuantity, pricingRule)
   const missingQuantity = quantityRequired && parsedQuantity == null
   const canSave = !!draft.log_type_id && !!draft.category_id && !missingRequired && !missingQuantity && !saving
-  const quantityLabel = sizeFieldLabel ? 'Quantity' : pricingRule ? 'Size / quantity' : 'Quantity'
+  const quantityLabel = sizeFieldLabel
+    ? `Quantity${inventoryQuantityUnit ? ` (${inventoryQuantityUnit})` : ''}`
+    : pricingRule
+    ? 'Size / quantity'
+    : inventoryLinked && inventoryQuantityUnit
+      ? `Quantity (${inventoryQuantityUnit})`
+      : 'Quantity'
   const quantityHint = sizeFieldLabel
     ? `${sizeFieldLabel} will be multiplied with this quantity and the matched rate.`
     : pricingRule
     ? 'Enter the measurable amount here, such as square feet or units'
-    : 'Confirm the amount that should be multiplied by the rate.'
+    : inventoryLinked
+      ? `Enter quantity in ${inventoryQuantityUnit || 'the linked unit'}. This entry will consume stock from ${selectedItem?.inventory_link?.inventory_item_name}.`
+      : 'Confirm the amount that should be multiplied by the rate.'
   const completedSteps = [
     Boolean(draft.log_date && draft.log_type_id),
     Boolean(draft.category_id && (!itemSelectionEnabled || draft.item_id)),
@@ -1314,6 +1337,13 @@ function InlineDraftComposer({
                     .map((field) => `${field.label}: ${displayVal(field.value)}`)
                     .join(' · ') || 'Matching values have been filled where possible.'}
                 </div>
+                {selectedItem.inventory_link && (
+                  <div className="mt-2" style={{ color: 'var(--accent-ink)' }}>
+                    Linked inventory: <strong>{selectedItem.inventory_link.inventory_item_name}</strong>
+                    {' · '}
+                    {selectedItem.inventory_link.usage_per_quantity} {selectedItem.inventory_link.inventory_unit} per {selectedItem.inventory_link.quantity_unit}
+                  </div>
+                )}
               </div>
             )}
           </section>
@@ -2136,4 +2166,9 @@ function displayVal(value: unknown): string {
   if (value === true) return 'Yes'
   if (value === false) return 'No'
   return String(value)
+}
+
+function isPlaceholderCreator(value: string | undefined): boolean {
+  if (!value) return true
+  return /^0+$/.test(value.trim())
 }

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"strings"
 	"time"
 
@@ -42,15 +43,17 @@ type CreateLogCategoryInput struct {
 }
 
 type CreateLogItemInput struct {
-	LogTypeID   primitive.ObjectID  `json:"log_type_id"`
-	CategoryID  primitive.ObjectID  `json:"category_id"`
-	Description string              `json:"description"`
-	Fields      []models.FieldValue `json:"fields"`
-	CreatedBy   primitive.ObjectID  `json:"created_by"`
+	LogTypeID     primitive.ObjectID         `json:"log_type_id"`
+	CategoryID    primitive.ObjectID         `json:"category_id"`
+	Description   string                     `json:"description"`
+	Fields        []models.FieldValue        `json:"fields"`
+	InventoryLink *LogItemInventoryLinkInput `json:"inventory_link"`
+	CreatedBy     primitive.ObjectID         `json:"created_by"`
 }
 
 type UpdateLogItemInput struct {
-	Fields []models.FieldValue `json:"fields" binding:"required"`
+	Fields        []models.FieldValue        `json:"fields" binding:"required"`
+	InventoryLink *LogItemInventoryLinkInput `json:"inventory_link"`
 }
 
 type CreateLogEntryInput struct {
@@ -80,6 +83,12 @@ type LogListOptions struct {
 	IncludeArchived bool
 }
 
+type LogItemInventoryLinkInput struct {
+	InventoryItemID  string  `json:"inventory_item_id"`
+	QuantityUnit     string  `json:"quantity_unit"`
+	UsagePerQuantity float64 `json:"usage_per_quantity"`
+}
+
 // ── Collection helpers ────────────────────────────────────────────────────────
 
 func logTypeCol() *mongo.Collection     { return database.Collection("log_types") }
@@ -87,6 +96,94 @@ func logCategoryCol() *mongo.Collection { return database.Collection("log_catego
 func logItemCol() *mongo.Collection     { return database.Collection("log_items") }
 func logEntryCol() *mongo.Collection    { return database.Collection("log_entries") }
 func pricingRuleCol() *mongo.Collection { return database.Collection("pricing_rules") }
+
+func getProjectSnapshotByObjectID(projectOID primitive.ObjectID) (*models.Project, error) {
+	var project models.Project
+	err := projectCol().FindOne(context.Background(), bson.M{"_id": projectOID}).Decode(&project)
+	if errors.Is(err, mongo.ErrNoDocuments) {
+		return nil, fmt.Errorf("project not found")
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &project, nil
+}
+
+func resolveLogItemInventoryLink(input *LogItemInventoryLinkInput) (*models.LogItemInventoryLink, error) {
+	if input == nil || strings.TrimSpace(input.InventoryItemID) == "" {
+		return nil, nil
+	}
+	if input.UsagePerQuantity <= 0 {
+		return nil, fmt.Errorf("usage per quantity must be greater than 0")
+	}
+	item, err := GetInventoryItem(strings.TrimSpace(input.InventoryItemID))
+	if err != nil {
+		return nil, err
+	}
+	if item == nil {
+		return nil, fmt.Errorf("inventory item not found")
+	}
+	quantityUnit := strings.TrimSpace(input.QuantityUnit)
+	if quantityUnit == "" {
+		quantityUnit = item.Unit
+	}
+	return &models.LogItemInventoryLink{
+		InventoryItemID:   item.ItemID,
+		InventoryItemName: item.Name,
+		InventoryUnit:     item.Unit,
+		QuantityUnit:      quantityUnit,
+		UsagePerQuantity:  input.UsagePerQuantity,
+	}, nil
+}
+
+func usageRatioForInventoryItem(item *models.InventoryItem) (float64, bool) {
+	if item == nil {
+		return 0, false
+	}
+	if strings.TrimSpace(item.UsageUnit) == "" || item.UsageUnitsPerStockUnit <= 0 {
+		return 0, false
+	}
+	return 1 / item.UsageUnitsPerStockUnit, true
+}
+
+func shouldUseInventoryUsageFallback(link *models.LogItemInventoryLink, item *models.InventoryItem) bool {
+	if link == nil || item == nil {
+		return false
+	}
+	if _, ok := usageRatioForInventoryItem(item); !ok {
+		return false
+	}
+	quantityUnit := strings.TrimSpace(link.QuantityUnit)
+	if quantityUnit == "" {
+		quantityUnit = item.Unit
+	}
+	isLegacyStockMode := strings.EqualFold(quantityUnit, item.Unit) && (link.UsagePerQuantity <= 0 || math.Abs(link.UsagePerQuantity-1) < 0.000001)
+	return isLegacyStockMode
+}
+
+func effectiveLogItemInventoryLink(link *models.LogItemInventoryLink) (*models.LogItemInventoryLink, error) {
+	if link == nil || strings.TrimSpace(link.InventoryItemID) == "" {
+		return nil, nil
+	}
+	effective := *link
+	inventoryItem, err := GetInventoryItem(strings.TrimSpace(link.InventoryItemID))
+	if err != nil {
+		return nil, err
+	}
+	if inventoryItem == nil {
+		return &effective, nil
+	}
+	effective.InventoryItemID = inventoryItem.ItemID
+	effective.InventoryItemName = inventoryItem.Name
+	effective.InventoryUnit = inventoryItem.Unit
+	if shouldUseInventoryUsageFallback(link, inventoryItem) {
+		effective.QuantityUnit = inventoryItem.UsageUnit
+		effective.UsagePerQuantity = 1 / inventoryItem.UsageUnitsPerStockUnit
+	} else if strings.TrimSpace(effective.QuantityUnit) == "" {
+		effective.QuantityUnit = inventoryItem.Unit
+	}
+	return &effective, nil
+}
 
 // ── LogType ───────────────────────────────────────────────────────────────────
 
@@ -428,6 +525,10 @@ func CreateLogItem(input CreateLogItemInput) (*models.LogItem, error) {
 	if err != nil {
 		return nil, err
 	}
+	inventoryLink, err := resolveLogItemInventoryLink(input.InventoryLink)
+	if err != nil {
+		return nil, err
+	}
 
 	name := deriveItemName(itemSchemaForLogType(lt), normalizedFields)
 	if strings.TrimSpace(name) == "" {
@@ -441,6 +542,7 @@ func CreateLogItem(input CreateLogItemInput) (*models.LogItem, error) {
 		CategoryID:    input.CategoryID,
 		Name:          name,
 		Description:   input.Description,
+		InventoryLink: inventoryLink,
 		SchemaVersion: lt.CurrentVersion,
 		Fields:        normalizedFields,
 		Status:        models.LogItemActive,
@@ -482,6 +584,13 @@ func ListLogItems(categoryID string, opts LogListOptions) ([]models.LogItem, err
 	}
 	if items == nil {
 		items = []models.LogItem{}
+	}
+	for i := range items {
+		effectiveLink, err := effectiveLogItemInventoryLink(items[i].InventoryLink)
+		if err != nil {
+			return nil, err
+		}
+		items[i].InventoryLink = effectiveLink
 	}
 	return items, nil
 }
@@ -560,6 +669,10 @@ func UpdateLogItem(id string, input UpdateLogItemInput) (*models.LogItem, error)
 	if err != nil {
 		return nil, err
 	}
+	inventoryLink, err := resolveLogItemInventoryLink(input.InventoryLink)
+	if err != nil {
+		return nil, err
+	}
 
 	name := deriveItemName(itemSchemaForLogType(lt), normalizedFields)
 	if strings.TrimSpace(name) == "" {
@@ -574,6 +687,7 @@ func UpdateLogItem(id string, input UpdateLogItemInput) (*models.LogItem, error)
 		bson.M{"$set": bson.M{
 			"name":           name,
 			"fields":         normalizedFields,
+			"inventory_link": inventoryLink,
 			"schema_version": lt.CurrentVersion,
 			"updated_at":     time.Now(),
 		}},
@@ -595,6 +709,10 @@ func CreateLogEntry(projectOID primitive.ObjectID, input CreateLogEntryInput) (*
 	logDate, err := time.Parse("2006-01-02", input.LogDate)
 	if err != nil {
 		return nil, fmt.Errorf("invalid log_date — use YYYY-MM-DD format")
+	}
+	project, err := getProjectSnapshotByObjectID(projectOID)
+	if err != nil {
+		return nil, err
 	}
 
 	// Fetch log type for name snapshot + current schema version
@@ -627,6 +745,7 @@ func CreateLogEntry(projectOID primitive.ObjectID, input CreateLogEntryInput) (*
 	var itemID *primitive.ObjectID
 	var itemName string
 	var itemFields []models.FieldValue
+	var inventoryConsumption *models.InventoryConsumption
 	if input.ItemID != nil && !input.ItemID.IsZero() {
 		var item models.LogItem
 		if err := logItemCol().FindOne(context.Background(), bson.M{
@@ -642,28 +761,48 @@ func CreateLogEntry(projectOID primitive.ObjectID, input CreateLogEntryInput) (*
 		itemID = &item.ID
 		itemName = item.Name
 		itemFields = item.Fields
+		if item.InventoryLink != nil {
+			if quantity == nil {
+				return nil, fmt.Errorf("quantity is required when this item is linked to inventory")
+			}
+			effectiveLink, err := effectiveLogItemInventoryLink(item.InventoryLink)
+			if err != nil {
+				return nil, err
+			}
+			if effectiveLink == nil {
+				return nil, fmt.Errorf("inventory link is invalid")
+			}
+			inventoryConsumption = &models.InventoryConsumption{
+				InventoryItemID:   effectiveLink.InventoryItemID,
+				InventoryItemName: effectiveLink.InventoryItemName,
+				InventoryUnit:     effectiveLink.InventoryUnit,
+				UsagePerQuantity:  effectiveLink.UsagePerQuantity,
+				ConsumedQuantity:  *quantity * effectiveLink.UsagePerQuantity,
+			}
+		}
 	}
 	totalCost := computeEntryTotalCostForLogType(lt, normalizedFields, itemFields, quantity)
 
 	now := time.Now()
 	entry := &models.LogEntry{
-		ID:            primitive.NewObjectID(),
-		ProjectID:     projectOID,
-		LogTypeID:     input.LogTypeID,
-		LogTypeName:   lt.Name,
-		CategoryID:    input.CategoryID,
-		CategoryName:  cat.Name,
-		ItemID:        itemID,
-		ItemName:      itemName,
-		SchemaVersion: lt.CurrentVersion,
-		Quantity:      quantity,
-		TotalCost:     totalCost,
-		Fields:        normalizedFields,
-		LogDate:       logDate,
-		Notes:         input.Notes,
-		CreatedBy:     input.CreatedBy,
-		CreatedAt:     now,
-		UpdatedAt:     now,
+		ID:                   primitive.NewObjectID(),
+		ProjectID:            projectOID,
+		LogTypeID:            input.LogTypeID,
+		LogTypeName:          lt.Name,
+		CategoryID:           input.CategoryID,
+		CategoryName:         cat.Name,
+		ItemID:               itemID,
+		ItemName:             itemName,
+		SchemaVersion:        lt.CurrentVersion,
+		Quantity:             quantity,
+		TotalCost:            totalCost,
+		InventoryConsumption: inventoryConsumption,
+		Fields:               normalizedFields,
+		LogDate:              logDate,
+		Notes:                input.Notes,
+		CreatedBy:            input.CreatedBy,
+		CreatedAt:            now,
+		UpdatedAt:            now,
 	}
 	if entry.Fields == nil {
 		entry.Fields = []models.FieldValue{}
@@ -671,6 +810,24 @@ func CreateLogEntry(projectOID primitive.ObjectID, input CreateLogEntryInput) (*
 
 	if _, err = logEntryCol().InsertOne(context.Background(), entry); err != nil {
 		return nil, fmt.Errorf("insert log entry failed: %w", err)
+	}
+
+	if inventoryConsumption != nil && inventoryConsumption.ConsumedQuantity > 0 {
+		_, movementErr := CreateInventoryMovement(CreateInventoryMovementInput{
+			ItemID:          inventoryConsumption.InventoryItemID,
+			Type:            string(models.InventoryMovementOut),
+			Reason:          "log_consumption",
+			Quantity:        inventoryConsumption.ConsumedQuantity,
+			Party:           project.Name,
+			DocumentNumber:  project.ProjectID,
+			TransactionDate: entry.LogDate.Format("2006-01-02"),
+			Reference:       fmt.Sprintf("log-entry:%s", entry.ID.Hex()),
+			Notes:           fmt.Sprintf("%s · %s · %s", lt.Name, cat.Name, itemName),
+		})
+		if movementErr != nil {
+			_, _ = logEntryCol().DeleteOne(context.Background(), bson.M{"_id": entry.ID})
+			return nil, movementErr
+		}
 	}
 
 	// Keep category entry_count in sync (best-effort, non-fatal)
@@ -736,13 +893,28 @@ func UpdateLogEntry(entryOID primitive.ObjectID, input UpdateLogEntryInput) (*mo
 	set := bson.M{"updated_at": time.Now()}
 	var normalizedFields []models.FieldValue
 	var currentQuantity *float64
-	if input.Fields != nil {
-		var current models.LogEntry
+	var current models.LogEntry
+	loadedCurrent := false
+
+	loadCurrent := func() error {
+		if loadedCurrent {
+			return nil
+		}
 		if err := logEntryCol().FindOne(context.Background(), bson.M{"_id": entryOID}).Decode(&current); err != nil {
 			if errors.Is(err, mongo.ErrNoDocuments) {
-				return nil, nil
+				return nil
 			}
+			return err
+		}
+		loadedCurrent = true
+		return nil
+	}
+	if input.Fields != nil {
+		if err := loadCurrent(); err != nil {
 			return nil, err
+		}
+		if !loadedCurrent {
+			return nil, nil
 		}
 
 		var logType models.LogType
@@ -780,12 +952,11 @@ func UpdateLogEntry(entryOID primitive.ObjectID, input UpdateLogEntryInput) (*mo
 		set["quantity"] = quantity
 	}
 	if input.Quantity != nil && normalizedFields == nil {
-		var current models.LogEntry
-		if err := logEntryCol().FindOne(context.Background(), bson.M{"_id": entryOID}).Decode(&current); err != nil {
-			if errors.Is(err, mongo.ErrNoDocuments) {
-				return nil, nil
-			}
+		if err := loadCurrent(); err != nil {
 			return nil, err
+		}
+		if !loadedCurrent {
+			return nil, nil
 		}
 		var itemFields []models.FieldValue
 		if current.ItemID != nil {
@@ -799,6 +970,74 @@ func UpdateLogEntry(entryOID primitive.ObjectID, input UpdateLogEntryInput) (*mo
 			set["total_cost"] = computeEntryTotalCostForLogType(logType, current.Fields, itemFields, currentQuantity)
 		} else {
 			set["total_cost"] = computeEntryTotalCost(current.Fields, itemFields, currentQuantity, models.LogCostModeQuantityXUnitCost)
+		}
+	}
+	if input.Quantity != nil {
+		if err := loadCurrent(); err != nil {
+			return nil, err
+		}
+		if !loadedCurrent {
+			return nil, nil
+		}
+		project, err := getProjectSnapshotByObjectID(current.ProjectID)
+		if err != nil {
+			return nil, err
+		}
+		if current.InventoryConsumption != nil && currentQuantity != nil {
+			nextInventoryConsumption := &models.InventoryConsumption{
+				InventoryItemID:   current.InventoryConsumption.InventoryItemID,
+				InventoryItemName: current.InventoryConsumption.InventoryItemName,
+				InventoryUnit:     current.InventoryConsumption.InventoryUnit,
+				UsagePerQuantity:  current.InventoryConsumption.UsagePerQuantity,
+			}
+			if current.ItemID != nil {
+				var item models.LogItem
+				if err := logItemCol().FindOne(context.Background(), bson.M{"_id": *current.ItemID}).Decode(&item); err == nil {
+					effectiveLink, effectiveErr := effectiveLogItemInventoryLink(item.InventoryLink)
+					if effectiveErr != nil {
+						return nil, effectiveErr
+					}
+					if effectiveLink != nil {
+						nextInventoryConsumption.InventoryItemID = effectiveLink.InventoryItemID
+						nextInventoryConsumption.InventoryItemName = effectiveLink.InventoryItemName
+						nextInventoryConsumption.InventoryUnit = effectiveLink.InventoryUnit
+						nextInventoryConsumption.UsagePerQuantity = effectiveLink.UsagePerQuantity
+					}
+				}
+			}
+			nextConsumed := *currentQuantity * nextInventoryConsumption.UsagePerQuantity
+			delta := nextConsumed - current.InventoryConsumption.ConsumedQuantity
+			if delta > 0 {
+				if _, err := CreateInventoryMovement(CreateInventoryMovementInput{
+					ItemID:          nextInventoryConsumption.InventoryItemID,
+					Type:            string(models.InventoryMovementOut),
+					Reason:          "log_consumption",
+					Quantity:        delta,
+					Party:           project.Name,
+					DocumentNumber:  project.ProjectID,
+					TransactionDate: current.LogDate.Format("2006-01-02"),
+					Reference:       fmt.Sprintf("log-entry:%s", current.ID.Hex()),
+					Notes:           fmt.Sprintf("quantity update · %s · %s", current.LogTypeName, current.ItemName),
+				}); err != nil {
+					return nil, err
+				}
+			} else if delta < 0 {
+				if _, err := CreateInventoryMovement(CreateInventoryMovementInput{
+					ItemID:          nextInventoryConsumption.InventoryItemID,
+					Type:            string(models.InventoryMovementAdjustment),
+					Reason:          "log_reversal",
+					Quantity:        -delta,
+					Party:           project.Name,
+					DocumentNumber:  project.ProjectID,
+					TransactionDate: current.LogDate.Format("2006-01-02"),
+					Reference:       fmt.Sprintf("log-entry:%s", current.ID.Hex()),
+					Notes:           fmt.Sprintf("quantity rollback · %s · %s", current.LogTypeName, current.ItemName),
+				}); err != nil {
+					return nil, err
+				}
+			}
+			nextInventoryConsumption.ConsumedQuantity = nextConsumed
+			set["inventory_consumption"] = nextInventoryConsumption
 		}
 	}
 
@@ -827,6 +1066,26 @@ func DeleteLogEntry(entryOID primitive.ObjectID) error {
 	}
 	if err != nil {
 		return err
+	}
+
+	if entry.InventoryConsumption != nil && entry.InventoryConsumption.ConsumedQuantity > 0 {
+		project, err := getProjectSnapshotByObjectID(entry.ProjectID)
+		if err != nil {
+			return err
+		}
+		if _, err := CreateInventoryMovement(CreateInventoryMovementInput{
+			ItemID:          entry.InventoryConsumption.InventoryItemID,
+			Type:            string(models.InventoryMovementAdjustment),
+			Reason:          "log_reversal",
+			Quantity:        entry.InventoryConsumption.ConsumedQuantity,
+			Party:           project.Name,
+			DocumentNumber:  project.ProjectID,
+			TransactionDate: entry.LogDate.Format("2006-01-02"),
+			Reference:       fmt.Sprintf("log-entry:%s", entry.ID.Hex()),
+			Notes:           fmt.Sprintf("entry deleted · %s · %s", entry.LogTypeName, entry.ItemName),
+		}); err != nil {
+			return err
+		}
 	}
 
 	if _, err = logEntryCol().DeleteOne(context.Background(), bson.M{"_id": entryOID}); err != nil {
