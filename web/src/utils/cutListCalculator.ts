@@ -87,16 +87,20 @@ export function calculateCutList(
     width:    Math.round(bounds[i + 1] - fromLeft),
   }))
 
-  // ── Shelves (one board per section per shelf) ───────────────────────────
+  // ── Shelves (each shelf lives in exactly one section) ──────────────────
 
   if (shelves.length > 0) {
-    // Group sections by their width to consolidate identical pieces
-    const byWidth: Record<number, number> = {}
-    sections.forEach((s) => {
-      const shelfL = Math.round(s.width - T)   // butt-joint: shelf fits between panels
-      byWidth[shelfL] = (byWidth[shelfL] ?? 0) + shelves.length
+    // Group identical-length shelves to consolidate qty
+    const byLength: Record<number, number> = {}
+    shelves.forEach((shelf) => {
+      const sec = sections[shelf.sectionIndex]
+      if (!sec) return
+      const leftInset  = shelf.sectionIndex === 0               ? 0 : T
+      const rightInset = shelf.sectionIndex === sorted.length   ? 0 : T
+      const shelfL     = Math.round(sec.width - leftInset - rightInset)
+      byLength[shelfL] = (byLength[shelfL] ?? 0) + 1
     })
-    Object.entries(byWidth).forEach(([lenStr, qty]) => {
+    Object.entries(byLength).forEach(([lenStr, qty]) => {
       items.push({
         id: uid(), category: 'shelf', name: 'Shelf',
         length: Number(lenStr), width: Math.round(iD), thickness: T, qty,

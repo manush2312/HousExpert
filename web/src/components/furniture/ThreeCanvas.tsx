@@ -54,7 +54,7 @@ function Panel({ posX, posY, posZ, w, h, d, color, opacity = 1 }: PanelProps) {
 // ── Full furniture model ──────────────────────────────────────────────────────
 
 function FurnitureModel() {
-  const { outerBox, shelves, partitions, drawers, material, sectionConfigs } = useFurnitureStore()
+  const { outerBox, shelves, partitions, drawers, material, sectionConfigs, shelfPartitions } = useFurnitureStore()
 
   // useMemo must be called before any conditional return (Rules of Hooks)
   const sortedPartitions = useMemo(
@@ -117,16 +117,43 @@ function FurnitureModel() {
         />
       ))}
 
-      {/* ── Shelves (full interior width) ── */}
-      {shelves.map((shelf) => (
-        <Panel key={shelf.id}
-          posX={0}
-          posY={T + shelf.fromBottom}
-          posZ={0}
-          w={interiorW} h={T} d={interiorD}
-          color={dark}
-        />
-      ))}
+      {/* ── Shelf partitions (vertical dividers between shelves) ── */}
+      {shelfPartitions.map((sp) => {
+        const section = sections[sp.sectionIndex]
+        if (!section) return null
+        const panelH    = sp.toBottom - sp.fromBottom
+        const panelCentY = T + sp.fromBottom + panelH / 2
+        const panelCentX = -W / 2 + T + sp.fromLeft
+        return (
+          <Panel key={sp.id}
+            posX={panelCentX}
+            posY={panelCentY}
+            posZ={0}
+            w={T} h={panelH} d={interiorD}
+            color={col}
+          />
+        )
+      })}
+
+      {/* ── Shelves (section-specific) ── */}
+      {shelves.map((shelf) => {
+        const section = sections[shelf.sectionIndex]
+        if (!section) return null
+        // Wall-adjacent sides need no inset; partition-adjacent sides need T/2
+        const leftInset  = shelf.sectionIndex === 0                   ? 0 : T / 2
+        const rightInset = shelf.sectionIndex === sortedPartitions.length ? 0 : T / 2
+        const shelfW     = section.width - leftInset - rightInset
+        const shelfCentX = -W / 2 + T + section.fromLeft + leftInset + shelfW / 2
+        return (
+          <Panel key={shelf.id}
+            posX={shelfCentX}
+            posY={T + shelf.fromBottom}
+            posZ={0}
+            w={shelfW} h={T} d={interiorD}
+            color={dark}
+          />
+        )
+      })}
 
       {/* ── Drawers ── */}
       {drawers.map((drawer) => {

@@ -24,11 +24,20 @@ export interface OuterBox {
 export interface Shelf {
   id: string
   fromBottom: number   // mm from interior bottom
+  sectionIndex: number // which section this shelf belongs to (0 = leftmost)
 }
 
 export interface Partition {
   id: string
   fromLeft: number     // mm from interior left edge
+}
+
+export interface ShelfPartition {
+  id: string
+  sectionIndex: number  // which main section (between full-height partitions)
+  fromLeft: number      // mm from interior left
+  fromBottom: number    // mm from interior bottom (bottom of vertical span)
+  toBottom: number      // mm from interior bottom (top of vertical span)
 }
 
 export interface Drawer {
@@ -81,6 +90,7 @@ interface FurnitureState {
   partitions: Partition[]
   drawers: Drawer[]
   customPanels: CustomPanel[]
+  shelfPartitions: ShelfPartition[]
 
   // Per-section configuration (keyed by section index)
   sectionConfigs: Record<number, SectionConfig>
@@ -110,14 +120,16 @@ interface FurnitureState {
   setMaterialColor: (color: string) => void
 
   // Add elements
-  addShelf: (fromBottom: number) => void
+  addShelf: (fromBottom: number, sectionIndex: number) => void
   addPartition: (fromLeft: number) => void
   addDrawer: (sectionIndex: number, fromBottom: number, height: number) => void
+  addShelfPartition: (sectionIndex: number, fromLeft: number, fromBottom: number, toBottom: number) => void
 
   // Move elements (drag)
   moveShelf: (id: string, fromBottom: number) => void
   movePartition: (id: string, fromLeft: number) => void
   moveDrawer: (id: string, fromBottom: number) => void
+  moveShelfPartition: (id: string, fromLeft: number) => void
 
   // Custom panels
   addCustomPanel: (panel: Omit<CustomPanel, 'id'>) => void
@@ -161,6 +173,7 @@ export const useFurnitureStore = create<FurnitureState>((set, get) => ({
   partitions: [],
   drawers: [],
   customPanels: [],
+  shelfPartitions: [],
   sectionConfigs: {},
   mode: 'draw_box',
   selectedId: null,
@@ -223,6 +236,7 @@ export const useFurnitureStore = create<FurnitureState>((set, get) => ({
     shelves: [],
     partitions: [],
     drawers: [],
+    shelfPartitions: [],
     mode: 'draw_box',
     selectedId: null,
   }),
@@ -230,22 +244,36 @@ export const useFurnitureStore = create<FurnitureState>((set, get) => ({
   setThickness: (mm) => set((s) => ({ material: { ...s.material, thickness: mm } })),
   setMaterialColor: (color) => set((s) => ({ material: { ...s.material, color } })),
 
-  addShelf: (fromBottom) => {
+  addShelf: (fromBottom, sectionIndex) => {
     const { outerBox, material } = get()
     if (!outerBox) return
     const T = material.thickness
     const interiorH = outerBox.height - T * 2
     const clamped = Math.max(T, Math.min(snap(fromBottom), interiorH - T))
-    set((s) => ({ shelves: [...s.shelves, { id: uid(), fromBottom: clamped }] }))
+    set((s) => ({ shelves: [...s.shelves, { id: uid(), fromBottom: clamped, sectionIndex }] }))
   },
 
   addPartition: (fromLeft) => {
-    const { outerBox, material } = get()
+    const { outerBox, material, partitions } = get()
     if (!outerBox) return
     const T = material.thickness
     const interiorW = outerBox.width - T * 2
     const clamped = Math.max(T, Math.min(snap(fromLeft), interiorW - T))
-    set((s) => ({ partitions: [...s.partitions, { id: uid(), fromLeft: clamped }] }))
+
+    // Count how many existing partitions sit to the LEFT of the new one.
+    // That count = the new partition's position in sorted order.
+    // Every section whose index is GREATER than that position shifts right by 1.
+    const insertionIdx = partitions.filter((p) => p.fromLeft < clamped).length
+
+    set((s) => {
+      const shiftIdx = (idx: number) => idx > insertionIdx ? idx + 1 : idx
+      return {
+        partitions:      [...s.partitions, { id: uid(), fromLeft: clamped }],
+        shelves:         s.shelves.map((sh) => ({ ...sh, sectionIndex: shiftIdx(sh.sectionIndex) })),
+        drawers:         s.drawers.map((d)  => ({ ...d,  sectionIndex: shiftIdx(d.sectionIndex)  })),
+        shelfPartitions: s.shelfPartitions.map((sp) => ({ ...sp, sectionIndex: shiftIdx(sp.sectionIndex) })),
+      }
+    })
   },
 
   addDrawer: (sectionIndex, fromBottom, height) => {
@@ -285,6 +313,30 @@ export const useFurnitureStore = create<FurnitureState>((set, get) => ({
     }))
   },
 
+  addShelfPartition: (sectionIndex, fromLeft, fromBottom, toBottom) => {
+    const { outerBox, material } = get()
+    if (!outerBox) return
+    const T = material.thickness
+    const interiorW = outerBox.width - T * 2
+    const clamped = Math.max(T, Math.min(snap(fromLeft), interiorW - T))
+    set((s) => ({
+      shelfPartitions: [...s.shelfPartitions, { id: uid(), sectionIndex, fromLeft: clamped, fromBottom, toBottom }],
+    }))
+  },
+
+  moveShelfPartition: (id, fromLeft) => {
+    const { outerBox, material } = get()
+    if (!outerBox) return
+    const T = material.thickness
+    const interiorW = outerBox.width - T * 2
+    const clamped = Math.max(T, Math.min(snap(fromLeft), interiorW - T))
+    set((s) => ({
+      shelfPartitions: s.shelfPartitions.map((sp) =>
+        sp.id === id ? { ...sp, fromLeft: clamped } : sp,
+      ),
+    }))
+  },
+
   addCustomPanel: (panel) => set((s) => ({
     customPanels: [...s.customPanels, { ...panel, id: uid() }],
   })),
@@ -307,15 +359,40 @@ export const useFurnitureStore = create<FurnitureState>((set, get) => ({
   })),
 
   removeSelected: () => {
-    const { selectedId } = get()
+    const { selectedId, partitions } = get()
     if (!selectedId) return
-    set((s) => ({
-      shelves: s.shelves.filter((sh) => sh.id !== selectedId),
-      partitions: s.partitions.filter((p) => p.id !== selectedId),
-      drawers: s.drawers.filter((d) => d.id !== selectedId),
-      customPanels: s.customPanels.filter((cp) => cp.id !== selectedId),
-      selectedId: null,
-    }))
+
+    const removedPartition = partitions.find((p) => p.id === selectedId)
+
+    if (removedPartition) {
+      // Find sorted index so we know which sections shift left
+      const sorted = [...partitions].sort((a, b) => a.fromLeft - b.fromLeft)
+      const removeIdx = sorted.findIndex((p) => p.id === selectedId)
+      // All elements in sections > removeIdx merge down by 1
+      set((s) => ({
+        partitions:      s.partitions.filter((p) => p.id !== selectedId),
+        shelves:         s.shelves.map((sh) =>
+          sh.sectionIndex > removeIdx ? { ...sh, sectionIndex: sh.sectionIndex - 1 } : sh,
+        ),
+        drawers:         s.drawers.map((d) =>
+          d.sectionIndex > removeIdx ? { ...d, sectionIndex: d.sectionIndex - 1 } : d,
+        ),
+        shelfPartitions: s.shelfPartitions.map((sp) =>
+          sp.sectionIndex > removeIdx ? { ...sp, sectionIndex: sp.sectionIndex - 1 } : sp,
+        ),
+        customPanels:    s.customPanels,
+        selectedId:      null,
+      }))
+    } else {
+      set((s) => ({
+        shelves:         s.shelves.filter((sh) => sh.id !== selectedId),
+        partitions:      s.partitions.filter((p)  => p.id  !== selectedId),
+        drawers:         s.drawers.filter((d)  => d.id  !== selectedId),
+        customPanels:    s.customPanels.filter((cp) => cp.id !== selectedId),
+        shelfPartitions: s.shelfPartitions.filter((sp) => sp.id !== selectedId),
+        selectedId: null,
+      }))
+    }
   },
 
   reset: () => set({
@@ -327,6 +404,7 @@ export const useFurnitureStore = create<FurnitureState>((set, get) => ({
     partitions: [],
     drawers: [],
     customPanels: [],
+    shelfPartitions: [],
     sectionConfigs: {},
     mode: 'draw_box',
     selectedId: null,

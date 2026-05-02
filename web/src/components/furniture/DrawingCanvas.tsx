@@ -4,13 +4,16 @@ import type { KonvaEventObject } from 'konva/lib/Node'
 import { useFurnitureStore } from '../../stores/furnitureStore'
 
 // ── Scale ─────────────────────────────────────────────────────────────────────
-const PX_PER_MM = 0.5        // 1mm = 0.5px  →  2400mm = 1200px on screen
+const PX_PER_MM = 0.5        // base scale; default zoom starts at 200% for 1mm visual precision
 const GRID_MINOR_MM = 50     // minor grid every 50mm
 const GRID_MAJOR_MM = 250    // major grid every 250mm
 export const OUTER_BOX_SELECTION_ID = 'outer-box'
+const DEFAULT_ZOOM = 2
+const VIEWPORT_PADDING = 24
+const BOX_FRAME_PADDING = { top: 40, right: 96, bottom: 24, left: 40 }
 
 function pxToMm(px: number): number {
-  return Math.round(px / PX_PER_MM)
+  return px / PX_PER_MM
 }
 function mmToPx(mm: number): number {
   return mm * PX_PER_MM
@@ -57,6 +60,24 @@ function getSectionBoundaries(
   return xs.slice(0, -1).map((left, i) => ({ index: i, left, right: xs[i + 1] }))
 }
 
+// Returns the open cells between shelves using shelf FACES, not centres.
+// Each cell is the empty space between adjacent horizontal surfaces.
+function getShelfCells(
+  shelfFromBottoms: number[],  // centres in mm (already sorted ascending)
+  T_mm: number,
+  interiorHeightMm: number,
+): Array<{ from: number; to: number }> {
+  const cells: Array<{ from: number; to: number }> = []
+  let prevTop = 0
+  for (const fb of shelfFromBottoms) {
+    const shelfBottomFace = Math.max(prevTop, fb - T_mm / 2)
+    cells.push({ from: prevTop, to: shelfBottomFace })
+    prevTop = fb + T_mm / 2
+  }
+  cells.push({ from: prevTop, to: interiorHeightMm })
+  return cells
+}
+
 // ── Component ─────────────────────────────────────────────────────────────────
 
 export default function DrawingCanvas() {
@@ -85,9 +106,9 @@ export default function DrawingCanvas() {
 
   const {
     outerBox, mode, material,
-    shelves, partitions, drawers, customPanels,
-    setOuterBox, addShelf, addPartition, addDrawer, addCustomPanel,
-    moveShelf, movePartition, moveDrawer, moveCustomPanel, renameCustomPanel,
+    shelves, partitions, drawers, customPanels, shelfPartitions,
+    setOuterBox, addShelf, addPartition, addDrawer, addCustomPanel, addShelfPartition,
+    moveShelf, movePartition, moveDrawer, moveCustomPanel, moveShelfPartition, renameCustomPanel,
     selectedId, setSelected,
   } = useFurnitureStore()
 
@@ -95,6 +116,11 @@ export default function DrawingCanvas() {
   const [dragLive, setDragLive] = useState<{ id: string; mm: number } | null>(null)
   // Prevents Stage onMouseMove from triggering ghost previews while dragging an element
   const isDraggingElement = useRef(false)
+  const viewWasAdjustedRef = useRef(false)
+
+  // ── Zoom / pan ────────────────────────────────────────────────────────────
+  const [zoom,     setZoom]     = useState(DEFAULT_ZOOM)
+  const [stagePos, setStagePos] = useState({ x: 0, y: 0 })
 
   // ── Custom panel inline rename ────────────────────────────────────────────
   const [renamingPanelId, setRenamingPanelId]   = useState<string | null>(null)
@@ -118,10 +144,59 @@ export default function DrawingCanvas() {
     return () => ro.disconnect()
   }, [])
 
+  const getCenteredStagePos = useCallback((nextZoom: number) => ({
+    x: (size.width * (1 - nextZoom)) / 2,
+    y: (size.height * (1 - nextZoom)) / 2,
+  }), [size.height, size.width])
+
+  useEffect(() => {
+    if (viewWasAdjustedRef.current) return
+    setStagePos(getCenteredStagePos(DEFAULT_ZOOM))
+  }, [getCenteredStagePos])
+
   // When store box is cleared (reset), clear local canvas box too
   useEffect(() => {
-    if (!outerBox) setBoxCanvas(null)
-  }, [outerBox])
+    if (!outerBox) {
+      setBoxCanvas(null)
+      setZoom(DEFAULT_ZOOM)
+      setStagePos(getCenteredStagePos(DEFAULT_ZOOM))
+      viewWasAdjustedRef.current = false
+    }
+  }, [outerBox, getCenteredStagePos])
+
+  const fitBoxToViewport = useCallback((widthPx: number, heightPx: number) => {
+    const contentWidth = widthPx + BOX_FRAME_PADDING.left + BOX_FRAME_PADDING.right
+    const contentHeight = heightPx + BOX_FRAME_PADDING.top + BOX_FRAME_PADDING.bottom
+    const availableWidth = Math.max(160, size.width - VIEWPORT_PADDING * 2)
+    const availableHeight = Math.max(160, size.height - VIEWPORT_PADDING * 2)
+    const fitZoom = Math.max(
+      0.1,
+      Math.min(
+        DEFAULT_ZOOM,
+        availableWidth / contentWidth,
+        availableHeight / contentHeight,
+      ),
+    )
+    const screenContentWidth = contentWidth * fitZoom
+    const screenContentHeight = contentHeight * fitZoom
+    const offsetX = (size.width - screenContentWidth) / 2
+    const offsetY = (size.height - screenContentHeight) / 2
+
+    setZoom(fitZoom)
+    setStagePos({ x: offsetX, y: offsetY })
+    setBoxCanvas({
+      x: BOX_FRAME_PADDING.left,
+      y: BOX_FRAME_PADDING.top,
+      width: widthPx,
+      height: heightPx,
+    })
+    viewWasAdjustedRef.current = true
+  }, [size.height, size.width])
+
+  useEffect(() => {
+    if (!outerBox) return
+    fitBoxToViewport(mmToPx(outerBox.width), mmToPx(outerBox.height))
+  }, [outerBox?.width, outerBox?.height, fitBoxToViewport])
 
   // Detect newly added custom panel → open rename popup
   useEffect(() => {
@@ -181,9 +256,10 @@ export default function DrawingCanvas() {
   // ── Mouse handlers ───────────────────────────────────────────────────────
 
   const handleMouseDown = useCallback((e: KonvaEventObject<MouseEvent>) => {
-    const pos = e.target.getStage()?.getPointerPosition()
-    if (!pos) return
+    const raw = e.target.getStage()?.getPointerPosition()
+    if (!raw) return
     e.evt.preventDefault()
+    const pos = { x: (raw.x - stagePos.x) / zoom, y: (raw.y - stagePos.y) / zoom }
 
     setClickStart(pos)
 
@@ -207,11 +283,12 @@ export default function DrawingCanvas() {
         setDrawerDrawCurrent(pos)
       }
     }
-  }, [mode, boxCanvas, material.thickness])
+  }, [mode, boxCanvas, material.thickness, zoom, stagePos])
 
   const handleMouseMove = useCallback((e: KonvaEventObject<MouseEvent>) => {
-    const pos = e.target.getStage()?.getPointerPosition()
-    if (!pos) return
+    const raw = e.target.getStage()?.getPointerPosition()
+    if (!raw) return
+    const pos = { x: (raw.x - stagePos.x) / zoom, y: (raw.y - stagePos.y) / zoom }
 
     // Suppress ghost previews while user is dragging a placed element
     if (!isDraggingElement.current) setMousePos(pos)
@@ -228,22 +305,22 @@ export default function DrawingCanvas() {
     if (mode === 'add_drawer' && drawerDrawStart) {
       setDrawerDrawCurrent(pos)
     }
-  }, [mode, drawStart, customDrawStart, drawerDrawStart])
+  }, [mode, drawStart, customDrawStart, drawerDrawStart, zoom, stagePos])
 
   const handleMouseUp = useCallback((e: KonvaEventObject<MouseEvent>) => {
-    const pos = e.target.getStage()?.getPointerPosition()
-    if (!pos) return
+    const raw = e.target.getStage()?.getPointerPosition()
+    if (!raw) return
+    const pos = { x: (raw.x - stagePos.x) / zoom, y: (raw.y - stagePos.y) / zoom }
 
     // ── draw_box: finalise rectangle ──────────────────────────────────────
     if (mode === 'draw_box' && drawStart && drawCurrent) {
-      const x = Math.min(drawStart.x, drawCurrent.x)
-      const y = Math.min(drawStart.y, drawCurrent.y)
       const w = Math.abs(drawCurrent.x - drawStart.x)
       const h = Math.abs(drawCurrent.y - drawStart.y)
 
       if (w >= 30 && h >= 30) {
-        setBoxCanvas({ x, y, width: w, height: h })
-        setOuterBox({ width: pxToMm(w), height: pxToMm(h), depth: 600 })
+        // Don't set boxCanvas here — fitBoxToViewport (via useEffect) will place
+        // it at the canonical position with the correct zoom.
+        setOuterBox({ width: Math.round(pxToMm(w)), height: Math.round(pxToMm(h)), depth: 600 })
       }
       setDrawStart(null)
       setDrawCurrent(null)
@@ -299,20 +376,45 @@ export default function DrawingCanvas() {
       const fromTopMm = pxToMm(pos.y - (boxCanvas.y + T))
       const fromBottom = Math.max(0, interiorHeightMm - fromTopMm)
 
-      addShelf(fromBottom)
+      const sorted   = [...partitions].sort((a, b) => a.fromLeft - b.fromLeft)
+      const sections = getSectionBoundaries(boxCanvas, sorted, T)
+      const section  = sections.find((s) => pos.x >= s.left && pos.x <= s.right)
+
+      addShelf(fromBottom, section?.index ?? 0)
     }
 
-    // ── add_partition: place on click (not drag) ───────────────────────────
+    // ── add_partition: full-height OR shelf-cell partition ─────────────────
     if (mode === 'add_partition' && boxCanvas && outerBox && clickStart) {
       if (dist(clickStart, pos) > 6) { setClickStart(null); return }
 
       const T = mmToPx(material.thickness)
       if (!isInsideInterior(pos, boxCanvas, T)) { setClickStart(null); return }
 
-      const { left } = interiorOf(boxCanvas, T)
-      const fromLeft = pxToMm(pos.x - left)
+      const { left: iLeft, bottom: iBottom } = interiorOf(boxCanvas, T)
+      const fromLeft = pxToMm(pos.x - iLeft)
 
-      addPartition(fromLeft)
+      const sorted   = [...partitions].sort((a, b) => a.fromLeft - b.fromLeft)
+      const sections = getSectionBoundaries(boxCanvas, sorted, T)
+      const section  = sections.find((s) => pos.x >= s.left && pos.x <= s.right)
+      const sIdx     = section?.index ?? 0
+
+      // Find shelves in this section to see if we're clicking between two shelves
+      const interiorHeightMm = outerBox.height - material.thickness * 2
+      const sectionShelves   = shelves
+        .filter((sh) => sh.sectionIndex === sIdx)
+        .map((sh) => sh.fromBottom)
+        .sort((a, b) => a - b)
+
+      if (sectionShelves.length > 0) {
+        const clickYMm = pxToMm(iBottom - pos.y)
+        const cells    = getShelfCells(sectionShelves, material.thickness, interiorHeightMm)
+        const cell     = cells.find((c) => clickYMm >= c.from && clickYMm <= c.to)
+        // Ignore clicks that land exactly on a shelf panel face
+        if (cell) addShelfPartition(sIdx, fromLeft, cell.from, cell.to)
+      } else {
+        // No shelves in section → full-height section divider
+        addPartition(fromLeft)
+      }
     }
 
     // ── add_drawer: finalise drag rectangle ───────────────────────────────
@@ -342,7 +444,7 @@ export default function DrawingCanvas() {
     }
 
     setClickStart(null)
-  }, [mode, drawStart, drawCurrent, customDrawStart, customDrawCurrent, drawerDrawStart, drawerDrawCurrent, boxCanvas, outerBox, material, clickStart, partitions, addShelf, addPartition, addDrawer, addCustomPanel, setOuterBox])
+  }, [mode, drawStart, drawCurrent, customDrawStart, customDrawCurrent, drawerDrawStart, drawerDrawCurrent, boxCanvas, outerBox, material, clickStart, partitions, shelves, addShelf, addPartition, addShelfPartition, addDrawer, addCustomPanel, setOuterBox, zoom, stagePos])
 
   const handleMouseLeave = useCallback(() => {
     setMousePos(null)
@@ -352,6 +454,23 @@ export default function DrawingCanvas() {
     const clickedStage = e.target === e.target.getStage()
     if (clickedStage) setSelected(null)
   }, [setSelected])
+
+  const handleWheel = useCallback((e: KonvaEventObject<WheelEvent>) => {
+    e.evt.preventDefault()
+    const stage = e.target.getStage()
+    if (!stage) return
+    const pointer = stage.getPointerPosition()
+    if (!pointer) return
+    const SCALE_BY = 1.12
+    const newZoom = e.evt.deltaY < 0
+      ? Math.min(zoom * SCALE_BY, 8)
+      : Math.max(zoom / SCALE_BY, 0.1)
+    const mx = (pointer.x - stagePos.x) / zoom
+    const my = (pointer.y - stagePos.y) / zoom
+    viewWasAdjustedRef.current = true
+    setZoom(newZoom)
+    setStagePos({ x: pointer.x - mx * newZoom, y: pointer.y - my * newZoom })
+  }, [zoom, stagePos])
 
   // ── Derived canvas values ────────────────────────────────────────────────
 
@@ -372,27 +491,69 @@ export default function DrawingCanvas() {
     if (mode !== 'add_shelf' || !mousePos || !boxCanvas || !outerBox) return null
     if (!isInsideInterior(mousePos, boxCanvas, T)) return null
 
-    const { left, right, bottom } = interiorOf(boxCanvas, T)
-    const interiorHeightMm = outerBox.height - material.thickness * 2
-    const fromTopMm = pxToMm(mousePos.y - (boxCanvas.y + T))
-    const fromBottom = Math.max(0, Math.min(interiorHeightMm, interiorHeightMm - fromTopMm))
-    const canvasY = bottom - mmToPx(fromBottom)
+    const { bottom } = interiorOf(boxCanvas, T)
+    const sorted   = [...partitions].sort((a, b) => a.fromLeft - b.fromLeft)
+    const sections = getSectionBoundaries(boxCanvas, sorted, T)
+    const section  = sections.find((s) => mousePos.x >= s.left && mousePos.x <= s.right)
+    if (!section) return null
 
-    return { canvasY, fromBottom, left, right }
-  }, [mode, mousePos, boxCanvas, outerBox, T, material.thickness])
+    const leftOff  = section.index === 0               ? 0 : T / 2
+    const rightOff = section.index === sorted.length   ? 0 : T / 2
+    const left  = section.left  + leftOff
+    const right = section.right - rightOff
+
+    const interiorHeightMm = outerBox.height - material.thickness * 2
+    const fromTopMm  = pxToMm(mousePos.y - (boxCanvas.y + T))
+    const fromBottom = Math.round(Math.max(0, Math.min(interiorHeightMm, interiorHeightMm - fromTopMm)))
+    const canvasY    = bottom - mmToPx(fromBottom)
+
+    return { canvasY, fromBottom, left, right, sectionIndex: section.index }
+  }, [mode, mousePos, boxCanvas, outerBox, T, material.thickness, partitions])
 
   // Ghost partition info while hovering in add_partition mode
   const ghostPartition = useMemo(() => {
     if (mode !== 'add_partition' || !mousePos || !boxCanvas || !outerBox) return null
     if (!isInsideInterior(mousePos, boxCanvas, T)) return null
 
-    const { left, top, bottom } = interiorOf(boxCanvas, T)
-    const interiorWidthMm = outerBox.width - material.thickness * 2
-    const fromLeftMm = Math.max(0, Math.min(interiorWidthMm, pxToMm(mousePos.x - left)))
-    const canvasX = left + mmToPx(fromLeftMm)
+    const { left: iLeft, top: iTop, bottom: iBottom } = interiorOf(boxCanvas, T)
+    const interiorWidthMm  = outerBox.width  - material.thickness * 2
+    const interiorHeightMm = outerBox.height - material.thickness * 2
+    const fromLeftMm = Math.round(Math.max(0, Math.min(interiorWidthMm, pxToMm(mousePos.x - iLeft))))
+    const canvasX    = iLeft + mmToPx(fromLeftMm)
 
-    return { canvasX, fromLeft: fromLeftMm, top, bottom }
-  }, [mode, mousePos, boxCanvas, outerBox, T, material.thickness])
+    // Detect which section the mouse is in
+    const sorted   = [...partitions].sort((a, b) => a.fromLeft - b.fromLeft)
+    const sections = getSectionBoundaries(boxCanvas, sorted, T)
+    const section  = sections.find((s) => mousePos.x >= s.left && mousePos.x <= s.right)
+    const sectionIndex = section?.index ?? 0
+
+    // Find shelves in this section and detect which vertical cell the mouse is in
+    const sectionShelves = shelves
+      .filter((sh) => sh.sectionIndex === sectionIndex)
+      .map((sh) => sh.fromBottom)
+      .sort((a, b) => a - b)
+
+    const clickYMm = Math.round(pxToMm(iBottom - mousePos.y))  // mm from interior bottom
+    const cells    = getShelfCells(sectionShelves, material.thickness, interiorHeightMm)
+    const cell     = cells.find((c) => clickYMm >= c.from && clickYMm <= c.to)
+
+    // Mouse is on a shelf panel itself — no ghost
+    if (sectionShelves.length > 0 && !cell) return null
+
+    const cellFromBottom = cell?.from ?? 0
+    const cellToBottom   = cell?.to   ?? interiorHeightMm
+    const isShelfCell    = sectionShelves.length > 0
+    const ghostTop       = iBottom - mmToPx(cellToBottom)
+    const ghostBottom    = iBottom - mmToPx(cellFromBottom)
+
+    return {
+      canvasX, fromLeft: fromLeftMm,
+      top: ghostTop, bottom: ghostBottom,
+      isShelfCell, sectionIndex,
+      cellFromBottom, cellToBottom,
+      iTop,  // original interior top (for the guide line on full-height)
+    }
+  }, [mode, mousePos, boxCanvas, outerBox, T, material.thickness, partitions, shelves])
 
   // Ghost drawer: hover = section highlight, drag = actual rectangle
   const ghostDrawer = useMemo(() => {
@@ -425,8 +586,8 @@ export default function DrawingCanvas() {
         right: section.right - rightOff,
         drawerTop: topY,
         drawerBottom: botY,
-        heightMm:     pxToMm(botY - topY),
-        fromBottomMm: pxToMm(iBottom - botY),
+        heightMm:     Math.round(pxToMm(botY - topY)),
+        fromBottomMm: Math.round(pxToMm(iBottom - botY)),
       }
     }
 
@@ -458,7 +619,7 @@ export default function DrawingCanvas() {
     const w = Math.max(0, r - x)
     const h = Math.max(0, b - y)
 
-    return { x, y, w, h, widthMm: pxToMm(w), heightMm: pxToMm(h) }
+    return { x, y, w, h, widthMm: Math.round(pxToMm(w)), heightMm: Math.round(pxToMm(h)) }
   }, [mode, customDrawStart, customDrawCurrent, boxCanvas, material.thickness])
 
   const cursor = (() => {
@@ -476,17 +637,22 @@ export default function DrawingCanvas() {
       <Stage
         width={size.width}
         height={size.height}
+        scaleX={zoom}
+        scaleY={zoom}
+        x={stagePos.x}
+        y={stagePos.y}
         onMouseDown={handleMouseDown}
         onMouseMove={handleMouseMove}
         onMouseUp={handleMouseUp}
         onMouseLeave={handleMouseLeave}
         onClick={handleStageClick}
+        onWheel={handleWheel}
         style={{ cursor }}
       >
         {/* ── Grid ── */}
         <Layer listening={false}>
           {gridLines}
-          <Text x={10} y={10} text="Grid: 50mm · Resolution: 1mm" fontSize={10} fill="#bbb" />
+          <Text x={10} y={10} text={`Grid: 50mm · Resolution: ${zoom >= 2 ? '1mm' : '2mm'}+`} fontSize={10} fill="#bbb" />
         </Layer>
 
         {/* ── Drawing layer ── */}
@@ -505,13 +671,13 @@ export default function DrawingCanvas() {
               <Text
                 x={ghostRect.x + ghostRect.width / 2 - 28}
                 y={ghostRect.y - 22}
-                text={`${pxToMm(ghostRect.width)}mm`}
+                text={`${Math.round(pxToMm(ghostRect.width))}mm`}
                 fontSize={12} fontStyle="bold" fill="#3b82f6"
               />
               <Text
                 x={ghostRect.x + ghostRect.width + 6}
                 y={ghostRect.y + ghostRect.height / 2 - 8}
-                text={`${pxToMm(ghostRect.height)}mm`}
+                text={`${Math.round(pxToMm(ghostRect.height))}mm`}
                 fontSize={12} fontStyle="bold" fill="#3b82f6"
               />
             </Group>
@@ -619,73 +785,82 @@ export default function DrawingCanvas() {
           )}
 
           {/* ── Placed shelves ── */}
-          {boxCanvas && outerBox && shelves.map((shelf) => {
-            const { left, right, bottom: interiorBottom } = interiorOf(boxCanvas, T)
-            const displayMm   = dragLive?.id === shelf.id ? dragLive.mm : shelf.fromBottom
-            const shelfCenterY = interiorBottom - mmToPx(displayMm)
-            const isSelected  = selectedId === shelf.id
+          {boxCanvas && outerBox && (() => {
+            const { bottom: interiorBottom } = interiorOf(boxCanvas, T)
+            const sorted   = [...partitions].sort((a, b) => a.fromLeft - b.fromLeft)
+            const sections = getSectionBoundaries(boxCanvas, sorted, T)
 
-            return (
-              <Group key={shelf.id}>
-                <Rect
-                  x={left}
-                  y={shelfCenterY - T / 2}
-                  width={right - left}
-                  height={T}
-                  fill={isSelected ? 'rgba(59,130,246,0.5)' : 'rgba(184,148,90,0.75)'}
-                  stroke={isSelected ? '#3b82f6' : '#b8945a'}
-                  strokeWidth={isSelected ? 1.5 : 0.75}
-                  hitStrokeWidth={12}
-                  draggable={mode === 'select'}
-                  style={{ cursor: mode === 'select' ? 'grab' : 'pointer' }}
-                  onClick={() => setSelected(shelf.id)}
-                  onDragStart={() => {
-                    isDraggingElement.current = true
-                    setSelected(shelf.id)
-                  }}
-                  onDragMove={(e) => {
-                    const absY = e.target.absolutePosition().y
-                    const newCenterY = absY + T / 2
-                    const fromBottom = Math.max(0, pxToMm(interiorBottom - newCenterY))
-                    setDragLive({ id: shelf.id, mm: fromBottom })
-                  }}
-                  onDragEnd={(e) => {
-                    const absY = e.target.absolutePosition().y
-                    const newCenterY = absY + T / 2
-                    const fromBottom = Math.max(0, pxToMm(interiorBottom - newCenterY))
-                    moveShelf(shelf.id, fromBottom)
-                    isDraggingElement.current = false
-                    setDragLive(null)
-                  }}
-                  dragBoundFunc={(pos) => ({
-                    x: left,
-                    y: Math.max(
-                      boxCanvas.y + T,
-                      Math.min(interiorBottom - T, pos.y),
-                    ),
-                  })}
-                />
-                {/* mm label — right of box, follows live position */}
-                <Text
-                  x={boxCanvas.x + boxCanvas.width + 8}
-                  y={shelfCenterY - 8}
-                  text={`${displayMm}mm`}
-                  fontSize={11}
-                  fontStyle={isSelected ? 'bold' : 'normal'}
-                  fill={isSelected || dragLive?.id === shelf.id ? '#3b82f6' : '#888'}
-                  listening={false}
-                />
-                <Text
-                  x={boxCanvas.x + boxCanvas.width + 8}
-                  y={shelfCenterY + 3}
-                  text="from bottom"
-                  fontSize={9}
-                  fill={isSelected || dragLive?.id === shelf.id ? '#3b82f6' : '#aaa'}
-                  listening={false}
-                />
-              </Group>
-            )
-          })}
+            return shelves.map((shelf) => {
+              const section  = sections[shelf.sectionIndex]
+              const leftOff  = shelf.sectionIndex === 0             ? 0 : T / 2
+              const rightOff = shelf.sectionIndex === sorted.length ? 0 : T / 2
+              const left  = section ? section.left  + leftOff  : interiorOf(boxCanvas, T).left
+              const right = section ? section.right - rightOff : interiorOf(boxCanvas, T).right
+
+              const displayMm    = dragLive?.id === shelf.id ? dragLive.mm : shelf.fromBottom
+              const shelfCenterY = interiorBottom - mmToPx(displayMm)
+              const isSelected   = selectedId === shelf.id
+
+              return (
+                <Group key={shelf.id}>
+                  <Rect
+                    x={left}
+                    y={shelfCenterY - T / 2}
+                    width={right - left}
+                    height={T}
+                    fill={isSelected ? 'rgba(59,130,246,0.5)' : 'rgba(184,148,90,0.75)'}
+                    stroke={isSelected ? '#3b82f6' : '#b8945a'}
+                    strokeWidth={isSelected ? 1.5 : 0.75}
+                    hitStrokeWidth={12}
+                    draggable={mode === 'select'}
+                    style={{ cursor: mode === 'select' ? 'grab' : 'pointer' }}
+                    onClick={() => setSelected(shelf.id)}
+                    onDragStart={() => {
+                      isDraggingElement.current = true
+                      setSelected(shelf.id)
+                    }}
+                    onDragMove={(e) => {
+                      const newCenterY = e.target.y() + T / 2
+                      const fromBottom = Math.max(0, pxToMm(interiorBottom - newCenterY))
+                      setDragLive({ id: shelf.id, mm: fromBottom })
+                    }}
+                    onDragEnd={(e) => {
+                      const newCenterY = e.target.y() + T / 2
+                      const fromBottom = Math.max(0, pxToMm(interiorBottom - newCenterY))
+                      moveShelf(shelf.id, fromBottom)
+                      isDraggingElement.current = false
+                      setDragLive(null)
+                    }}
+                    dragBoundFunc={(pos) => ({
+                      x: left * zoom + stagePos.x,
+                      y: Math.max(
+                        (boxCanvas.y + T) * zoom + stagePos.y,
+                        Math.min((interiorBottom - T) * zoom + stagePos.y, pos.y),
+                      ),
+                    })}
+                  />
+                  {/* mm label — right of box, follows live position */}
+                  <Text
+                    x={boxCanvas.x + boxCanvas.width + 8}
+                    y={shelfCenterY - 8}
+                    text={`${displayMm}mm`}
+                    fontSize={11}
+                    fontStyle={isSelected ? 'bold' : 'normal'}
+                    fill={isSelected || dragLive?.id === shelf.id ? '#3b82f6' : '#888'}
+                    listening={false}
+                  />
+                  <Text
+                    x={boxCanvas.x + boxCanvas.width + 8}
+                    y={shelfCenterY + 3}
+                    text="from bottom"
+                    fontSize={9}
+                    fill={isSelected || dragLive?.id === shelf.id ? '#3b82f6' : '#aaa'}
+                    listening={false}
+                  />
+                </Group>
+              )
+            })
+          })()}
 
           {/* ── Placed partitions ── */}
           {boxCanvas && outerBox && partitions.map((partition) => {
@@ -713,14 +888,12 @@ export default function DrawingCanvas() {
                     setSelected(partition.id)
                   }}
                   onDragMove={(e) => {
-                    const absX = e.target.absolutePosition().x
-                    const newCenterX = absX + T / 2
+                    const newCenterX = e.target.x() + T / 2
                     const fromLeft = Math.max(0, pxToMm(newCenterX - interiorLeft))
                     setDragLive({ id: partition.id, mm: fromLeft })
                   }}
                   onDragEnd={(e) => {
-                    const absX = e.target.absolutePosition().x
-                    const newCenterX = absX + T / 2
+                    const newCenterX = e.target.x() + T / 2
                     const fromLeft = Math.max(0, pxToMm(newCenterX - interiorLeft))
                     movePartition(partition.id, fromLeft)
                     isDraggingElement.current = false
@@ -728,10 +901,10 @@ export default function DrawingCanvas() {
                   }}
                   dragBoundFunc={(pos) => ({
                     x: Math.max(
-                      interiorLeft,
-                      Math.min(interiorRight - T, pos.x),
+                      interiorLeft * zoom + stagePos.x,
+                      Math.min((interiorRight - T) * zoom + stagePos.x, pos.x),
                     ),
-                    y: top,
+                    y: top * zoom + stagePos.y,
                   })}
                 />
                 {/* mm label — above box, follows live position */}
@@ -763,10 +936,73 @@ export default function DrawingCanvas() {
             )
           })}
 
+          {/* ── Placed shelf partitions (between-shelf vertical dividers) ── */}
+          {boxCanvas && outerBox && (() => {
+            const { bottom: iBottom } = interiorOf(boxCanvas, T)
+            const sorted   = [...partitions].sort((a, b) => a.fromLeft - b.fromLeft)
+            const sections = getSectionBoundaries(boxCanvas, sorted, T)
+
+            return shelfPartitions.map((sp) => {
+              const section  = sections[sp.sectionIndex]
+              if (!section) return null
+
+              const centX      = interiorOf(boxCanvas, T).left + mmToPx(sp.fromLeft)
+              const panelTop   = iBottom - mmToPx(sp.toBottom)
+              const panelBot   = iBottom - mmToPx(sp.fromBottom)
+              const panelH     = panelBot - panelTop
+              const isSelected = selectedId === sp.id
+
+              return (
+                <Group key={sp.id}>
+                  <Rect
+                    x={centX - T / 2}
+                    y={panelTop}
+                    width={T}
+                    height={panelH}
+                    fill={isSelected ? 'rgba(59,130,246,0.5)' : 'rgba(184,148,90,0.75)'}
+                    stroke={isSelected ? '#3b82f6' : '#b8945a'}
+                    strokeWidth={isSelected ? 1.5 : 0.75}
+                    hitStrokeWidth={12}
+                    draggable={mode === 'select'}
+                    style={{ cursor: mode === 'select' ? 'grab' : 'pointer' }}
+                    onClick={() => setSelected(sp.id)}
+                    onDragStart={() => {
+                      isDraggingElement.current = true
+                      setSelected(sp.id)
+                    }}
+                    onDragEnd={(e) => {
+                      const newCentX = e.target.x() + T / 2
+                      const fromLeft = Math.max(0, pxToMm(newCentX - interiorOf(boxCanvas, T).left))
+                      moveShelfPartition(sp.id, fromLeft)
+                      isDraggingElement.current = false
+                    }}
+                    dragBoundFunc={(pos) => {
+                      const { left: sLeft, right: sRight } = section
+                      return {
+                        x: Math.max(sLeft * zoom + stagePos.x, Math.min((sRight - T) * zoom + stagePos.x, pos.x)),
+                        y: panelTop * zoom + stagePos.y,
+                      }
+                    }}
+                  />
+                  {/* mm label beside the panel */}
+                  <Text
+                    x={centX + T / 2 + 6}
+                    y={panelTop + panelH / 2 - 8}
+                    text={`${sp.fromLeft}mm`}
+                    fontSize={10}
+                    fontStyle={isSelected ? 'bold' : 'normal'}
+                    fill={isSelected ? '#3b82f6' : '#888'}
+                    listening={false}
+                  />
+                </Group>
+              )
+            })
+          })()}
+
           {/* ── Ghost partition preview (add_partition mode) ── */}
           {ghostPartition && boxCanvas && (
             <Group listening={false}>
-              {/* Ghost partition panel */}
+              {/* Ghost partition panel — spans only the shelf cell */}
               <Rect
                 x={ghostPartition.canvasX - T / 2}
                 y={ghostPartition.top}
@@ -777,24 +1013,45 @@ export default function DrawingCanvas() {
                 strokeWidth={1.5}
                 dash={[6, 3]}
               />
-              {/* Vertical guide line up to label */}
-              <Line
-                points={[ghostPartition.canvasX, boxCanvas.y - 10, ghostPartition.canvasX, ghostPartition.top]}
-                stroke="#3b82f6" strokeWidth={0.75} dash={[4, 4]}
-              />
-              {/* mm label above box */}
-              <Text
-                x={ghostPartition.canvasX - 16}
-                y={boxCanvas.y - 46}
-                text={`${ghostPartition.fromLeft}mm`}
-                fontSize={12} fontStyle="bold" fill="#3b82f6"
-              />
-              <Text
-                x={ghostPartition.canvasX - 16}
-                y={boxCanvas.y - 34}
-                text="from left"
-                fontSize={9} fill="#3b82f6" opacity={0.7}
-              />
+              {/* Guide line — goes to box top only for full-height partitions */}
+              {!ghostPartition.isShelfCell && (
+                <Line
+                  points={[ghostPartition.canvasX, boxCanvas.y - 10, ghostPartition.canvasX, ghostPartition.top]}
+                  stroke="#3b82f6" strokeWidth={0.75} dash={[4, 4]}
+                />
+              )}
+              {/* Label — above box for full-height, beside the panel for shelf cells */}
+              {ghostPartition.isShelfCell ? (
+                <>
+                  <Text
+                    x={ghostPartition.canvasX + T / 2 + 6}
+                    y={ghostPartition.top + (ghostPartition.bottom - ghostPartition.top) / 2 - 9}
+                    text={`${ghostPartition.fromLeft}mm`}
+                    fontSize={11} fontStyle="bold" fill="#3b82f6"
+                  />
+                  <Text
+                    x={ghostPartition.canvasX + T / 2 + 6}
+                    y={ghostPartition.top + (ghostPartition.bottom - ghostPartition.top) / 2 + 2}
+                    text="from left · shelf cell"
+                    fontSize={9} fill="#3b82f6" opacity={0.7}
+                  />
+                </>
+              ) : (
+                <>
+                  <Text
+                    x={ghostPartition.canvasX - 16}
+                    y={boxCanvas.y - 46}
+                    text={`${ghostPartition.fromLeft}mm`}
+                    fontSize={12} fontStyle="bold" fill="#3b82f6"
+                  />
+                  <Text
+                    x={ghostPartition.canvasX - 16}
+                    y={boxCanvas.y - 34}
+                    text="from left"
+                    fontSize={9} fill="#3b82f6" opacity={0.7}
+                  />
+                </>
+              )}
             </Group>
           )}
 
@@ -838,24 +1095,22 @@ export default function DrawingCanvas() {
                       setSelected(drawer.id)
                     }}
                     onDragMove={(e) => {
-                      const absY = e.target.absolutePosition().y
-                      const newDrawerBottom = absY + drawerH
+                      const newDrawerBottom = e.target.y() + drawerH
                       const fromBottom = Math.max(0, pxToMm(interiorBottom - newDrawerBottom))
                       setDragLive({ id: drawer.id, mm: fromBottom })
                     }}
                     onDragEnd={(e) => {
-                      const absY = e.target.absolutePosition().y
-                      const newDrawerBottom = absY + drawerH
+                      const newDrawerBottom = e.target.y() + drawerH
                       const fromBottom = Math.max(0, pxToMm(interiorBottom - newDrawerBottom))
                       moveDrawer(drawer.id, fromBottom)
                       isDraggingElement.current = false
                       setDragLive(null)
                     }}
                     dragBoundFunc={(pos) => ({
-                      x: rectX,
+                      x: rectX * zoom + stagePos.x,
                       y: Math.max(
-                        interiorTop,
-                        Math.min(interiorBottom - drawerH, pos.y),
+                        interiorTop * zoom + stagePos.y,
+                        Math.min((interiorBottom - drawerH) * zoom + stagePos.y, pos.y),
                       ),
                     })}
                   />
@@ -1014,15 +1269,14 @@ export default function DrawingCanvas() {
                       setSelected(cp.id)
                     }}
                     onDragEnd={(e) => {
-                      const abs = e.target.absolutePosition()
-                      const fromLeft   = Math.max(0, pxToMm(abs.x - iLeft))
-                      const fromBottom = Math.max(0, pxToMm(iBottom - abs.y - cpH))
+                      const fromLeft   = Math.max(0, pxToMm(e.target.x() - iLeft))
+                      const fromBottom = Math.max(0, pxToMm(iBottom - e.target.y() - cpH))
                       moveCustomPanel(cp.id, fromLeft, fromBottom)
                       isDraggingElement.current = false
                     }}
                     dragBoundFunc={(pos) => ({
-                      x: Math.max(iLeft, Math.min(iLeft + mmToPx(iW) - cpW, pos.x)),
-                      y: Math.max(boxCanvas.y + T, Math.min(iBottom - cpH, pos.y)),
+                      x: Math.max(iLeft * zoom + stagePos.x, Math.min((iLeft + mmToPx(iW) - cpW) * zoom + stagePos.x, pos.x)),
+                      y: Math.max((boxCanvas.y + T) * zoom + stagePos.y, Math.min((iBottom - cpH) * zoom + stagePos.y, pos.y)),
                     })}
                   />
                   {/* Name label inside the panel */}
@@ -1136,8 +1390,8 @@ export default function DrawingCanvas() {
         <div
           style={{
             position: 'absolute',
-            left: pendingRenamePosRef.current.x,
-            top:  pendingRenamePosRef.current.y,
+            left: pendingRenamePosRef.current.x * zoom + stagePos.x,
+            top:  pendingRenamePosRef.current.y * zoom + stagePos.y,
             zIndex: 20,
           }}
         >
@@ -1157,7 +1411,7 @@ export default function DrawingCanvas() {
             placeholder="Panel name"
             style={{
               display:    'block',
-              width:      Math.max(130, pendingRenamePosRef.current.w),
+              width:      Math.max(130, pendingRenamePosRef.current.w * zoom),
               padding:    '4px 8px',
               fontSize:   11,
               fontFamily: 'inherit',
@@ -1174,6 +1428,41 @@ export default function DrawingCanvas() {
           </div>
         </div>
       )}
+
+      {outerBox && (
+        <button
+          type="button"
+          onClick={() => {
+            fitBoxToViewport(mmToPx(outerBox.width), mmToPx(outerBox.height))
+          }}
+          style={{
+            position: 'absolute',
+            top: 10,
+            right: 10,
+            zIndex: 20,
+            fontSize: 11,
+            padding: '5px 9px',
+            borderRadius: 6,
+            border: '1px solid #d4d4d8',
+            background: 'rgba(255,255,255,0.92)',
+            color: '#444',
+            cursor: 'pointer',
+          }}
+        >
+          Fit to View
+        </button>
+      )}
+
+      {/* Zoom indicator */}
+      <div
+        style={{
+          position: 'absolute', bottom: 10, left: 10,
+          fontSize: 10, color: '#999', pointerEvents: 'none',
+          background: 'rgba(255,255,255,0.75)', padding: '2px 6px', borderRadius: 3,
+        }}
+      >
+        {Math.round(zoom * 100)}% · scroll to zoom
+      </div>
     </div>
   )
 }

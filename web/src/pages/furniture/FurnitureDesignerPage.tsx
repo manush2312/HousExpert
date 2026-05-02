@@ -1,3 +1,4 @@
+import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import {
   ArrowLeft, Save, Download,
@@ -206,6 +207,8 @@ function RightPanel() {
 
       {/* ── Settings ── */}
       <div className="p-4 space-y-4 overflow-y-auto flex-1">
+        <BoxCreator />
+
         <div>
           <label className="eyebrow mb-2 block">Depth & Thickness</label>
           <div className="space-y-2">
@@ -233,6 +236,68 @@ function RightPanel() {
 
         {/* Cut list */}
         <CutList />
+      </div>
+    </div>
+  )
+}
+
+function BoxCreator() {
+  const { outerBox, setOuterBox } = useFurnitureStore()
+  const [width, setWidth] = useState(1200)
+  const [height, setHeight] = useState(2100)
+  const [depth, setDepthValue] = useState(600)
+
+  useEffect(() => {
+    if (!outerBox) return
+    setWidth(outerBox.width)
+    setHeight(outerBox.height)
+    setDepthValue(outerBox.depth)
+  }, [outerBox])
+
+  const canCreate = !outerBox && width > 0 && height > 0 && depth > 0
+
+  return (
+    <div>
+      <label className="eyebrow mb-2 block">Box Setup</label>
+      <div
+        className="rounded-md p-3 space-y-2.5"
+        style={{ background: 'var(--bg-sunken)', border: '1px solid var(--line)' }}
+      >
+        <SettingRow
+          label="Width"
+          value={width}
+          disabled={Boolean(outerBox)}
+          onChange={(v) => setWidth(v)}
+          hint={!outerBox ? 'Create the outer box with an exact width' : undefined}
+        />
+        <SettingRow
+          label="Height"
+          value={height}
+          disabled={Boolean(outerBox)}
+          onChange={(v) => setHeight(v)}
+        />
+        <SettingRow
+          label="Depth"
+          value={depth}
+          disabled={Boolean(outerBox)}
+          onChange={(v) => setDepthValue(v)}
+        />
+
+        <button
+          type="button"
+          disabled={!canCreate}
+          onClick={() => setOuterBox({ width, height, depth })}
+          className="btn btn-primary btn-sm w-full"
+          style={{ opacity: canCreate ? 1 : 0.5, cursor: canCreate ? 'pointer' : 'not-allowed' }}
+        >
+          Create Box
+        </button>
+
+        <p className="text-[11px]" style={{ color: 'var(--ink-4)' }}>
+          {outerBox
+            ? 'Use Reset to start a new box from exact dimensions.'
+            : 'You can still draw the box manually on the canvas if you prefer.'}
+        </p>
       </div>
     </div>
   )
@@ -422,7 +487,7 @@ function CutList() {
       <div>
         <label className="eyebrow mb-2 block">Cut List</label>
         <p className="text-[12px]" style={{ color: 'var(--ink-4)' }}>
-          Draw the furniture box to generate the cut list.
+          Draw or create the furniture box to generate the cut list.
         </p>
       </div>
     )
