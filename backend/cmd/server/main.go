@@ -13,8 +13,12 @@ import (
 )
 
 func main() {
-	// Load .env file (optional — falls back to real env vars in production)
-	if err := godotenv.Load(); err != nil {
+	// Load .env file — ENV_FILE overrides the default ".env"
+	envFile := os.Getenv("ENV_FILE")
+	if envFile == "" {
+		envFile = ".env"
+	}
+	if err := godotenv.Load(envFile); err != nil {
 		log.Println("No .env file found, using environment variables")
 	}
 

@@ -2,6 +2,8 @@ import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
 import tailwindcss from '@tailwindcss/vite'
 
+const apiPort = process.env.API_PORT ?? '8080'
+
 // https://vite.dev/config/
 export default defineConfig({
   plugins: [
@@ -11,9 +13,8 @@ export default defineConfig({
   server: {
     port: 3000,
     proxy: {
-      // Proxy API calls to the Go backend during development
       '/api': {
-        target: 'http://localhost:8080',
+        target: `http://localhost:${apiPort}`,
         changeOrigin: true,
       },
     },
