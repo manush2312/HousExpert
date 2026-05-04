@@ -14,11 +14,22 @@ type FieldValue struct {
 }
 
 type InventoryConsumption struct {
-	InventoryItemID   string  `bson:"inventory_item_id" json:"inventory_item_id"`
-	InventoryItemName string  `bson:"inventory_item_name" json:"inventory_item_name"`
-	InventoryUnit     string  `bson:"inventory_unit" json:"inventory_unit"`
-	UsagePerQuantity  float64 `bson:"usage_per_quantity" json:"usage_per_quantity"`
-	ConsumedQuantity  float64 `bson:"consumed_quantity" json:"consumed_quantity"`
+	InventoryItemID   string                   `bson:"inventory_item_id" json:"inventory_item_id"`
+	InventoryItemName string                   `bson:"inventory_item_name" json:"inventory_item_name"`
+	InventoryUnit     string                   `bson:"inventory_unit" json:"inventory_unit"`
+	InventoryLotID    string                   `bson:"inventory_lot_id,omitempty" json:"inventory_lot_id,omitempty"`
+	InventoryLotLabel string                   `bson:"inventory_lot_label,omitempty" json:"inventory_lot_label,omitempty"`
+	SupplierBucket    string                   `bson:"supplier_bucket,omitempty" json:"supplier_bucket,omitempty"`
+	UsagePerQuantity  float64                  `bson:"usage_per_quantity" json:"usage_per_quantity"`
+	ConsumedQuantity  float64                  `bson:"consumed_quantity" json:"consumed_quantity"`
+	Allocations       []InventoryLotAllocation `bson:"allocations,omitempty" json:"allocations,omitempty"`
+}
+
+type InventoryLotAllocation struct {
+	InventoryLotID    string  `bson:"inventory_lot_id" json:"inventory_lot_id"`
+	InventoryLotLabel string  `bson:"inventory_lot_label,omitempty" json:"inventory_lot_label,omitempty"`
+	SupplierBucket    string  `bson:"supplier_bucket,omitempty" json:"supplier_bucket,omitempty"`
+	AllocatedQuantity float64 `bson:"allocated_quantity" json:"allocated_quantity"`
 }
 
 // LogEntry represents a single daily log entry in a project

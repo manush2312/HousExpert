@@ -1,10 +1,12 @@
 import type {
   FieldValue,
+  InventoryLotAllocation,
   LogCostMode,
   PricingRateEntry,
   PricingRule,
   SchemaField,
 } from '../services/logService'
+import type { InventoryStockLot } from '../services/inventoryService'
 
 export function computeLogTotalCost(
   costMode: LogCostMode,
@@ -26,6 +28,28 @@ export function computeLogTotalCost(
   if (unitCost == null) return null
   const sizeMultiplier = findResolvedSizeMultiplier(schema, itemFields, values)
   return unitCost * quantity * (sizeMultiplier ?? 1)
+}
+
+export function computeInventoryVendorSellTotal(
+  quantity: number | null,
+  usagePerQuantity: number | null | undefined,
+  allocations: InventoryLotAllocation[],
+  stockLots: InventoryStockLot[],
+): number | null {
+  if (quantity == null || quantity <= 0) return null
+  if (allocations.length === 0) return null
+  if (!usagePerQuantity || usagePerQuantity <= 0) return null
+
+  const stockLotsById = new Map(stockLots.map((lot) => [lot.lot_id, lot]))
+  let total = 0
+  for (const allocation of allocations) {
+    const lot = stockLotsById.get(allocation.inventory_lot_id)
+    if (!lot || lot.default_sell_price == null || lot.default_sell_price <= 0) {
+      return null
+    }
+    total += (allocation.allocated_quantity / usagePerQuantity) * lot.default_sell_price
+  }
+  return total
 }
 
 export function findResolvedUnitCost(

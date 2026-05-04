@@ -14,9 +14,19 @@ export interface InventoryItem {
   min_stock_level: number
   current_stock: number
   last_purchase_cost?: number
+  vendor_pricing?: InventoryVendorPricing[]
   notes?: string
   created_at: string
   updated_at: string
+}
+
+export interface InventoryVendorPricing {
+  supplier_name: string
+  default_buy_price?: number
+  default_sell_price?: number
+  lead_time_days?: number
+  preferred_supplier?: boolean
+  notes?: string
 }
 
 export type InventoryMovementType = 'in' | 'out' | 'adjustment'
@@ -27,6 +37,9 @@ export interface InventoryMovement {
   item_id: string
   item_name: string
   item_unit: string
+  lot_id?: string
+  lot_label?: string
+  supplier_bucket?: string
   type: InventoryMovementType
   reason?: string
   quantity: number
@@ -39,6 +52,32 @@ export interface InventoryMovement {
   notes?: string
   transaction_date: string
   created_at: string
+}
+
+export interface InventorySupplierStock {
+  item_id: string
+  item_name: string
+  item_unit: string
+  supplier_bucket: string
+  available_qty: number
+  unit_cost?: number
+}
+
+export interface InventoryStockLot {
+  lot_id: string
+  item_id: string
+  item_name: string
+  item_unit: string
+  supplier_bucket: string
+  received_quantity: number
+  remaining_quantity: number
+  unit_cost?: number
+  default_sell_price?: number
+  received_date: string
+  document_number?: string
+  reference?: string
+  notes?: string
+  label: string
 }
 
 export interface InventorySummary {
@@ -61,6 +100,7 @@ export interface CreateInventoryItemPayload {
   min_stock_level?: number
   opening_stock?: number
   last_purchase_cost?: number
+  vendor_pricing?: InventoryVendorPricing[]
   notes?: string
 }
 
@@ -75,6 +115,7 @@ export interface UpdateInventoryItemPayload {
   location?: string
   min_stock_level?: number
   last_purchase_cost?: number
+  vendor_pricing?: InventoryVendorPricing[]
   notes?: string
 }
 
@@ -85,6 +126,8 @@ export interface CreateInventoryMovementPayload {
   quantity: number
   unit_cost?: number
   party?: string
+  supplier_bucket?: string
+  lot_id?: string
   document_number?: string
   transaction_date?: string
   reference?: string
@@ -93,6 +136,15 @@ export interface CreateInventoryMovementPayload {
 
 export const listInventoryItems = () =>
   api.get<{ success: boolean; data: InventoryItem[] }>('/inventory/items')
+
+export const listAllInventoryStockLots = () =>
+  api.get<{ success: boolean; data: InventoryStockLot[] }>('/inventory/stock-lots')
+
+export const listInventorySupplierStock = (itemId: string) =>
+  api.get<{ success: boolean; data: InventorySupplierStock[] }>(`/inventory/items/${itemId}/supplier-stock`)
+
+export const listInventoryStockLots = (itemId: string) =>
+  api.get<{ success: boolean; data: InventoryStockLot[] }>(`/inventory/items/${itemId}/stock-lots`)
 
 export const createInventoryItem = (payload: CreateInventoryItemPayload) =>
   api.post<{ success: boolean; data: InventoryItem }>('/inventory/items', payload)

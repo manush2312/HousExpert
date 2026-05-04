@@ -50,14 +50,14 @@ function toServicePayload(sections: DraftSection[]): QuotationSectionInput[] {
         .map((i): QuotationItemInput => {
           const computedSqft = deriveSqft(i.size, i.sqft)
           return {
-          product_id: i.product_id || undefined,
-          description: i.description.trim(),
-          size: i.size.trim() || undefined,
-          sqft: computedSqft,
-          qty: Number(i.qty) || 1,
-          use_quantity_rate: i.use_quantity_rate,
-          rate: Number(i.rate) || 0,
-          note: i.note.trim() || undefined,
+            product_id: i.product_id || undefined,
+            description: i.description.trim(),
+            size: i.size.trim() || undefined,
+            sqft: computedSqft,
+            qty: Number(i.qty) || 1,
+            use_quantity_rate: i.use_quantity_rate,
+            rate: Number(i.rate) || 0,
+            note: i.note.trim() || undefined,
           }
         }),
     }))
@@ -371,9 +371,9 @@ function ItemRow({ item, rowIndex, products, onChange, onRemove, onApplyProduct,
     >
       {/* Product picker */}
       <div>
-        <div className="flex items-center gap-1.5">
+        <div className="flex items-start gap-1.5">
           <span className="numeral text-[10.5px] shrink-0" style={{ color: 'var(--ink-5)', minWidth: 16 }}>{rowIndex + 1}</span>
-          <div className="flex-1 min-w-0">
+          <div className="flex-1 min-w-0 space-y-1.5">
             <SearchableSelect
               value={item.product_id ?? ''}
               onChange={(nextValue) => {

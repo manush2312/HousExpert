@@ -76,7 +76,7 @@ func quotationCol() *mongo.Collection {
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 // buildSections converts input sections → model sections and computes item amounts + total.
-func buildSections(inputs []QuotationSectionInput) ([]models.QuotationSection, float64) {
+func buildSections(inputs []QuotationSectionInput) ([]models.QuotationSection, float64, error) {
 	var sections []models.QuotationSection
 	var total float64
 
@@ -113,7 +113,7 @@ func buildSections(inputs []QuotationSectionInput) ([]models.QuotationSection, f
 	if sections == nil {
 		sections = []models.QuotationSection{}
 	}
-	return sections, total
+	return sections, total, nil
 }
 
 func deriveQuotationSqft(size string, fallback *float64) *float64 {
@@ -161,7 +161,10 @@ func CreateQuotation(input CreateQuotationInput) (*models.Quotation, error) {
 		return nil, fmt.Errorf("id generation failed: %w", err)
 	}
 
-	sections, total := buildSections(input.Sections)
+	sections, total, err := buildSections(input.Sections)
+	if err != nil {
+		return nil, err
+	}
 
 	now := time.Now()
 	q := &models.Quotation{
@@ -257,7 +260,10 @@ func UpdateQuotation(quotationID string, input UpdateQuotationInput) (*models.Qu
 		set["notes"] = *input.Notes
 	}
 	if input.Sections != nil {
-		sections, total := buildSections(input.Sections)
+	sections, total, err := buildSections(input.Sections)
+		if err != nil {
+			return nil, err
+		}
 		set["sections"] = sections
 		set["total_amount"] = total
 	}

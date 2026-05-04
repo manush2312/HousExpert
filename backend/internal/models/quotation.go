@@ -19,16 +19,16 @@ const (
 
 // QuotationItem is a single line in a quotation section.
 type QuotationItem struct {
-	ItemID          primitive.ObjectID `bson:"item_id" json:"item_id"`
-	ProductID       string             `bson:"product_id,omitempty" json:"product_id,omitempty"` // optional link to catalog
-	Description     string             `bson:"description" json:"description"`
-	Size            string             `bson:"size,omitempty" json:"size,omitempty"` // e.g. "6x6.5"
-	Sqft            *float64           `bson:"sqft,omitempty" json:"sqft,omitempty"` // nullable
-	Qty             float64            `bson:"qty" json:"qty"`                       // default 1
-	UseQuantityRate bool               `bson:"use_quantity_rate,omitempty" json:"use_quantity_rate,omitempty"`
-	Rate            float64            `bson:"rate" json:"rate"`
-	Amount          float64            `bson:"amount" json:"amount"` // computed total for this line
-	Note            string             `bson:"note,omitempty" json:"note,omitempty"`
+	ItemID                 primitive.ObjectID `bson:"item_id" json:"item_id"`
+	ProductID              string             `bson:"product_id,omitempty" json:"product_id,omitempty"` // optional link to catalog
+	Description            string             `bson:"description" json:"description"`
+	Size                   string             `bson:"size,omitempty" json:"size,omitempty"` // e.g. "6x6.5"
+	Sqft                   *float64           `bson:"sqft,omitempty" json:"sqft,omitempty"` // nullable
+	Qty                    float64            `bson:"qty" json:"qty"`                       // default 1
+	UseQuantityRate        bool               `bson:"use_quantity_rate,omitempty" json:"use_quantity_rate,omitempty"`
+	Rate                   float64            `bson:"rate" json:"rate"`
+	Amount                 float64            `bson:"amount" json:"amount"` // computed total for this line
+	Note                   string             `bson:"note,omitempty" json:"note,omitempty"`
 }
 
 // QuotationSection groups line items under a room/area label (e.g. "Bedroom", "Kitchen").
