@@ -4,6 +4,7 @@ import { Info } from 'lucide-react'
 import DatePicker from '../../components/DatePicker'
 import SearchableSelect from '../../components/SearchableSelect'
 import SizeTextInput from '../../components/SizeTextInput'
+import { listInventoryStockLots, type InventoryStockLot } from '../../services/inventoryService'
 import {
   createLogEntry,
   getPricingRule,
@@ -21,6 +22,7 @@ import {
 import { getProject, type Project } from '../../services/projectService'
 import {
   computeLogTotalCost,
+  computeInventoryVendorSellTotal,
   findSizeFieldLabel,
   isDirectAmountFieldLabel,
   isQuantityFieldLabel,
@@ -28,6 +30,11 @@ import {
   isUnitCostFieldLabel,
 } from '../../utils/logPricing'
 import { isSizeLikeLabel } from '../../utils/sizeFormat'
+
+type LotAllocationDraft = {
+  inventory_lot_id: string
+  allocated_quantity: string
+}
 
 export default function NewLogEntryPage() {
   const { id: projectId } = useParams<{ id: string }>()
@@ -45,6 +52,8 @@ export default function NewLogEntryPage() {
   const [quantity, setQuantity] = useState('')
   const [notes, setNotes] = useState('')
   const [fieldValues, setFieldValues] = useState<Record<string, unknown>>({})
+  const [lotAllocations, setLotAllocations] = useState<LotAllocationDraft[]>([])
+  const [stockLotRows, setStockLotRows] = useState<InventoryStockLot[]>([])
   const [pricingRule, setPricingRule] = useState<PricingRule | null>(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
@@ -54,15 +63,26 @@ export default function NewLogEntryPage() {
   const entrySchema = getEntrySchema(selectedType)
   const costMode = getEffectiveCostMode(selectedType)
   const selectedItem = items.find((item) => item.id === selectedItemId)
-  const inventoryLinked = Boolean(selectedItem?.inventory_link)
-  const inventoryQuantityUnit = selectedItem?.inventory_link?.quantity_unit?.trim()
+  const resolvedInventoryLink = selectedItem ? resolveInventoryLinkForEntry(selectedItem, fieldValues) : null
+  const inventoryLinked = Boolean(resolvedInventoryLink || selectedItem?.inventory_link || (selectedItem?.inventory_mappings?.length ?? 0) > 0)
+  const inventoryQuantityUnit = resolvedInventoryLink?.quantity_unit?.trim()
   const quantityVisible = costMode === 'quantity_x_unit_cost' || inventoryLinked
   const quantityRequired = quantityVisible && (isQuantityRequired(entrySchema, selectedItem?.fields ?? []) || inventoryLinked)
   const parsedQuantity = parseOptionalNumber(quantity)
   const sizeFieldLabel = findSizeFieldLabel(entrySchema, selectedItem?.fields ?? [])
-  const totalCost = parsedQuantity != null
-    ? computeLogTotalCost(costMode, entrySchema, selectedItem?.fields ?? [], fieldValues, parsedQuantity, pricingRule)
-    : computeLogTotalCost(costMode, entrySchema, selectedItem?.fields ?? [], fieldValues, null, pricingRule)
+  const inventoryConsumption = inventoryLinked && parsedQuantity != null
+    ? parsedQuantity * (resolvedInventoryLink?.usage_per_quantity ?? 0)
+    : null
+  const lotSelectionRequired = inventoryLinked && stockLotRows.length > 0
+  const parsedLotAllocations = normalizeLotAllocationDrafts(lotAllocations)
+  const vendorPricedTotalCost = resolvedInventoryLink
+    ? computeInventoryVendorSellTotal(parsedQuantity, resolvedInventoryLink.usage_per_quantity, parsedLotAllocations, stockLotRows)
+    : null
+  const totalCost = vendorPricedTotalCost ?? (
+    parsedQuantity != null
+      ? computeLogTotalCost(costMode, entrySchema, selectedItem?.fields ?? [], fieldValues, parsedQuantity, pricingRule)
+      : computeLogTotalCost(costMode, entrySchema, selectedItem?.fields ?? [], fieldValues, null, pricingRule)
+  )
   const visibleEntryFields = getVisibleEntryFields(entrySchema, costMode)
   const quantityLabel = sizeFieldLabel
     ? `Quantity${inventoryQuantityUnit ? ` (${inventoryQuantityUnit})` : ''}`
@@ -76,13 +96,17 @@ export default function NewLogEntryPage() {
     : pricingRule
     ? 'Enter the measurable amount used for this log, such as square feet or units'
     : inventoryLinked
-      ? `Enter quantity in ${inventoryQuantityUnit || 'the linked unit'}. This entry will consume stock from ${selectedItem?.inventory_link?.inventory_item_name}.`
+      ? resolvedInventoryLink
+        ? `Enter quantity in ${inventoryQuantityUnit || 'the linked unit'}. This entry will consume stock from ${resolvedInventoryLink.inventory_item_name}.`
+        : 'Pick the matching dropdown values below so the correct inventory item can be resolved.'
     : quantityRequired
       ? 'required for costed logs'
       : undefined
-  const inventoryConsumption = inventoryLinked && parsedQuantity != null
-    ? parsedQuantity * (selectedItem?.inventory_link?.usage_per_quantity ?? 0)
-    : null
+  const allocatedInventoryTotal = parsedLotAllocations.reduce((sum, allocation) => sum + allocation.allocated_quantity, 0)
+  const allocationDiff = inventoryConsumption != null ? inventoryConsumption - allocatedInventoryTotal : null
+  const allocationRowsComplete = lotAllocations.length > 0 && lotAllocations.every((allocation) => allocation.inventory_lot_id && parseOptionalNumber(allocation.allocated_quantity) != null && Number(allocation.allocated_quantity) > 0)
+  const lotAllocationReady = !lotSelectionRequired
+    || (inventoryConsumption != null && inventoryConsumption > 0 && allocationRowsComplete && Math.abs(allocationDiff ?? 0) <= 0.000001)
 
   useEffect(() => {
     if (!projectId) return
@@ -99,6 +123,8 @@ export default function NewLogEntryPage() {
     setItems([])
     setQuantity('')
     setFieldValues({})
+    setLotAllocations([])
+    setStockLotRows([])
     setPricingRule(null)
     if (!selectedTypeId) return
     Promise.all([
@@ -110,6 +136,8 @@ export default function NewLogEntryPage() {
   useEffect(() => {
     setSelectedItemId('')
     setItems([])
+    setLotAllocations([])
+    setStockLotRows([])
     if (!selectedCatId) return
     listLogItems(selectedCatId).then((r) => setItems(r.data.data))
   }, [selectedCatId])
@@ -124,11 +152,33 @@ export default function NewLogEntryPage() {
     }
   }, [entrySchema, selectedType])
 
+  useEffect(() => {
+    if (!resolvedInventoryLink?.inventory_item_id) {
+      setStockLotRows([])
+      setLotAllocations([])
+      return
+    }
+    listInventoryStockLots(resolvedInventoryLink.inventory_item_id)
+      .then((response) => {
+        const rows = response.data.data ?? []
+        setStockLotRows(rows)
+      })
+      .catch(() => {
+        setStockLotRows([])
+        setLotAllocations([])
+      })
+  }, [resolvedInventoryLink?.inventory_item_id])
+
+  useEffect(() => {
+    setLotAllocations((prev) => syncLotAllocations(prev, stockLotRows, inventoryConsumption))
+  }, [stockLotRows, inventoryConsumption])
+
   const setField = (fid: string, value: unknown) =>
     setFieldValues((prev) => ({ ...prev, [fid]: value }))
 
   const handleSelectItem = (itemId: string) => {
     setSelectedItemId(itemId)
+    setLotAllocations([])
     const item = items.find((row) => row.id === itemId)
     if (!item || !selectedType) return
 
@@ -140,7 +190,12 @@ export default function NewLogEntryPage() {
   }
 
   const itemRequired = selectedCatId && items.length > 0
-  const canSubmit = selectedTypeId && selectedCatId && logDate && (!itemRequired || selectedItemId) && (!quantityRequired || parsedQuantity != null)
+  const canSubmit = selectedTypeId
+    && selectedCatId
+    && logDate
+    && (!itemRequired || selectedItemId)
+    && (!quantityRequired || parsedQuantity != null)
+    && lotAllocationReady
 
   const handleSubmit = async (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault()
@@ -162,6 +217,8 @@ export default function NewLogEntryPage() {
         category_id: selectedCatId,
         item_id: selectedItemId || undefined,
         quantity: parsedQuantity ?? undefined,
+        inventory_lot_id: parsedLotAllocations.length === 1 ? parsedLotAllocations[0].inventory_lot_id : undefined,
+        inventory_lot_allocations: parsedLotAllocations.length > 0 ? parsedLotAllocations : undefined,
         log_date: logDate,
         fields,
         notes: notes || undefined,
@@ -205,6 +262,22 @@ export default function NewLogEntryPage() {
               {quantityVisible && (
                 <FormField label={quantityLabel} required={quantityRequired} hint={quantityHint}>
                   <input type="number" min="0" step="any" className="input" value={quantity} onChange={(e) => setQuantity(e.target.value)} />
+                </FormField>
+              )}
+
+              {inventoryLinked && resolvedInventoryLink && stockLotRows.length > 0 && (
+                <FormField
+                  label="Allocate stock lots"
+                  required
+                  hint={`Split ${inventoryConsumption ?? 0} ${resolvedInventoryLink.inventory_unit} across one or more lots.`}
+                >
+                  <LotAllocationEditor
+                    allocations={lotAllocations}
+                    stockLots={stockLotRows}
+                    inventoryUnit={resolvedInventoryLink.inventory_unit}
+                    requiredTotal={inventoryConsumption}
+                    onChange={setLotAllocations}
+                  />
                 </FormField>
               )}
 
@@ -297,11 +370,22 @@ export default function NewLogEntryPage() {
                       .map((field) => `${field.label}: ${displayValue(field.value)}`)
                       .join(' · ') || 'No saved item details.'}
                   </div>
-                  {selectedItem.inventory_link && (
+                  {inventoryLinked && (
                     <div className="mt-2" style={{ color: 'var(--accent-ink)' }}>
-                      Linked inventory: <strong>{selectedItem.inventory_link.inventory_item_name}</strong>
-                      {' · '}
-                      {selectedItem.inventory_link.usage_per_quantity} {selectedItem.inventory_link.inventory_unit} per {selectedItem.inventory_link.quantity_unit}
+                      {resolvedInventoryLink ? (
+                        <>
+                          Linked inventory: <strong>{resolvedInventoryLink.inventory_item_name}</strong>
+                          {' · '}
+                          {resolvedInventoryLink.usage_per_quantity} {resolvedInventoryLink.inventory_unit} per {resolvedInventoryLink.quantity_unit}
+                        </>
+                      ) : (
+                        <>Linked inventory will resolve from the selected daily-entry values.</>
+                      )}
+                    </div>
+                  )}
+                  {stockLotRows.length > 0 && (
+                    <div className="mt-2" style={{ color: 'var(--ink-3)' }}>
+                      Available stock lots: {stockLotRows.map((row) => `${row.supplier_bucket} · ${row.remaining_quantity} ${row.item_unit}`).join(' | ')}
                     </div>
                   )}
                 </div>
@@ -347,6 +431,11 @@ export default function NewLogEntryPage() {
 
             {error && (
               <p className="text-[13px] px-4 py-2.5 rounded-lg" style={{ background: 'var(--bad-wash)', color: 'var(--bad-ink)' }}>{error}</p>
+            )}
+            {!error && lotSelectionRequired && inventoryConsumption != null && !lotAllocationReady && (
+              <p className="text-[13px] px-4 py-2.5 rounded-lg" style={{ background: 'var(--warn-wash)', color: 'var(--warn-ink)' }}>
+                Allocate exactly {inventoryConsumption} {resolvedInventoryLink?.inventory_unit} across the selected lots before saving.
+              </p>
             )}
 
             <div className="flex items-center gap-2 pt-2">
@@ -394,9 +483,16 @@ export default function NewLogEntryPage() {
               )}
               <div className="flex items-start gap-2 text-[12px]">
                 <span className="shrink-0 w-28 truncate" style={{ color: 'var(--ink-4)' }}>Total cost</span>
-                <span style={{ color: totalCost == null ? 'var(--ink-5)' : 'var(--ink)', fontWeight: totalCost == null ? 400 : 500 }}>
-                  {totalCost == null ? '—' : fmtMoney(totalCost)}
-                </span>
+                <div>
+                  <span style={{ color: totalCost == null ? 'var(--ink-5)' : 'var(--ink)', fontWeight: totalCost == null ? 400 : 500 }}>
+                    {totalCost == null ? '—' : fmtMoney(totalCost)}
+                  </span>
+                  {vendorPricedTotalCost != null && (
+                    <div className="mt-0.5 text-[11px]" style={{ color: 'var(--ink-4)' }}>
+                      From selected vendor lot selling price.
+                    </div>
+                  )}
+                </div>
               </div>
               {selectedItem && (
                 <div className="flex items-start gap-2 text-[12px]">
@@ -404,13 +500,15 @@ export default function NewLogEntryPage() {
                   <span style={{ color: 'var(--ink)', fontWeight: 500 }}>{selectedItem.name}</span>
                 </div>
               )}
-              {selectedItem?.inventory_link && (
+              {inventoryLinked && (
                 <div className="flex items-start gap-2 text-[12px]">
                   <span className="shrink-0 w-28 truncate" style={{ color: 'var(--ink-4)' }}>Inventory</span>
                   <span style={{ color: inventoryConsumption == null ? 'var(--ink-5)' : 'var(--ink)', fontWeight: inventoryConsumption == null ? 400 : 500 }}>
-                    {inventoryConsumption == null
-                      ? `${selectedItem.inventory_link.inventory_item_name} linked`
-                      : `${inventoryConsumption} ${selectedItem.inventory_link.inventory_unit} from ${selectedItem.inventory_link.inventory_item_name} for ${parsedQuantity} ${selectedItem.inventory_link.quantity_unit}`}
+                    {!resolvedInventoryLink
+                      ? 'Select the matching dropdown values to resolve the inventory item.'
+                      : inventoryConsumption == null
+                        ? `${resolvedInventoryLink.inventory_item_name} linked`
+                        : `${inventoryConsumption} ${resolvedInventoryLink.inventory_unit} from ${resolvedInventoryLink.inventory_item_name}${parsedLotAllocations.length > 0 ? ` · ${summarizeLotAllocations(parsedLotAllocations, stockLotRows)}` : ''} for ${parsedQuantity} ${resolvedInventoryLink.quantity_unit}`}
                   </span>
                 </div>
               )}
@@ -445,6 +543,83 @@ export default function NewLogEntryPage() {
           </div>
         </div>
       </form>
+    </div>
+  )
+}
+
+function LotAllocationEditor({
+  allocations,
+  stockLots,
+  inventoryUnit,
+  requiredTotal,
+  onChange,
+}: {
+  allocations: LotAllocationDraft[]
+  stockLots: InventoryStockLot[]
+  inventoryUnit: string
+  requiredTotal: number | null
+  onChange: (next: LotAllocationDraft[]) => void
+}) {
+  const totalAllocated = normalizeLotAllocationDrafts(allocations).reduce((sum, allocation) => sum + allocation.allocated_quantity, 0)
+  const remaining = requiredTotal != null ? requiredTotal - totalAllocated : null
+
+  return (
+    <div className="space-y-3">
+      {allocations.map((allocation, index) => {
+        const selectedIds = allocations
+          .map((row, rowIndex) => rowIndex === index ? '' : row.inventory_lot_id)
+          .filter(Boolean)
+        const options = stockLots
+          .filter((lot) => !selectedIds.includes(lot.lot_id) || lot.lot_id === allocation.inventory_lot_id)
+          .map((lot) => ({
+            value: lot.lot_id,
+            label: `${lot.label} · ${lot.remaining_quantity} ${lot.item_unit} available${lot.default_sell_price != null && lot.default_sell_price > 0 ? ` · Sell ${lot.default_sell_price}` : ''}`,
+          }))
+
+        return (
+          <div key={`allocation-${index}`} className="grid gap-2 md:grid-cols-[minmax(0,1fr)_140px_auto]">
+            <SearchableSelect
+              value={allocation.inventory_lot_id}
+              onChange={(value) => onChange(allocations.map((row, rowIndex) => rowIndex === index ? { ...row, inventory_lot_id: value } : row))}
+              options={options}
+              placeholder="Select stock lot"
+              searchPlaceholder="Search stock lots…"
+              emptyMessage="No stock lots found"
+            />
+            <input
+              type="number"
+              min="0"
+              step="any"
+              className="input numeral"
+              value={allocation.allocated_quantity}
+              onChange={(e) => onChange(allocations.map((row, rowIndex) => rowIndex === index ? { ...row, allocated_quantity: e.target.value } : row))}
+              placeholder={inventoryUnit}
+            />
+            <button
+              type="button"
+              onClick={() => onChange(allocations.filter((_, rowIndex) => rowIndex !== index))}
+              className="btn btn-ghost"
+            >
+              Remove
+            </button>
+          </div>
+        )
+      })}
+      <div className="flex flex-wrap items-center gap-2">
+        <button
+          type="button"
+          onClick={() => onChange([...allocations, { inventory_lot_id: '', allocated_quantity: '' }])}
+          className="btn btn-ghost"
+        >
+          Add lot
+        </button>
+        {requiredTotal != null && (
+          <span className="text-[12px]" style={{ color: Math.abs(remaining ?? 0) <= 0.000001 ? 'var(--ok-ink)' : 'var(--ink-3)' }}>
+            Allocated {totalAllocated} / {requiredTotal} {inventoryUnit}
+            {remaining != null && Math.abs(remaining) > 0.000001 ? ` · Remaining ${remaining.toFixed(3).replace(/\.?0+$/, '')} ${inventoryUnit}` : ''}
+          </span>
+        )}
+      </div>
     </div>
   )
 }
@@ -484,6 +659,45 @@ function DynamicField({
   if (isSizeLikeLabel(field.label))
     return <SizeTextInput className="input" value={(value as string) ?? ''} onChange={onChange as (next: string) => void} />
   return <input type="text" className="input" value={(value as string) ?? ''} onChange={(e) => onChange(e.target.value)} required={field.required} />
+}
+
+function normalizeLotAllocationDrafts(allocations: LotAllocationDraft[]) {
+  return allocations
+    .map((allocation) => ({
+      inventory_lot_id: allocation.inventory_lot_id,
+      allocated_quantity: parseOptionalNumber(allocation.allocated_quantity),
+    }))
+    .filter((allocation): allocation is { inventory_lot_id: string; allocated_quantity: number } => Boolean(allocation.inventory_lot_id) && allocation.allocated_quantity != null && allocation.allocated_quantity > 0)
+}
+
+function syncLotAllocations(current: LotAllocationDraft[], stockLots: InventoryStockLot[], requiredTotal: number | null) {
+  if (stockLots.length === 0 || requiredTotal == null || requiredTotal <= 0) return []
+
+  const allowedIds = new Set(stockLots.map((lot) => lot.lot_id))
+  const filtered = current.filter((allocation) => allocation.inventory_lot_id === '' || allowedIds.has(allocation.inventory_lot_id))
+  if (filtered.length === 0) {
+    if (stockLots.length === 1) {
+      return [{ inventory_lot_id: stockLots[0].lot_id, allocated_quantity: String(requiredTotal) }]
+    }
+    return [{ inventory_lot_id: '', allocated_quantity: '' }]
+  }
+  if (filtered.length === 1 && filtered[0].inventory_lot_id && stockLots.length === 1) {
+    return [{ ...filtered[0], allocated_quantity: String(requiredTotal) }]
+  }
+  return filtered
+}
+
+function summarizeLotAllocations(
+  allocations: { inventory_lot_id: string; allocated_quantity: number }[],
+  stockLots: InventoryStockLot[],
+) {
+  return allocations
+    .map((allocation) => {
+      const lot = stockLots.find((row) => row.lot_id === allocation.inventory_lot_id)
+      const label = lot?.supplier_bucket || lot?.label || allocation.inventory_lot_id
+      return `${allocation.allocated_quantity} from ${label}`
+    })
+    .join(', ')
 }
 
 // ── Shared helpers ────────────────────────────────────────────────────────────
@@ -604,6 +818,25 @@ function buildEntryFieldPayload(
     }
     return { field_id: field.field_id, label: field.label, value: values[field.field_id] ?? null }
   })
+}
+
+function resolveInventoryLinkForEntry(item: LogItem, values: Record<string, unknown>) {
+  const mappings = item.inventory_mappings ?? []
+  let bestLink = item.inventory_link ?? null
+  let bestScore = -1
+
+  mappings.forEach((mapping) => {
+    const entries = Object.entries(mapping.conditions ?? {})
+    if (entries.length === 0) return
+    const matched = entries.every(([fieldId, expected]) => String(values[fieldId] ?? '').trim() === expected)
+    if (!matched) return
+    if (entries.length > bestScore) {
+      bestLink = mapping.link
+      bestScore = entries.length
+    }
+  })
+
+  return bestLink
 }
 
 function fmtMoney(value: number): string {

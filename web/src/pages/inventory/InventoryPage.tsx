@@ -7,17 +7,20 @@ import {
 import DatePicker from '../../components/DatePicker'
 import SearchableSelect from '../../components/SearchableSelect'
 import {
+  listAllInventoryStockLots,
   createInventoryItem,
   createInventoryMovement,
   deleteInventoryItem,
   getInventorySummary,
   listInventoryItems,
   listInventoryMovements,
+  listInventoryStockLots,
   updateInventoryItem,
   type CreateInventoryItemPayload,
   type CreateInventoryMovementPayload,
   type InventoryItem,
   type InventoryMovement,
+  type InventoryStockLot,
   type InventoryMovementType,
   type InventorySummary,
 } from '../../services/inventoryService'
@@ -40,6 +43,16 @@ type ItemDraft = {
   min_stock_level: string
   opening_stock: string
   last_purchase_cost: string
+  vendor_pricing: VendorPricingDraft[]
+  notes: string
+}
+
+type VendorPricingDraft = {
+  supplier_name: string
+  default_buy_price: string
+  default_sell_price: string
+  lead_time_days: string
+  preferred_supplier: boolean
   notes: string
 }
 
@@ -50,6 +63,7 @@ type MovementDraft = {
   quantity: string
   unit_cost: string
   party: string
+  lot_id: string
   document_number: string
   transaction_date: string
   reference: string
@@ -68,6 +82,7 @@ const EMPTY_ITEM_DRAFT: ItemDraft = {
   min_stock_level: '0',
   opening_stock: '0',
   last_purchase_cost: '0',
+  vendor_pricing: [],
   notes: '',
 }
 
@@ -137,6 +152,7 @@ function emptyMovementDraft(itemId = '', type: InventoryMovementType = 'in'): Mo
     quantity: '',
     unit_cost: '',
     party: '',
+    lot_id: '',
     document_number: '',
     transaction_date: new Date().toISOString().split('T')[0],
     reference: '',
@@ -166,6 +182,19 @@ function usageConversionLabel(item: InventoryItem) {
   return `1 ${item.unit} = ${item.usage_units_per_stock_unit} ${item.usage_unit}`
 }
 
+function normalizeVendorPricingDrafts(rows: VendorPricingDraft[]) {
+  return rows
+    .map((row) => ({
+      supplier_name: row.supplier_name.trim(),
+      default_buy_price: Number(row.default_buy_price || 0) || 0,
+      default_sell_price: Number(row.default_sell_price || 0) || 0,
+      lead_time_days: Number(row.lead_time_days || 0) || 0,
+      preferred_supplier: row.preferred_supplier,
+      notes: row.notes.trim(),
+    }))
+    .filter((row) => row.supplier_name)
+}
+
 function movementTone(type: InventoryMovementType) {
   if (type === 'in') return { label: 'Stock In', color: '#166534', bg: '#dcfce7' }
   if (type === 'out') return { label: 'Stock Out', color: '#991b1b', bg: '#fee2e2' }
@@ -184,6 +213,24 @@ function movementSignedQuantity(movement: InventoryMovement) {
   if (movement.type === 'in') return movement.quantity
   if (movement.type === 'out') return -movement.quantity
   return movement.quantity
+}
+
+function aggregateSupplierLots(lots: InventoryStockLot[]) {
+  const grouped = new Map<string, { supplier: string; quantity: number; unit: string }>()
+  lots.forEach((lot) => {
+    const key = lot.supplier_bucket || 'Unassigned stock'
+    const current = grouped.get(key)
+    if (current) {
+      current.quantity += lot.remaining_quantity
+      return
+    }
+    grouped.set(key, {
+      supplier: key,
+      quantity: lot.remaining_quantity,
+      unit: lot.item_unit,
+    })
+  })
+  return Array.from(grouped.values()).sort((a, b) => b.quantity - a.quantity || a.supplier.localeCompare(b.supplier))
 }
 
 function parseSafeDate(value?: string | null): Date | null {
@@ -229,6 +276,7 @@ function formatMovementReferenceHint(movement: InventoryMovement) {
 export default function InventoryPage() {
   const navigate = useNavigate()
   const [items, setItems] = useState<InventoryItem[]>([])
+  const [stockLots, setStockLots] = useState<InventoryStockLot[]>([])
   const [summary, setSummary] = useState<InventorySummary | null>(null)
   const [movements, setMovements] = useState<InventoryMovement[]>([])
   const [inventoryLogLinks, setInventoryLogLinks] = useState<Record<string, InventoryLogLink[]>>({})
@@ -251,12 +299,14 @@ export default function InventoryPage() {
     try {
       setLoading(true)
       setError('')
-      const [itemsRes, summaryRes] = await Promise.all([
+      const [itemsRes, summaryRes, stockLotsRes] = await Promise.all([
         listInventoryItems(),
         getInventorySummary(),
+        listAllInventoryStockLots(),
       ])
       setItems(itemsRes.data.data)
       setSummary(summaryRes.data.data)
+      setStockLots(stockLotsRes.data.data)
     } catch {
       setError('Failed to load inventory. Make sure the backend is running.')
     } finally {
@@ -352,6 +402,16 @@ export default function InventoryPage() {
       return matchesQuery && matchesCategory
     })
   }, [items, query, categoryFilter])
+
+  const stockLotsByItem = useMemo(() => {
+    const next = new Map<string, InventoryStockLot[]>()
+    stockLots.forEach((lot) => {
+      const rows = next.get(lot.item_id) ?? []
+      rows.push(lot)
+      next.set(lot.item_id, rows)
+    })
+    return next
+  }, [stockLots])
 
   const stockViewCounts = useMemo(() => ({
     all: filteredItems.length,
@@ -478,6 +538,14 @@ export default function InventoryPage() {
       min_stock_level: String(item.min_stock_level ?? 0),
       opening_stock: String(item.current_stock ?? 0),
       last_purchase_cost: String(item.last_purchase_cost ?? 0),
+      vendor_pricing: (item.vendor_pricing ?? []).map((row) => ({
+        supplier_name: row.supplier_name,
+        default_buy_price: String(row.default_buy_price ?? 0),
+        default_sell_price: String(row.default_sell_price ?? 0),
+        lead_time_days: String(row.lead_time_days ?? 0),
+        preferred_supplier: Boolean(row.preferred_supplier),
+        notes: row.notes ?? '',
+      })),
       notes: item.notes ?? '',
     })
     setItemFormOpen(true)
@@ -508,6 +576,7 @@ export default function InventoryPage() {
       location: itemDraft.location.trim() || undefined,
       min_stock_level: Number(itemDraft.min_stock_level || 0),
       last_purchase_cost: Number(itemDraft.last_purchase_cost || 0),
+      vendor_pricing: normalizeVendorPricingDrafts(itemDraft.vendor_pricing),
       notes: itemDraft.notes.trim() || undefined,
     }
 
@@ -541,6 +610,7 @@ export default function InventoryPage() {
       quantity: Number(movementDraft.quantity),
       unit_cost: Number(movementDraft.unit_cost || 0) || undefined,
       party: movementDraft.party.trim() || undefined,
+      lot_id: movementDraft.lot_id || undefined,
       document_number: movementDraft.document_number.trim() || undefined,
       transaction_date: movementDraft.transaction_date || undefined,
       reference: movementDraft.reference.trim() || undefined,
@@ -669,7 +739,7 @@ export default function InventoryPage() {
                   <th className="px-4 py-3 text-left eyebrow">Category</th>
                   <th className="px-4 py-3 text-left eyebrow">On hand</th>
                   <th className="px-4 py-3 text-left eyebrow">Usage</th>
-                  <th className="px-4 py-3 text-left eyebrow">Supplier</th>
+                  <th className="px-4 py-3 text-left eyebrow">By supplier</th>
                   <th className="px-4 py-3 text-left eyebrow">Location</th>
                   <th className="px-4 py-3 text-left eyebrow">Status</th>
                 </tr>
@@ -678,6 +748,8 @@ export default function InventoryPage() {
                 {currentStockRows.map((item) => {
                   const isOut = item.current_stock <= 0
                   const isLow = !isOut && item.min_stock_level > 0 && item.current_stock <= item.min_stock_level
+                  const itemLots = stockLotsByItem.get(item.item_id) ?? []
+                  const supplierRows = aggregateSupplierLots(itemLots)
                   return (
                     <tr key={`snapshot-${item.item_id}`} style={{ borderTop: '1px solid var(--line-2)' }}>
                       <td className="px-5 py-3">
@@ -693,7 +765,19 @@ export default function InventoryPage() {
                         <div className="text-[11px]" style={{ color: 'var(--ink-4)' }}>Reorder at {fmtQty(item.min_stock_level, item.unit)}</div>
                       </td>
                       <td className="px-4 py-3" style={{ color: 'var(--ink-2)' }}>{usageConversionLabel(item) || '—'}</td>
-                      <td className="px-4 py-3" style={{ color: 'var(--ink-2)' }}>{item.supplier || '—'}</td>
+                      <td className="px-4 py-3" style={{ color: 'var(--ink-2)' }}>
+                        {supplierRows.length > 0 ? (
+                          <div className="space-y-1">
+                            {supplierRows.map((row) => (
+                              <div key={`${item.item_id}-${row.supplier}`} className="text-[11.5px]">
+                                {row.supplier} · {fmtQty(row.quantity, row.unit)}
+                              </div>
+                            ))}
+                          </div>
+                        ) : (
+                          item.supplier || '—'
+                        )}
+                      </td>
                       <td className="px-4 py-3" style={{ color: 'var(--ink-2)' }}>{item.location || '—'}</td>
                       <td className="px-4 py-3">
                         <span
@@ -785,6 +869,9 @@ export default function InventoryPage() {
               filteredItems.map((item) => {
                 const isOut = item.current_stock <= 0
                 const isLow = item.min_stock_level > 0 && item.current_stock <= item.min_stock_level
+                const itemLots = stockLotsByItem.get(item.item_id) ?? []
+                const supplierRows = aggregateSupplierLots(itemLots)
+                const vendorPricingRows = item.vendor_pricing ?? []
                 return (
                   <div key={item.item_id} className="group px-5 py-4" style={{ borderBottom: '1px solid var(--line-2)' }}>
                     <div className="flex flex-wrap items-start gap-3">
@@ -818,6 +905,38 @@ export default function InventoryPage() {
                             <span>Usage: <strong style={{ color: 'var(--ink-2)' }}>{usageConversionLabel(item)}</strong></span>
                           )}
                         </div>
+                        {supplierRows.length > 0 && (
+                          <div className="mt-2">
+                            <div className="text-[11px] mb-1" style={{ color: 'var(--ink-4)' }}>Vendor-wise stock</div>
+                            <div className="flex flex-wrap gap-1.5">
+                              {supplierRows.map((row) => (
+                                <span
+                                  key={`${item.item_id}-${row.supplier}`}
+                                  className="text-[11px] px-2 py-1 rounded-full"
+                                  style={{ background: 'var(--bg-sunken)', color: 'var(--ink-2)' }}
+                                >
+                                  {row.supplier} · {fmtQty(row.quantity, row.unit)}
+                                </span>
+                              ))}
+                            </div>
+                          </div>
+                        )}
+                        {vendorPricingRows.length > 0 && (
+                          <div className="mt-2">
+                            <div className="text-[11px] mb-1" style={{ color: 'var(--ink-4)' }}>Vendor selling prices</div>
+                            <div className="flex flex-wrap gap-1.5">
+                              {vendorPricingRows.map((row) => (
+                                <span
+                                  key={`${item.item_id}-sell-${row.supplier_name}`}
+                                  className="text-[11px] px-2 py-1 rounded-full"
+                                  style={{ background: row.preferred_supplier ? 'var(--accent-wash)' : 'var(--bg-sunken)', color: row.preferred_supplier ? 'var(--accent-ink)' : 'var(--ink-2)' }}
+                                >
+                                  {row.supplier_name} · Sell Rs {fmtMoney(row.default_sell_price ?? 0)}
+                                </span>
+                              ))}
+                            </div>
+                          </div>
+                        )}
                         {(inventoryLogLinks[item.item_id] ?? []).length > 0 && (
                           <div className="mt-2 flex flex-wrap items-center gap-2">
                             <span
@@ -1067,6 +1186,9 @@ export default function InventoryPage() {
                             <td className="px-4 py-3">
                               <div style={{ color: 'var(--ink)', fontWeight: 500 }}>{movement.item_name}</div>
                               <div className="text-[11px] numeral" style={{ color: 'var(--ink-4)' }}>{movement.item_id}</div>
+                              {movement.lot_label && (
+                                <div className="text-[11px]" style={{ color: 'var(--ink-4)' }}>{movement.lot_label}</div>
+                              )}
                             </td>
                             <td className="px-4 py-3">
                               <span className="text-[10.5px] px-1.5 py-0.5 rounded-full" style={{ background: tone.bg, color: tone.color }}>
@@ -1265,6 +1387,80 @@ function ItemFormCard({
               : ' If you buy in packets/boxes but use individual pieces, add a usage unit and pack size here.'}
         </div>
 
+        <div className="rounded-xl border p-4" style={{ borderColor: 'var(--line-2)', background: 'var(--bg-elev)' }}>
+          <div className="flex items-start justify-between gap-3">
+            <div>
+              <div className="text-[12px] font-semibold" style={{ color: 'var(--ink)' }}>Vendor selling prices</div>
+              <div className="text-[11.5px] mt-1" style={{ color: 'var(--ink-4)' }}>
+                Set default buy and sell prices per vendor. Daily logs use the chosen vendor lot price, so one item like Handle can behave differently for JK, MK, and NK.
+              </div>
+            </div>
+            <button
+              type="button"
+              onClick={() => update('vendor_pricing', [...draft.vendor_pricing, {
+                supplier_name: '',
+                default_buy_price: '',
+                default_sell_price: '',
+                lead_time_days: '',
+                preferred_supplier: draft.vendor_pricing.length === 0,
+                notes: '',
+              }])}
+              className="btn btn-ghost"
+            >
+              <Plus size={13} /> Add vendor
+            </button>
+          </div>
+
+          <div className="mt-4 space-y-3">
+            {draft.vendor_pricing.length === 0 ? (
+              <div className="text-[12px]" style={{ color: 'var(--ink-4)' }}>
+                No vendor pricing yet. Add vendors like `JK`, `MK`, and `NK` with their default sell prices.
+              </div>
+            ) : draft.vendor_pricing.map((row, index) => (
+              <div key={`vendor-pricing-${index}`} className="rounded-xl border p-3" style={{ borderColor: 'var(--line-2)', background: 'var(--bg-sunken)' }}>
+                <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-5">
+                  <Field label="Vendor" tooltip="Supplier or vendor name for this commercial price card.">
+                    <input className="input" value={row.supplier_name} onChange={(e) => update('vendor_pricing', draft.vendor_pricing.map((entry, rowIndex) => rowIndex === index ? { ...entry, supplier_name: e.target.value } : entry))} placeholder="JK Suppliers" />
+                  </Field>
+                  <Field label="Default buy" tooltip="Typical purchase price from this vendor, used as a commercial reference.">
+                    <input className="input numeral" type="number" min="0" step="any" value={row.default_buy_price} onChange={(e) => update('vendor_pricing', draft.vendor_pricing.map((entry, rowIndex) => rowIndex === index ? { ...entry, default_buy_price: e.target.value } : entry))} placeholder="90" />
+                  </Field>
+                  <Field label="Default sell" tooltip="Selling price for this vendor. Daily logs multiply this price by the logged quantity when stock is taken from this vendor's lot.">
+                    <input className="input numeral" type="number" min="0" step="any" value={row.default_sell_price} onChange={(e) => update('vendor_pricing', draft.vendor_pricing.map((entry, rowIndex) => rowIndex === index ? { ...entry, default_sell_price: e.target.value } : entry))} placeholder="130" />
+                  </Field>
+                  <Field label="Lead time" tooltip="Typical lead time in days for this vendor.">
+                    <input className="input numeral" type="number" min="0" step="1" value={row.lead_time_days} onChange={(e) => update('vendor_pricing', draft.vendor_pricing.map((entry, rowIndex) => rowIndex === index ? { ...entry, lead_time_days: e.target.value } : entry))} placeholder="2" />
+                  </Field>
+                  <div className="space-y-1.5">
+                    <span className="flex items-center gap-1.5 text-[11px] font-medium uppercase tracking-wider" style={{ color: 'var(--ink-4)' }}>Preferred</span>
+                    <label className="flex h-10 items-center gap-2 rounded-lg border px-3" style={{ borderColor: 'var(--line-2)', background: 'var(--bg-elev)', color: 'var(--ink-2)' }}>
+                      <input
+                        type="checkbox"
+                        checked={row.preferred_supplier}
+                        onChange={(e) => update('vendor_pricing', draft.vendor_pricing.map((entry, rowIndex) => ({
+                          ...entry,
+                          preferred_supplier: rowIndex === index ? e.target.checked : (e.target.checked ? false : entry.preferred_supplier),
+                        })))}
+                      />
+                      Default vendor
+                    </label>
+                  </div>
+                </div>
+                <div className="mt-3 flex items-start gap-3">
+                  <div className="flex-1">
+                    <Field label="Vendor notes" tooltip="Commercial notes like finish, discount pattern, or special terms for this vendor.">
+                      <input className="input" value={row.notes} onChange={(e) => update('vendor_pricing', draft.vendor_pricing.map((entry, rowIndex) => rowIndex === index ? { ...entry, notes: e.target.value } : entry))} placeholder="Premium finish, faster delivery, or better packaging" />
+                    </Field>
+                  </div>
+                  <button type="button" onClick={() => update('vendor_pricing', draft.vendor_pricing.filter((_, rowIndex) => rowIndex !== index))} className="btn btn-ghost" style={{ color: 'var(--bad)' }}>
+                    <Trash2 size={13} /> Remove
+                  </button>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+
         <Field label="Notes" tooltip="Any extra details like brand, finish, size, quality, vendor terms, or handling instructions.">
           <textarea className="input min-h-[92px] resize-none" value={draft.notes} onChange={(e) => update('notes', e.target.value)} placeholder="Board grade, color, vendor terms, or special handling notes" />
         </Field>
@@ -1296,6 +1492,7 @@ function MovementFormCard({
   onCancel: () => void
   onSave: () => void
 }) {
+  const [availableLots, setAvailableLots] = useState<InventoryStockLot[]>([])
   const update = <K extends keyof MovementDraft>(key: K, value: MovementDraft[K]) => onChange({ ...draft, [key]: value })
   const reasonOptions = MOVEMENT_REASON_OPTIONS[draft.type]
   const itemOptions = [
@@ -1311,6 +1508,26 @@ function MovementFormCard({
     { value: 'out', label: 'Stock out' },
     { value: 'adjustment', label: 'Adjustment' },
   ]
+  const selectedItem = items.find((item) => item.item_id === draft.item_id)
+  const needsLotSelection = (draft.type === 'out' || draft.type === 'adjustment') && availableLots.length > 0
+
+  useEffect(() => {
+    if (!draft.item_id) {
+      setAvailableLots([])
+      return
+    }
+    listInventoryStockLots(draft.item_id)
+      .then((response) => {
+        const rows = response.data.data ?? []
+        setAvailableLots(rows)
+        if (rows.length === 1 && !draft.lot_id) {
+          update('lot_id', rows[0].lot_id)
+        } else if (draft.lot_id && !rows.some((lot) => lot.lot_id === draft.lot_id)) {
+          update('lot_id', '')
+        }
+      })
+      .catch(() => setAvailableLots([]))
+  }, [draft.item_id])
 
   return (
     <div className="card mb-4 overflow-hidden">
@@ -1333,7 +1550,7 @@ function MovementFormCard({
         <Field label="Item" tooltip="Choose which inventory item this stock movement belongs to.">
           <SearchableSelect
             value={draft.item_id}
-            onChange={(value) => update('item_id', value)}
+            onChange={(value) => onChange({ ...draft, item_id: value, lot_id: '' })}
             options={itemOptions}
             placeholder="Select item"
             searchPlaceholder="Search inventory item…"
@@ -1343,7 +1560,7 @@ function MovementFormCard({
         <Field label="Type" tooltip="Select whether stock is coming in, going out, or being corrected manually.">
           <SearchableSelect
             value={draft.type}
-            onChange={(value) => onChange({ ...draft, type: value as InventoryMovementType, reason: defaultReasonForType(value as InventoryMovementType) })}
+            onChange={(value) => onChange({ ...draft, type: value as InventoryMovementType, reason: defaultReasonForType(value as InventoryMovementType), lot_id: '' })}
             options={typeOptions}
             placeholder="Select type"
             searchPlaceholder="Search movement type…"
@@ -1369,6 +1586,21 @@ function MovementFormCard({
         <Field label="Party" tooltip="Supplier, vendor, project, team member, or site connected to this movement.">
           <input className="input" value={draft.party} onChange={(e) => update('party', e.target.value)} placeholder="Supplier / site / project" />
         </Field>
+        {needsLotSelection && (
+          <Field label="Stock lot" tooltip="Choose the exact stock lot to consume or adjust. Purchases create these lots automatically.">
+            <SearchableSelect
+              value={draft.lot_id}
+              onChange={(value) => update('lot_id', value)}
+              options={availableLots.map((lot) => ({
+                value: lot.lot_id,
+                label: `${lot.label} · ${lot.remaining_quantity} ${lot.item_unit} available`,
+              }))}
+              placeholder={selectedItem ? 'Select stock lot' : 'Pick an item first'}
+              searchPlaceholder="Search stock lots…"
+              emptyMessage="No stock lots found"
+            />
+          </Field>
+        )}
         <Field label="Document no." tooltip="Invoice number, purchase order, issue slip, challan, or any document connected to this entry.">
           <input className="input" value={draft.document_number} onChange={(e) => update('document_number', e.target.value)} placeholder="Invoice / PO / slip no." />
         </Field>
@@ -1383,7 +1615,7 @@ function MovementFormCard({
 
         <div className="md:col-span-2 xl:col-span-4 flex flex-wrap items-center justify-end gap-2">
           <button onClick={onCancel} className="btn btn-ghost">Cancel</button>
-          <button onClick={onSave} disabled={!draft.item_id || !draft.quantity.trim() || saving} className="btn btn-accent">
+          <button onClick={onSave} disabled={!draft.item_id || !draft.quantity.trim() || saving || (needsLotSelection && !draft.lot_id)} className="btn btn-accent">
             <Check size={13} />
             {saving ? 'Saving…' : 'Save movement'}
           </button>

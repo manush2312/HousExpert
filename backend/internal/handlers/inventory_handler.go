@@ -12,6 +12,9 @@ import (
 func RegisterInventoryRoutes(rg *gin.RouterGroup) {
 	i := rg.Group("/inventory")
 	i.GET("/items", listInventoryItems)
+	i.GET("/stock-lots", listAllInventoryStockLots)
+	i.GET("/items/:id/supplier-stock", listInventorySupplierStock)
+	i.GET("/items/:id/stock-lots", listInventoryStockLots)
 	i.POST("/items", createInventoryItem)
 	i.PUT("/items/:id", updateInventoryItem)
 	i.DELETE("/items/:id", deleteInventoryItem)
@@ -29,6 +32,15 @@ func listInventoryItems(c *gin.Context) {
 	utils.OK(c, items)
 }
 
+func listAllInventoryStockLots(c *gin.Context) {
+	rows, err := services.ListAllInventoryStockLots()
+	if err != nil {
+		utils.InternalError(c, err.Error())
+		return
+	}
+	utils.OK(c, rows)
+}
+
 func createInventoryItem(c *gin.Context) {
 	var input services.CreateInventoryItemInput
 	if err := c.ShouldBindJSON(&input); err != nil {
@@ -41,6 +53,32 @@ func createInventoryItem(c *gin.Context) {
 		return
 	}
 	utils.Created(c, item)
+}
+
+func listInventorySupplierStock(c *gin.Context) {
+	rows, err := services.ListInventorySupplierStock(c.Param("id"))
+	if err != nil {
+		if err.Error() == "inventory item not found" {
+			utils.NotFound(c, err.Error())
+			return
+		}
+		utils.BadRequest(c, err.Error())
+		return
+	}
+	utils.OK(c, rows)
+}
+
+func listInventoryStockLots(c *gin.Context) {
+	rows, err := services.ListInventoryStockLots(c.Param("id"))
+	if err != nil {
+		if err.Error() == "inventory item not found" {
+			utils.NotFound(c, err.Error())
+			return
+		}
+		utils.BadRequest(c, err.Error())
+		return
+	}
+	utils.OK(c, rows)
 }
 
 func updateInventoryItem(c *gin.Context) {

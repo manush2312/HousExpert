@@ -21,6 +21,7 @@ import {
 import DatePicker from '../../components/DatePicker'
 import SearchableSelect from '../../components/SearchableSelect'
 import SizeTextInput from '../../components/SizeTextInput'
+import { listInventoryStockLots, type InventoryStockLot } from '../../services/inventoryService'
 import {
   addFloorPlan,
   getProject,
@@ -49,6 +50,7 @@ import {
 } from '../../services/logService'
 import {
   computeLogTotalCost,
+  computeInventoryVendorSellTotal,
   findDirectAmountLabel,
   findResolvedUnitCost,
   findSizeFieldLabel,
@@ -69,6 +71,8 @@ interface DraftEntry {
   category_id: string
   item_id: string
   quantity: string
+  inventory_lot_id: string
+  inventory_lot_allocations: LotAllocationDraft[]
   log_date: string
   notes: string
   values: Record<string, unknown>
@@ -82,6 +86,11 @@ interface CostSlice {
   label: string
   value: number
   color: 'accent' | 'ok' | 'warn' | 'ink-3'
+}
+
+type LotAllocationDraft = {
+  inventory_lot_id: string
+  allocated_quantity: string
 }
 
 export default function ProjectDetailPage() {
@@ -259,6 +268,8 @@ export default function ProjectDetailPage() {
         category_id: '',
         item_id: '',
         quantity: '',
+        inventory_lot_id: '',
+        inventory_lot_allocations: [],
         log_date: new Date().toISOString().split('T')[0],
         notes: '',
         values: {},
@@ -329,16 +340,31 @@ export default function ProjectDetailPage() {
       alert(`Please complete "${missingRequired.label}" before saving.`)
       return
     }
-    const inventoryLinked = Boolean(selectedItem?.inventory_link)
+    const resolvedInventoryLink = selectedItem ? resolveInventoryLinkForDraft(selectedItem, draft.values) : null
+    const inventoryLinked = Boolean(resolvedInventoryLink || selectedItem?.inventory_link || (selectedItem?.inventory_mappings?.length ?? 0) > 0)
+    const consumedQuantity = parseOptionalNumber(draft.quantity) != null && resolvedInventoryLink
+      ? Number(draft.quantity) * resolvedInventoryLink.usage_per_quantity
+      : null
     if ((costMode === 'quantity_x_unit_cost' && isQuantityRequired(entrySchema, selectedItem?.fields ?? [])) || inventoryLinked) {
       if (parseOptionalNumber(draft.quantity) == null) {
         alert('Please add quantity before saving.')
         return
       }
     }
+    if (inventoryLinked && resolvedInventoryLink) {
+      try {
+        const stockLots = await listInventoryStockLots(resolvedInventoryLink.inventory_item_id)
+        if ((stockLots.data.data ?? []).length > 0 && !lotAllocationsMatchRequired(draft.inventory_lot_allocations, consumedQuantity)) {
+          alert('Allocate the full inventory quantity across one or more stock lots before saving.')
+          return
+        }
+      } catch {
+        // Ignore and allow save; backend still validates item stock.
+      }
+    }
 
     const parsedQuantity = parseOptionalNumber(draft.quantity)
-    const computedTotalCost = computeLogTotalCost(
+    let computedTotalCost = computeLogTotalCost(
       costMode,
       entrySchema,
       selectedItem?.fields ?? [],
@@ -346,6 +372,19 @@ export default function ProjectDetailPage() {
       parsedQuantity,
       pricingRulesByType[draft.log_type_id],
     )
+    if (resolvedInventoryLink && parsedQuantity != null && draft.inventory_lot_allocations.length > 0) {
+      try {
+        const stockLots = await listInventoryStockLots(resolvedInventoryLink.inventory_item_id)
+        computedTotalCost = computeInventoryVendorSellTotal(
+          parsedQuantity,
+          resolvedInventoryLink.usage_per_quantity,
+          normalizedLotAllocations(draft.inventory_lot_allocations),
+          stockLots.data.data ?? [],
+        ) ?? computedTotalCost
+      } catch {
+        // Keep schema/pricing-rule total as the fallback preview.
+      }
+    }
     const fields: FieldValue[] = buildDraftFieldPayload(entrySchema, draft.values, {
       costMode,
       quantity: parsedQuantity,
@@ -365,6 +404,8 @@ export default function ProjectDetailPage() {
         category_id: draft.category_id,
         item_id: draft.item_id || undefined,
         quantity: draft.quantity ? Number(draft.quantity) : undefined,
+        inventory_lot_id: normalizedLotAllocations(draft.inventory_lot_allocations)[0]?.inventory_lot_id,
+        inventory_lot_allocations: normalizedLotAllocations(draft.inventory_lot_allocations),
         log_date: draft.log_date,
         fields,
         notes: draft.notes || undefined,
@@ -397,6 +438,16 @@ export default function ProjectDetailPage() {
       category_id: entry.category_id,
       item_id: entry.item_id ?? '',
       quantity: entry.quantity != null ? String(entry.quantity) : '',
+      inventory_lot_id: entry.inventory_consumption?.inventory_lot_id ?? '',
+      inventory_lot_allocations: entry.inventory_consumption?.allocations?.map((allocation) => ({
+        inventory_lot_id: allocation.inventory_lot_id,
+        allocated_quantity: String(allocation.allocated_quantity),
+      })) ?? (entry.inventory_consumption?.inventory_lot_id && entry.inventory_consumption?.consumed_quantity
+        ? [{
+            inventory_lot_id: entry.inventory_consumption.inventory_lot_id,
+            allocated_quantity: String(entry.inventory_consumption.consumed_quantity),
+          }]
+        : []),
       log_date: entry.log_date,
       notes: entry.notes ?? '',
       values,
@@ -440,7 +491,11 @@ export default function ProjectDetailPage() {
       const costMode = getEffectiveCostMode(activeLogType)
       const selectedItem = (itemsByCategory[editingDraft.category_id] ?? []).find((item) => item.id === editingDraft.item_id)
       const parsedQuantity = parseOptionalNumber(editingDraft.quantity)
-      const inventoryLinked = Boolean(selectedItem?.inventory_link)
+      const resolvedInventoryLink = selectedItem ? resolveInventoryLinkForDraft(selectedItem, editingDraft.values) : null
+      const inventoryLinked = Boolean(resolvedInventoryLink || selectedItem?.inventory_link || (selectedItem?.inventory_mappings?.length ?? 0) > 0)
+      const consumedQuantity = parsedQuantity != null && resolvedInventoryLink
+        ? parsedQuantity * resolvedInventoryLink.usage_per_quantity
+        : null
       if ((costMode === 'quantity_x_unit_cost' && isQuantityRequired(entrySchema, selectedItem?.fields ?? [])) || inventoryLinked) {
         if (parsedQuantity == null) {
           alert('Please add quantity before saving.')
@@ -448,7 +503,19 @@ export default function ProjectDetailPage() {
           return
         }
       }
-      const totalCost = computeLogTotalCost(
+      if (inventoryLinked && resolvedInventoryLink) {
+        try {
+          const stockLots = await listInventoryStockLots(resolvedInventoryLink.inventory_item_id)
+          if ((stockLots.data.data ?? []).length > 0 && !lotAllocationsMatchRequired(editingDraft.inventory_lot_allocations, consumedQuantity)) {
+            alert('Allocate the full inventory quantity across one or more stock lots before saving.')
+            setEditSaving(false)
+            return
+          }
+        } catch {
+          // Ignore and allow save; backend still validates item stock.
+        }
+      }
+      let totalCost = computeLogTotalCost(
         costMode,
         entrySchema,
         selectedItem?.fields ?? [],
@@ -456,6 +523,19 @@ export default function ProjectDetailPage() {
         parsedQuantity,
         pricingRulesByType[editingDraft.log_type_id],
       )
+      if (resolvedInventoryLink && parsedQuantity != null && editingDraft.inventory_lot_allocations.length > 0) {
+        try {
+          const stockLots = await listInventoryStockLots(resolvedInventoryLink.inventory_item_id)
+          totalCost = computeInventoryVendorSellTotal(
+            parsedQuantity,
+            resolvedInventoryLink.usage_per_quantity,
+            normalizedLotAllocations(editingDraft.inventory_lot_allocations),
+            stockLots.data.data ?? [],
+          ) ?? totalCost
+        } catch {
+          // Keep schema/pricing-rule total as the fallback preview.
+        }
+      }
       const fields: FieldValue[] = buildDraftFieldPayload(entrySchema, editingDraft.values, {
         costMode,
         quantity: parsedQuantity,
@@ -469,6 +549,8 @@ export default function ProjectDetailPage() {
         fields,
         notes: editingDraft.notes || undefined,
         quantity: editingDraft.quantity ? Number(editingDraft.quantity) : undefined,
+        inventory_lot_id: normalizedLotAllocations(editingDraft.inventory_lot_allocations)[0]?.inventory_lot_id,
+        inventory_lot_allocations: normalizedLotAllocations(editingDraft.inventory_lot_allocations),
       })
       handleCloseEdit()
       await refreshEntries()
@@ -1184,6 +1266,7 @@ function InlineDraftComposer({
   lockedSource?: boolean
   saving?: boolean
 }) {
+  const [stockLotRows, setStockLotRows] = useState<InventoryStockLot[]>([])
   const logType = logTypes.find((item) => item.id === draft.log_type_id)
   const itemSchema = getItemSchema(logType)
   const entrySchema = getEntrySchema(logType)
@@ -1192,8 +1275,9 @@ function InlineDraftComposer({
   const itemSelectorField = findItemSelectorField(itemSchema)
   const itemSelectionEnabled = Boolean(draft.category_id && items.length > 0)
   const selectedItem = items.find((item) => item.id === draft.item_id)
-  const inventoryLinked = Boolean(selectedItem?.inventory_link)
-  const inventoryQuantityUnit = selectedItem?.inventory_link?.quantity_unit?.trim()
+  const resolvedInventoryLink = selectedItem ? resolveInventoryLinkForDraft(selectedItem, draft.values) : null
+  const inventoryLinked = Boolean(resolvedInventoryLink || selectedItem?.inventory_link || (selectedItem?.inventory_mappings?.length ?? 0) > 0)
+  const inventoryQuantityUnit = resolvedInventoryLink?.quantity_unit?.trim()
   const quantityVisible = costMode === 'quantity_x_unit_cost' || inventoryLinked
   const visibleFields = getVisibleEntryFields(entrySchema, costMode)
   const missingRequired = entrySchema.find((field) => field.required && isDraftFieldEmpty(field, draft.values[field.field_id]))
@@ -1201,9 +1285,22 @@ function InlineDraftComposer({
   const parsedQuantity = parseOptionalNumber(draft.quantity)
   const unitCost = findResolvedUnitCost(entrySchema, selectedItem?.fields ?? [], draft.values, pricingRule)
   const sizeFieldLabel = findSizeFieldLabel(entrySchema, selectedItem?.fields ?? [])
-  const totalCost = computeLogTotalCost(costMode, entrySchema, selectedItem?.fields ?? [], draft.values, parsedQuantity, pricingRule)
+  const inventoryConsumption = parsedQuantity != null && resolvedInventoryLink
+    ? parsedQuantity * resolvedInventoryLink.usage_per_quantity
+    : null
+  const vendorPricedTotalCost = resolvedInventoryLink
+    ? computeInventoryVendorSellTotal(parsedQuantity, resolvedInventoryLink.usage_per_quantity, normalizedLotAllocations(draft.inventory_lot_allocations), stockLotRows)
+    : null
+  const totalCost = vendorPricedTotalCost ?? computeLogTotalCost(costMode, entrySchema, selectedItem?.fields ?? [], draft.values, parsedQuantity, pricingRule)
   const missingQuantity = quantityRequired && parsedQuantity == null
-  const canSave = !!draft.log_type_id && !!draft.category_id && !missingRequired && !missingQuantity && !saving
+  const lotSelectionRequired = inventoryLinked && stockLotRows.length > 0
+  const allocationReady = !lotSelectionRequired || lotAllocationsMatchRequired(draft.inventory_lot_allocations, inventoryConsumption)
+  const canSave = !!draft.log_type_id
+    && !!draft.category_id
+    && !missingRequired
+    && !missingQuantity
+    && allocationReady
+    && !saving
   const quantityLabel = sizeFieldLabel
     ? `Quantity${inventoryQuantityUnit ? ` (${inventoryQuantityUnit})` : ''}`
     : pricingRule
@@ -1216,12 +1313,14 @@ function InlineDraftComposer({
     : pricingRule
     ? 'Enter the measurable amount here, such as square feet or units'
     : inventoryLinked
-      ? `Enter quantity in ${inventoryQuantityUnit || 'the linked unit'}. This entry will consume stock from ${selectedItem?.inventory_link?.inventory_item_name}.`
+      ? resolvedInventoryLink
+        ? `Enter quantity in ${inventoryQuantityUnit || 'the linked unit'}. This entry will consume stock from ${resolvedInventoryLink.inventory_item_name}.`
+        : 'Pick the matching dropdown values below so the correct inventory item can be resolved.'
       : 'Confirm the amount that should be multiplied by the rate.'
   const completedSteps = [
     Boolean(draft.log_date && draft.log_type_id),
     Boolean(draft.category_id && (!itemSelectionEnabled || draft.item_id)),
-    !missingRequired && !missingQuantity,
+    !missingRequired && !missingQuantity && allocationReady,
   ].filter(Boolean).length
 
   const applyItemSelection = (itemId: string) => {
@@ -1241,6 +1340,27 @@ function InlineDraftComposer({
       values: { ...draft.values, [field.field_id]: value },
     })
   }
+
+  useEffect(() => {
+    void onUpdate(draft.id, { inventory_lot_id: '', inventory_lot_allocations: [] })
+  }, [draft.item_id])
+
+  useEffect(() => {
+    if (!resolvedInventoryLink?.inventory_item_id) {
+      setStockLotRows([])
+      return
+    }
+    listInventoryStockLots(resolvedInventoryLink.inventory_item_id)
+      .then((response) => {
+        const rows = response.data.data ?? []
+        setStockLotRows(rows)
+        const nextAllocations = syncLotAllocations(draft.inventory_lot_allocations, rows, inventoryConsumption)
+        if (JSON.stringify(nextAllocations) !== JSON.stringify(draft.inventory_lot_allocations)) {
+          void onUpdate(draft.id, { inventory_lot_allocations: nextAllocations })
+        }
+      })
+      .catch(() => setStockLotRows([]))
+  }, [draft.id, draft.inventory_lot_allocations, inventoryConsumption, onUpdate, resolvedInventoryLink?.inventory_item_id])
 
   return (
     <div className="card overflow-hidden border" style={{ borderColor: 'color-mix(in oklab, var(--accent) 18%, var(--line))' }}>
@@ -1337,11 +1457,22 @@ function InlineDraftComposer({
                     .map((field) => `${field.label}: ${displayVal(field.value)}`)
                     .join(' · ') || 'Matching values have been filled where possible.'}
                 </div>
-                {selectedItem.inventory_link && (
+                {inventoryLinked && (
                   <div className="mt-2" style={{ color: 'var(--accent-ink)' }}>
-                    Linked inventory: <strong>{selectedItem.inventory_link.inventory_item_name}</strong>
-                    {' · '}
-                    {selectedItem.inventory_link.usage_per_quantity} {selectedItem.inventory_link.inventory_unit} per {selectedItem.inventory_link.quantity_unit}
+                    {resolvedInventoryLink ? (
+                      <>
+                        Linked inventory: <strong>{resolvedInventoryLink.inventory_item_name}</strong>
+                        {' · '}
+                        {resolvedInventoryLink.usage_per_quantity} {resolvedInventoryLink.inventory_unit} per {resolvedInventoryLink.quantity_unit}
+                      </>
+                    ) : (
+                      <>Linked inventory will resolve from the selected daily-field values.</>
+                    )}
+                  </div>
+                )}
+                {stockLotRows.length > 0 && (
+                  <div className="mt-2" style={{ color: 'var(--ink-3)' }}>
+                    Available stock lots: {stockLotRows.map((row) => `${row.supplier_bucket} · ${row.remaining_quantity} ${row.item_unit}`).join(' | ')}
                   </div>
                 )}
               </div>
@@ -1377,13 +1508,33 @@ function InlineDraftComposer({
                   </div>
                 )}
               </label>
+              {inventoryLinked && resolvedInventoryLink && stockLotRows.length > 0 && (
+                <div className="space-y-1.5">
+                  <span className="text-[11px] font-medium" style={{ color: 'var(--ink-3)' }}>
+                    Allocate stock lots
+                    <span style={{ color: 'var(--bad)' }}> *</span>
+                  </span>
+                  <div className="text-[11px]" style={{ color: 'var(--ink-4)' }}>
+                    Split {inventoryConsumption ?? 0} {resolvedInventoryLink.inventory_unit} across one or more lots.
+                  </div>
+                  <LotAllocationEditor
+                    allocations={draft.inventory_lot_allocations}
+                    stockLots={stockLotRows}
+                    inventoryUnit={resolvedInventoryLink.inventory_unit}
+                    requiredTotal={inventoryConsumption}
+                    onChange={(next) => { void onUpdate(draft.id, { inventory_lot_allocations: next, inventory_lot_id: next[0]?.inventory_lot_id ?? '' }) }}
+                  />
+                </div>
+              )}
               <div className="rounded-xl border px-3 py-3" style={{ borderColor: 'var(--line-2)', background: 'var(--bg-elev)' }}>
                 <div className="text-[11px] font-medium" style={{ color: 'var(--ink-4)' }}>Total cost</div>
                 <div className="mt-1 text-[18px] font-semibold numeral" style={{ color: totalCost != null ? 'var(--ink)' : 'var(--ink-4)' }}>
                   {totalCost != null ? fmtMoney(totalCost) : '—'}
                 </div>
                 <div className="mt-1 text-[11px]" style={{ color: 'var(--ink-4)' }}>
-                  {costMode === 'direct_amount'
+                  {vendorPricedTotalCost != null
+                    ? 'Calculated from the selected vendor lot selling price.'
+                    : costMode === 'direct_amount'
                     ? `Taken from ${findDirectAmountLabel(entrySchema) || 'daily amount'}`
                     : costMode === 'manual_total'
                       ? `Taken from ${findTotalCostLabel(entrySchema) || 'total cost'}`
@@ -1441,6 +1592,12 @@ function InlineDraftComposer({
             <ReviewLine label="Category" value={categories.find((category) => category.id === draft.category_id)?.name || 'Pick a category'} />
             <ReviewLine label="Item" value={selectedItem?.name || (itemSelectionEnabled ? 'Pick an item' : 'Manual entry')} />
             {quantityVisible && <ReviewLine label={quantityLabel} value={parsedQuantity != null ? String(parsedQuantity) : '—'} />}
+            {inventoryLinked && resolvedInventoryLink && inventoryConsumption != null && (
+              <ReviewLine
+                label="Inventory lots"
+                value={draft.inventory_lot_allocations.length > 0 ? summarizeLotAllocations(normalizedLotAllocations(draft.inventory_lot_allocations), stockLotRows) : 'Allocate stock lots'}
+              />
+            )}
             <ReviewLine label="Total" value={totalCost != null ? fmtMoney(totalCost) : '—'} />
             {logType && visibleFields.slice(0, 4).map((field) => (
               <ReviewLine
@@ -1461,11 +1618,13 @@ function InlineDraftComposer({
             />
           </label>
 
-          {missingRequired || missingQuantity ? (
+          {missingRequired || missingQuantity || !allocationReady ? (
             <div className="rounded-xl border px-3 py-2.5 text-[12px]" style={{ borderColor: 'color-mix(in oklab, var(--warn) 24%, var(--line))', background: 'var(--warn-wash)', color: 'var(--warn-ink)' }}>
               {missingRequired
                 ? <>Complete <strong>{missingRequired.label}</strong> before saving.</>
-                : <>Add <strong>{quantityLabel}</strong> before saving.</>}
+                : missingQuantity
+                  ? <>Add <strong>{quantityLabel}</strong> before saving.</>
+                  : <>Allocate the full inventory quantity across the selected lots before saving.</>}
             </div>
           ) : (
             <div className="rounded-xl border px-3 py-2.5 text-[12px]" style={{ borderColor: 'color-mix(in oklab, var(--ok) 24%, var(--line))', background: 'var(--ok-wash)', color: 'var(--ok-ink)' }}>
@@ -1504,6 +1663,76 @@ function ReviewLine({ label, value }: { label: string; value: string }) {
     <div className="flex items-start gap-3 text-[12px]">
       <span className="w-20 shrink-0" style={{ color: 'var(--ink-4)' }}>{label}</span>
       <span style={{ color: 'var(--ink-2)' }}>{value}</span>
+    </div>
+  )
+}
+
+function LotAllocationEditor({
+  allocations,
+  stockLots,
+  inventoryUnit,
+  requiredTotal,
+  onChange,
+}: {
+  allocations: LotAllocationDraft[]
+  stockLots: InventoryStockLot[]
+  inventoryUnit: string
+  requiredTotal: number | null
+  onChange: (next: LotAllocationDraft[]) => void
+}) {
+  const totalAllocated = normalizedLotAllocations(allocations).reduce((sum, allocation) => sum + allocation.allocated_quantity, 0)
+  const remaining = requiredTotal != null ? requiredTotal - totalAllocated : null
+
+  return (
+    <div className="space-y-3">
+      {allocations.map((allocation, index) => {
+        const selectedIds = allocations
+          .map((row, rowIndex) => rowIndex === index ? '' : row.inventory_lot_id)
+          .filter(Boolean)
+        const options = stockLots
+          .filter((lot) => !selectedIds.includes(lot.lot_id) || lot.lot_id === allocation.inventory_lot_id)
+          .map((lot) => ({
+            value: lot.lot_id,
+            label: `${lot.label} · ${lot.remaining_quantity} ${lot.item_unit} available${lot.default_sell_price != null && lot.default_sell_price > 0 ? ` · Sell ${lot.default_sell_price}` : ''}`,
+          }))
+
+        return (
+          <div key={`allocation-${index}`} className="grid gap-2 md:grid-cols-[minmax(0,1fr)_140px_auto]">
+            <SearchableSelect
+              value={allocation.inventory_lot_id}
+              onChange={(value) => onChange(allocations.map((row, rowIndex) => rowIndex === index ? { ...row, inventory_lot_id: value } : row))}
+              options={options}
+              placeholder="Select stock lot"
+              searchPlaceholder="Search stock lots…"
+              emptyMessage="No stock lots found"
+              className="h-10 text-[13px]"
+            />
+            <input
+              type="number"
+              min="0"
+              step="any"
+              className="input h-10 text-[13px] numeral"
+              value={allocation.allocated_quantity}
+              onChange={(e) => onChange(allocations.map((row, rowIndex) => rowIndex === index ? { ...row, allocated_quantity: e.target.value } : row))}
+              placeholder={inventoryUnit}
+            />
+            <button type="button" onClick={() => onChange(allocations.filter((_, rowIndex) => rowIndex !== index))} className="btn btn-ghost">
+              Remove
+            </button>
+          </div>
+        )
+      })}
+      <div className="flex flex-wrap items-center gap-2">
+        <button type="button" onClick={() => onChange([...allocations, { inventory_lot_id: '', allocated_quantity: '' }])} className="btn btn-ghost">
+          Add lot
+        </button>
+        {requiredTotal != null && (
+          <span className="text-[12px]" style={{ color: Math.abs(remaining ?? 0) <= 0.000001 ? 'var(--ok-ink)' : 'var(--ink-3)' }}>
+            Allocated {totalAllocated} / {requiredTotal} {inventoryUnit}
+            {remaining != null && Math.abs(remaining) > 0.000001 ? ` · Remaining ${remaining.toFixed(3).replace(/\.?0+$/, '')} ${inventoryUnit}` : ''}
+          </span>
+        )}
+      </div>
     </div>
   )
 }
@@ -1988,6 +2217,53 @@ function parseOptionalNumber(value: string): number | null {
   return Number.isFinite(num) && num > 0 ? num : null
 }
 
+function normalizedLotAllocations(allocations: LotAllocationDraft[]) {
+  return allocations
+    .map((allocation) => ({
+      inventory_lot_id: allocation.inventory_lot_id,
+      allocated_quantity: parseOptionalNumber(allocation.allocated_quantity),
+    }))
+    .filter((allocation): allocation is { inventory_lot_id: string; allocated_quantity: number } => Boolean(allocation.inventory_lot_id) && allocation.allocated_quantity != null && allocation.allocated_quantity > 0)
+}
+
+function lotAllocationsMatchRequired(allocations: LotAllocationDraft[], requiredTotal: number | null) {
+  if (requiredTotal == null) return false
+  const normalized = normalizedLotAllocations(allocations)
+  if (normalized.length === 0) return false
+  const total = normalized.reduce((sum, allocation) => sum + allocation.allocated_quantity, 0)
+  return Math.abs(total - requiredTotal) <= 0.000001
+}
+
+function syncLotAllocations(current: LotAllocationDraft[], stockLots: InventoryStockLot[], requiredTotal: number | null) {
+  if (stockLots.length === 0 || requiredTotal == null || requiredTotal <= 0) return []
+
+  const allowedIds = new Set(stockLots.map((lot) => lot.lot_id))
+  const filtered = current.filter((allocation) => allocation.inventory_lot_id === '' || allowedIds.has(allocation.inventory_lot_id))
+  if (filtered.length === 0) {
+    if (stockLots.length === 1) {
+      return [{ inventory_lot_id: stockLots[0].lot_id, allocated_quantity: String(requiredTotal) }]
+    }
+    return [{ inventory_lot_id: '', allocated_quantity: '' }]
+  }
+  if (filtered.length === 1 && filtered[0].inventory_lot_id && stockLots.length === 1) {
+    return [{ ...filtered[0], allocated_quantity: String(requiredTotal) }]
+  }
+  return filtered
+}
+
+function summarizeLotAllocations(
+  allocations: { inventory_lot_id: string; allocated_quantity: number }[],
+  stockLots: InventoryStockLot[],
+) {
+  return allocations
+    .map((allocation) => {
+      const lot = stockLots.find((row) => row.lot_id === allocation.inventory_lot_id)
+      const label = lot?.supplier_bucket || lot?.label || allocation.inventory_lot_id
+      return `${allocation.allocated_quantity} from ${label}`
+    })
+    .join(', ')
+}
+
 function extractEntryDetails(entry: LogEntry) {
   const find = (re: RegExp) => {
     const hit = entry.fields.find((field) => re.test((field.label || '').toLowerCase()))
@@ -2043,6 +2319,25 @@ function buildDraftFieldPayload(
     }
     return { field_id: field.field_id, label: field.label, value: values[field.field_id] ?? null }
   })
+}
+
+function resolveInventoryLinkForDraft(item: LogItem, values: Record<string, unknown>) {
+  const mappings = item.inventory_mappings ?? []
+  let bestLink = item.inventory_link ?? null
+  let bestScore = -1
+
+  mappings.forEach((mapping) => {
+    const entries = Object.entries(mapping.conditions ?? {})
+    if (entries.length === 0) return
+    const matched = entries.every(([fieldId, expected]) => String(values[fieldId] ?? '').trim() === expected)
+    if (!matched) return
+    if (entries.length > bestScore) {
+      bestLink = mapping.link
+      bestScore = entries.length
+    }
+  })
+
+  return bestLink
 }
 
 function deriveCostBreakdown(entries: LogEntry[], spent: number): CostSlice[] {
