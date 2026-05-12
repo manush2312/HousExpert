@@ -14,6 +14,8 @@ export interface InventoryItem {
   min_stock_level: number
   current_stock: number
   last_purchase_cost?: number
+  average_unit_cost?: number
+  inventory_value?: number
   vendor_pricing?: InventoryVendorPricing[]
   notes?: string
   created_at: string
@@ -62,6 +64,7 @@ export interface InventorySupplierStock {
   item_unit: string
   supplier_bucket: string
   available_qty: number
+  average_unit_cost?: number
   unit_cost?: number
 }
 
