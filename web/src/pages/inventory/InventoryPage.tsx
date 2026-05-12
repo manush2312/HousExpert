@@ -369,21 +369,45 @@ function movementDocumentFieldMeta(type: InventoryMovementType) {
 }
 
 function aggregateSupplierLots(lots: InventoryStockLot[]) {
-  const grouped = new Map<string, { supplier: string; quantity: number; unit: string }>()
+  const grouped = new Map<string, {
+    supplier: string
+    quantity: number
+    unit: string
+    totalCost: number
+    averageUnitCost?: number
+    lastUnitCost?: number
+  }>()
   lots.forEach((lot) => {
     const key = lot.supplier_bucket || 'Unassigned stock'
     const current = grouped.get(key)
+    const lotCost = lot.unit_cost ?? 0
     if (current) {
       current.quantity += lot.remaining_quantity
+      current.totalCost += lot.remaining_quantity * lotCost
+      if (lotCost > 0) current.lastUnitCost = lotCost
       return
     }
     grouped.set(key, {
       supplier: key,
       quantity: lot.remaining_quantity,
       unit: lot.item_unit,
+      totalCost: lot.remaining_quantity * lotCost,
+      lastUnitCost: lotCost > 0 ? lotCost : undefined,
     })
   })
-  return Array.from(grouped.values()).sort((a, b) => b.quantity - a.quantity || a.supplier.localeCompare(b.supplier))
+  return Array.from(grouped.values())
+    .map((row) => ({
+      ...row,
+      averageUnitCost: row.quantity > 0 && row.totalCost > 0
+        ? row.totalCost / row.quantity
+        : row.lastUnitCost,
+    }))
+    .sort((a, b) => b.quantity - a.quantity || a.supplier.localeCompare(b.supplier))
+}
+
+function formatCostValue(value?: number) {
+  if (!value || value <= 0) return '—'
+  return `Rs ${fmtMoney(value)}`
 }
 
 function parseSafeDate(value?: string | null): Date | null {
@@ -895,7 +919,7 @@ export default function InventoryPage() {
             <div>
               <div className="text-[15px] font-semibold" style={{ color: 'var(--ink)' }}>Current stock snapshot</div>
               <div className="text-[12px] mt-1" style={{ color: 'var(--ink-4)' }}>
-                A simple view of what is available in inventory right now.
+                On-hand stock is combined, so average cost and last purchase are shown separately.
               </div>
             </div>
             <div className="flex flex-wrap gap-2">
@@ -923,12 +947,14 @@ export default function InventoryPage() {
           </div>
         ) : (
           <div className="overflow-x-auto">
-            <table className="w-full min-w-[900px] text-[12.5px]">
+            <table className="w-full min-w-[1120px] text-[12.5px]">
               <thead>
                 <tr style={{ background: 'var(--bg-sunken)' }}>
                   <th className="px-5 py-3 text-left eyebrow">Item</th>
                   <th className="px-4 py-3 text-left eyebrow">Category</th>
                   <th className="px-4 py-3 text-left eyebrow">On hand</th>
+                  <th className="px-4 py-3 text-left eyebrow">Avg cost</th>
+                  <th className="px-4 py-3 text-left eyebrow">Last purchase</th>
                   <th className="px-4 py-3 text-left eyebrow">Usage</th>
                   <th className="px-4 py-3 text-left eyebrow">By supplier</th>
                   <th className="px-4 py-3 text-left eyebrow">Location</th>
@@ -955,13 +981,21 @@ export default function InventoryPage() {
                         <div className="font-medium numeral" style={{ color: 'var(--ink)' }}>{fmtQty(item.current_stock, item.unit)}</div>
                         <div className="text-[11px]" style={{ color: 'var(--ink-4)' }}>Reorder at {fmtQty(item.min_stock_level, item.unit)}</div>
                       </td>
+                      <td className="px-4 py-3" style={{ color: 'var(--ink-2)' }}>
+                        <div className="font-medium numeral" style={{ color: 'var(--ink)' }}>{formatCostValue(item.average_unit_cost)}</div>
+                        <div className="text-[11px]" style={{ color: 'var(--ink-4)' }}>Weighted across stock on hand</div>
+                      </td>
+                      <td className="px-4 py-3" style={{ color: 'var(--ink-2)' }}>
+                        <div className="font-medium numeral" style={{ color: 'var(--ink)' }}>{formatCostValue(item.last_purchase_cost)}</div>
+                        <div className="text-[11px]" style={{ color: 'var(--ink-4)' }}>Latest buy rate</div>
+                      </td>
                       <td className="px-4 py-3" style={{ color: 'var(--ink-2)' }}>{usageConversionLabel(item) || '—'}</td>
                       <td className="px-4 py-3" style={{ color: 'var(--ink-2)' }}>
                         {supplierRows.length > 0 ? (
                           <div className="space-y-1">
                             {supplierRows.map((row) => (
                               <div key={`${item.item_id}-${row.supplier}`} className="text-[11.5px]">
-                                {row.supplier} · {fmtQty(row.quantity, row.unit)}
+                                {row.supplier} · {fmtQty(row.quantity, row.unit)}{row.averageUnitCost ? ` @ Rs ${fmtMoney(row.averageUnitCost)}` : ''}
                               </div>
                             ))}
                           </div>
@@ -1109,6 +1143,8 @@ export default function InventoryPage() {
                           <span>SKU: <strong style={{ color: 'var(--ink-2)' }}>{item.sku || '—'}</strong></span>
                           <span>Supplier: <strong style={{ color: 'var(--ink-2)' }}>{item.supplier || '—'}</strong></span>
                           <span>Location: <strong style={{ color: 'var(--ink-2)' }}>{item.location || '—'}</strong></span>
+                          <span>Last purchase: <strong style={{ color: 'var(--ink-2)' }}>{formatCostValue(item.last_purchase_cost)}</strong></span>
+                          <span>Avg cost: <strong style={{ color: 'var(--ink-2)' }}>{formatCostValue(item.average_unit_cost)}</strong></span>
                           {usageConversionLabel(item) && (
                             <span>Usage: <strong style={{ color: 'var(--ink-2)' }}>{usageConversionLabel(item)}</strong></span>
                           )}
@@ -1123,7 +1159,7 @@ export default function InventoryPage() {
                                   className="text-[11px] px-2 py-1 rounded-full"
                                   style={{ background: 'var(--bg-sunken)', color: 'var(--ink-2)' }}
                                 >
-                                  {row.supplier} · {fmtQty(row.quantity, row.unit)}
+                                  {row.supplier} · {fmtQty(row.quantity, row.unit)}{row.averageUnitCost ? ` @ Rs ${fmtMoney(row.averageUnitCost)}` : ''}
                                 </span>
                               ))}
                             </div>
@@ -1171,10 +1207,12 @@ export default function InventoryPage() {
                         )}
                       </div>
 
-                      <div className="grid grid-cols-2 gap-3 min-w-[240px] md:min-w-[300px]">
+                      <div className="grid grid-cols-2 gap-3 min-w-[240px] md:min-w-[360px]">
                         <MetricCell label="On hand" value={fmtQty(item.current_stock, item.unit)} />
                         <MetricCell label="Reorder at" value={fmtQty(item.min_stock_level, item.unit)} />
-                        <MetricCell label="Unit cost" value={`Rs ${fmtMoney(item.last_purchase_cost ?? 0)}`} />
+                        <MetricCell label="Avg cost" value={formatCostValue(item.average_unit_cost)} />
+                        <MetricCell label="Last purchase" value={formatCostValue(item.last_purchase_cost)} />
+                        <MetricCell label="Stock value" value={formatCostValue(item.inventory_value)} />
                         <MetricCell label="Updated" value={new Date(item.updated_at).toLocaleDateString()} />
                       </div>
 
@@ -1712,7 +1750,7 @@ function ItemFormCard({
               <input className="input numeral" type="number" value={draft.opening_stock} onChange={(e) => update('opening_stock', e.target.value)} />
             </Field>
           )}
-          <Field label="Cost per stock unit" tooltip="The current cost rate for one stock unit, used for valuation and cost reference.">
+          <Field label="Last purchase price" tooltip="The most recent buy rate for one stock unit. Mixed on-hand stock will still show a separate average cost based on the remaining lots.">
             <input className="input numeral" type="number" value={draft.last_purchase_cost} onChange={(e) => update('last_purchase_cost', e.target.value)} />
           </Field>
         </div>

@@ -20,6 +20,8 @@ type InventoryItem struct {
 	MinStockLevel          float64                  `bson:"min_stock_level" json:"min_stock_level"`
 	CurrentStock           float64                  `bson:"current_stock" json:"current_stock"`
 	LastPurchaseCost       float64                  `bson:"last_purchase_cost,omitempty" json:"last_purchase_cost,omitempty"`
+	AverageUnitCost        float64                  `bson:"-" json:"average_unit_cost,omitempty"`
+	InventoryValue         float64                  `bson:"-" json:"inventory_value,omitempty"`
 	VendorPricing          []InventoryVendorPricing `bson:"vendor_pricing,omitempty" json:"vendor_pricing,omitempty"`
 	Notes                  string                   `bson:"notes,omitempty" json:"notes,omitempty"`
 	CreatedAt              time.Time                `bson:"created_at" json:"created_at"`
@@ -87,12 +89,13 @@ type InventoryStockLot struct {
 }
 
 type InventorySupplierStock struct {
-	ItemID         string  `json:"item_id"`
-	ItemName       string  `json:"item_name"`
-	ItemUnit       string  `json:"item_unit"`
-	SupplierBucket string  `json:"supplier_bucket"`
-	AvailableQty   float64 `json:"available_qty"`
-	UnitCost       float64 `json:"unit_cost,omitempty"`
+	ItemID          string  `json:"item_id"`
+	ItemName        string  `json:"item_name"`
+	ItemUnit        string  `json:"item_unit"`
+	SupplierBucket  string  `json:"supplier_bucket"`
+	AvailableQty    float64 `json:"available_qty"`
+	AverageUnitCost float64 `json:"average_unit_cost,omitempty"`
+	UnitCost        float64 `json:"unit_cost,omitempty"`
 }
 
 type InventoryStockLotView struct {
