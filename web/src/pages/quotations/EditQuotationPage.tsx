@@ -12,6 +12,7 @@ import {
 } from '../../services/quotationService'
 import { listProducts, type Product } from '../../services/productService'
 import { deriveSqft, deriveSqftString } from '../../utils/sizeFormat'
+import { computeQuotationTotals } from '../../utils/quotationTotals'
 
 interface DraftItem {
   _id: string
@@ -112,6 +113,8 @@ export default function EditQuotationPage() {
   const [clientName, setClientName] = useState('')
   const [clientPhone, setClientPhone] = useState('')
   const [clientLocation, setClientLocation] = useState('')
+  const [applyGST, setApplyGST] = useState(false)
+  const [gstPercent, setGSTPercent] = useState('')
   const [sections, setSections] = useState<DraftSection[]>([emptySection('Bedroom')])
 
   useEffect(() => {
@@ -132,6 +135,8 @@ export default function EditQuotationPage() {
         setClientName(next.client_name)
         setClientPhone(next.client_phone ?? '')
         setClientLocation(next.client_location ?? '')
+        setApplyGST(Boolean(next.apply_gst))
+        setGSTPercent(next.apply_gst && next.gst_percent ? String(next.gst_percent) : '')
         setSections(quotationToDraftSections(next))
       })
       .catch(() => navigate('/quotations'))
@@ -173,6 +178,11 @@ export default function EditQuotationPage() {
   const handleSave = async (e: React.FormEvent) => {
     e.preventDefault()
     if (!id || !clientName.trim()) return
+    const gstRate = Number(gstPercent) || 0
+    if (applyGST && gstRate <= 0) {
+      setError('Enter a GST percentage greater than 0.')
+      return
+    }
     setError('')
     setSaving(true)
     try {
@@ -181,6 +191,8 @@ export default function EditQuotationPage() {
         client_phone: clientPhone.trim() || undefined,
         client_location: clientLocation.trim() || undefined,
         sections: toServicePayload(sections),
+        apply_gst: applyGST,
+        gst_percent: applyGST ? gstRate : 0,
       })
       navigate(`/quotations/${id}`)
     } catch {
@@ -190,7 +202,9 @@ export default function EditQuotationPage() {
     }
   }
 
-  const grandTotal = calcTotal(sections)
+  const subtotal = calcTotal(sections)
+  const gstRate = Number(gstPercent) || 0
+  const totals = computeQuotationTotals(subtotal, applyGST, gstRate)
 
   if (loading) {
     return (
@@ -269,11 +283,67 @@ export default function EditQuotationPage() {
           Add room section
         </button>
 
+        <div className="mt-5 card p-5">
+          <div className="flex flex-col gap-4 md:flex-row md:items-start md:justify-between">
+            <div>
+              <h2 className="text-[13.5px] font-semibold" style={{ color: 'var(--ink)' }}>Tax</h2>
+              <p className="text-[12.5px] mt-1" style={{ color: 'var(--ink-3)' }}>
+                Turn on GST when this quotation needs tax added on the final amount.
+              </p>
+            </div>
+            <label className="inline-flex items-center gap-2 rounded-xl px-3 py-2" style={{ border: '1px solid var(--line)', background: 'var(--bg-sunken)' }}>
+              <input
+                type="checkbox"
+                checked={applyGST}
+                onChange={(e) => {
+                  setApplyGST(e.target.checked)
+                  if (!e.target.checked) setGSTPercent('')
+                }}
+              />
+              <span className="text-[13px] font-medium" style={{ color: 'var(--ink)' }}>Apply GST</span>
+            </label>
+          </div>
+
+          <div className="mt-4 grid grid-cols-1 gap-3 md:grid-cols-[180px_minmax(0,1fr)]">
+            <div className="space-y-1.5">
+              <label className="text-[12.5px] font-medium" style={{ color: 'var(--ink-2)' }}>GST percentage</label>
+              <div className="relative">
+                <input
+                  type="number"
+                  min="0"
+                  step="0.01"
+                  className="input pr-8"
+                  placeholder="e.g. 18"
+                  value={gstPercent}
+                  onChange={(e) => setGSTPercent(e.target.value)}
+                  disabled={!applyGST}
+                />
+                <span className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-[12px]" style={{ color: 'var(--ink-4)' }}>%</span>
+              </div>
+            </div>
+
+            <div className="rounded-2xl px-4 py-3" style={{ border: '1px solid var(--line)', background: 'var(--bg-sunken)' }}>
+              <div className="flex items-center justify-between text-[12.5px]" style={{ color: 'var(--ink-3)' }}>
+                <span>Subtotal</span>
+                <span className="numeral">{fmtINR(totals.subtotal)}</span>
+              </div>
+              <div className="mt-2 flex items-center justify-between text-[12.5px]" style={{ color: applyGST ? 'var(--ink-2)' : 'var(--ink-4)' }}>
+                <span>GST{applyGST && gstRate > 0 ? ` (${gstRate}%)` : ''}</span>
+                <span className="numeral">{fmtINR(totals.gstAmount)}</span>
+              </div>
+              <div className="mt-3 pt-3 flex items-center justify-between" style={{ borderTop: '1px solid var(--line)' }}>
+                <span className="text-[13px] font-semibold" style={{ color: 'var(--ink)' }}>Grand total</span>
+                <span className="text-[20px] font-semibold numeral" style={{ color: 'var(--ink)' }}>{fmtINR(totals.total)}</span>
+              </div>
+            </div>
+          </div>
+        </div>
+
         <div className="mt-6 card p-4 flex items-center justify-between gap-4">
           <div>
             {error && <p className="text-[12.5px] mb-2" style={{ color: 'var(--bad)' }}>{error}</p>}
-            <div className="text-[12px]" style={{ color: 'var(--ink-4)' }}>Grand total</div>
-            <div className="text-[22px] font-semibold numeral" style={{ color: 'var(--ink)' }}>{fmtINR(grandTotal)}</div>
+            <div className="text-[12px]" style={{ color: 'var(--ink-4)' }}>{applyGST ? 'Final total with GST' : 'Grand total'}</div>
+            <div className="text-[22px] font-semibold numeral" style={{ color: 'var(--ink)' }}>{fmtINR(totals.total)}</div>
           </div>
           <div className="flex items-center gap-2">
             <button type="button" onClick={() => navigate(`/quotations/${quotation.quotation_id}`)} className="btn btn-ghost">Cancel</button>

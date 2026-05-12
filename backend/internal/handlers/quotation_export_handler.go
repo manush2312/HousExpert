@@ -129,7 +129,7 @@ func buildQuotationPDF(q *models.Quotation) (*bytes.Buffer, error) {
 		doc.AddPage()
 		y = 14
 	}
-	y = p.drawQuotGrandTotal(y, q.TotalAmount)
+	y = p.drawQuotGrandTotal(y, q.SubtotalAmount, q.ApplyGST, q.GSTPercent, q.GSTAmount, q.TotalAmount)
 
 	// Notes
 	if q.Notes != "" {
@@ -419,26 +419,63 @@ func (p *pdfWriter) drawQuotItemRow(y float64, idx int, item models.QuotationIte
 
 // ── Grand total ───────────────────────────────────────────────────────────────
 
-func (p *pdfWriter) drawQuotGrandTotal(y float64, total float64) float64 {
+func (p *pdfWriter) drawQuotGrandTotal(y float64, subtotal float64, applyGST bool, gstPercent float64, gstAmount float64, total float64) float64 {
 	doc := p.doc
-	const rowH = 11.0
+	const (
+		rowH   = 7.5
+		totalH = 11.0
+		labelW = 48.0
+		valueW = 38.0
+		tableW = labelW + valueW
+		startX = qml + qcw - tableW
+	)
+
+	if subtotal == 0 {
+		subtotal = total - gstAmount
+	}
+
+	rows := []struct {
+		label string
+		value string
+	}{
+		{label: "Subtotal", value: p.rupee + " " + formatNum(subtotal)},
+	}
+	if applyGST {
+		rows = append(rows, struct {
+			label string
+			value string
+		}{
+			label: fmt.Sprintf("GST (%.2f%%)", gstPercent),
+			value: p.rupee + " " + formatNum(gstAmount),
+		})
+	}
+
+	for _, row := range rows {
+		p.setFont("", 8.5)
+		p.setColor(cINK3)
+		doc.SetXY(startX, y)
+		doc.CellFormat(labelW, rowH, row.label, "", 0, "L", false, 0, "")
+		p.setFont("B", 8.5)
+		p.setColor(cINK2)
+		doc.SetXY(startX+labelW, y)
+		doc.CellFormat(valueW, rowH, row.value, "", 0, "R", false, 0, "")
+		y += rowH
+	}
 
 	p.setFill(cINK)
-	doc.Rect(qml, y, qcw, rowH, "F")
+	doc.Rect(startX, y, tableW, totalH, "F")
 
-	ty := y + (rowH-cellH)/2
-
+	ty := y + (totalH-cellH)/2
 	p.setFont("B", 9)
 	p.setColor(rgb{255, 255, 255})
-	doc.SetXY(qml+qpX, ty)
-	doc.CellFormat(80, cellH, "GRAND TOTAL", "", 0, "L", false, 0, "")
+	doc.SetXY(startX+qpX, ty)
+	doc.CellFormat(labelW, cellH, "GRAND TOTAL", "", 0, "L", false, 0, "")
 
 	p.setFont("B", 11)
-	p.setColor(rgb{255, 255, 255})
-	doc.SetXY(qml, ty)
-	doc.CellFormat(qcw-qpX, cellH, p.rupee+" "+formatNum(total), "", 0, "R", false, 0, "")
+	doc.SetXY(startX+labelW, ty)
+	doc.CellFormat(valueW-qpX, cellH, p.rupee+" "+formatNum(total), "", 0, "R", false, 0, "")
 
-	return y + rowH + 4
+	return y + totalH + 4
 }
 
 // ── Notes block ───────────────────────────────────────────────────────────────
