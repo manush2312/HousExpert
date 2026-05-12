@@ -91,6 +91,10 @@ export default function QuotationDetailPage() {
 
   const itemCount = quotation.sections.reduce((n, s) => n + s.items.length, 0)
   const isEditable = quotation.status === 'draft'
+  const subtotal = quotation.subtotal_amount || (quotation.total_amount - (quotation.gst_amount || 0))
+  const gstAmount = quotation.gst_amount || 0
+  const applyGST = Boolean(quotation.apply_gst)
+  const gstPercent = quotation.gst_percent || 0
 
   return (
     <div className="w-full px-4 py-5 md:px-8 md:py-7">
@@ -171,11 +175,20 @@ export default function QuotationDetailPage() {
       </div>
 
       {/* Stats strip */}
-      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-6">
+      <div className="grid grid-cols-2 sm:grid-cols-5 gap-3 mb-6">
         <div className="card px-4 py-3">
-          <div className="eyebrow mb-1.5">Total amount</div>
+          <div className="eyebrow mb-1.5">Subtotal</div>
           <div className="text-[20px] font-semibold numeral" style={{ color: 'var(--ink)' }}>
-            {fmtAmount(quotation.total_amount)}
+            {fmtAmount(subtotal)}
+          </div>
+        </div>
+        <div className="card px-4 py-3">
+          <div className="eyebrow mb-1.5">GST</div>
+          <div className="text-[20px] font-semibold numeral" style={{ color: 'var(--ink)' }}>
+            {applyGST ? `${gstPercent}%` : '—'}
+          </div>
+          <div className="text-[11.5px] mt-1" style={{ color: 'var(--ink-4)' }}>
+            {applyGST ? fmtINR(gstAmount) : 'Not applied'}
           </div>
         </div>
         <div className="card px-4 py-3">
@@ -262,11 +275,21 @@ export default function QuotationDetailPage() {
       </div>
 
       {/* Grand total footer */}
-      <div className="mt-4 card px-5 py-4 flex items-center justify-between">
-        <span className="text-[13px] font-semibold" style={{ color: 'var(--ink-3)' }}>Grand Total</span>
-        <span className="numeral text-[20px] font-semibold" style={{ color: 'var(--ink)' }}>
-          {fmtINR(quotation.total_amount)}
-        </span>
+      <div className="mt-4 card px-5 py-4">
+        <div className="flex items-center justify-between text-[13px]" style={{ color: 'var(--ink-3)' }}>
+          <span>Subtotal</span>
+          <span className="numeral">{fmtINR(subtotal)}</span>
+        </div>
+        <div className="mt-2 flex items-center justify-between text-[13px]" style={{ color: applyGST ? 'var(--ink-2)' : 'var(--ink-4)' }}>
+          <span>GST{applyGST ? ` (${gstPercent}%)` : ''}</span>
+          <span className="numeral">{fmtINR(gstAmount)}</span>
+        </div>
+        <div className="mt-3 pt-3 flex items-center justify-between" style={{ borderTop: '1px solid var(--line)' }}>
+          <span className="text-[13px] font-semibold" style={{ color: 'var(--ink-3)' }}>Grand Total</span>
+          <span className="numeral text-[20px] font-semibold" style={{ color: 'var(--ink)' }}>
+            {fmtINR(quotation.total_amount)}
+          </span>
+        </div>
       </div>
 
       {/* Notes */}
