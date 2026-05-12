@@ -4,6 +4,7 @@ import {
   Search, Layers, Plus, Sun, Moon, AlignJustify,
   Building2, ChevronRight, Folder, Package, FileText, Boxes,
 } from 'lucide-react'
+import Modal from '../components/Modal'
 import { listProjects, type Project } from '../services/projectService'
 import { listLogTypes, type LogType } from '../services/logService'
 
@@ -403,14 +404,15 @@ function CommandPalette({ open, onClose, projects, logTypes }: PaletteProps) {
   if (!open) return null
 
   return (
-    <div className="fixed inset-0 z-50 flex items-start justify-center pt-[15vh] p-4">
+    <Modal
+      open={open}
+      onClose={onClose}
+      containerClassName="z-50 items-start pt-[15vh]"
+      panelClassName="max-w-xl"
+      overlayStyle={{ background: 'color-mix(in oklab, var(--ink) 28%, transparent)' }}
+    >
       <div
-        className="absolute inset-0"
-        style={{ background: 'color-mix(in oklab, var(--ink) 28%, transparent)' }}
-        onClick={onClose}
-      />
-      <div
-        className="relative card w-full max-w-xl overflow-hidden animate-fade-up"
+        className="card w-full overflow-hidden animate-fade-up"
         style={{ boxShadow: 'var(--shadow-lg)' }}
       >
         {/* Search input */}
@@ -462,6 +464,6 @@ function CommandPalette({ open, onClose, projects, logTypes }: PaletteProps) {
           )}
         </div>
       </div>
-    </div>
+    </Modal>
   )
 }

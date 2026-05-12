@@ -813,17 +813,17 @@ func ListInventoryStockLots(itemID string) ([]models.InventoryStockLotView, erro
 			ReceivedQuantity:  lot.ReceivedQuantity,
 			RemainingQuantity: lot.RemainingQuantity,
 			UnitCost:          lot.UnitCost,
-			DefaultSellPrice:  func() float64 {
+			DefaultSellPrice: func() float64 {
 				if vendorPricing == nil {
 					return 0
 				}
 				return vendorPricing.DefaultSellPrice
 			}(),
-			ReceivedDate:      lot.ReceivedDate,
-			DocumentNumber:    lot.DocumentNumber,
-			Reference:         lot.Reference,
-			Notes:             lot.Notes,
-			Label:             stockLotLabel(&lotCopy),
+			ReceivedDate:   lot.ReceivedDate,
+			DocumentNumber: lot.DocumentNumber,
+			Reference:      lot.Reference,
+			Notes:          lot.Notes,
+			Label:          stockLotLabel(&lotCopy),
 		})
 	}
 	return result, nil
@@ -912,7 +912,7 @@ func createMovementRecord(item *models.InventoryItem, t models.InventoryMovement
 	if supplierBucket == "" && t == models.InventoryMovementIn {
 		normalizedReason := normalizeMovementReason(t, opts.Reason)
 		if normalizedReason == "purchase" || normalizedReason == "opening_stock" {
-			supplierBucket = trimOrEmpty(opts.Party)
+			supplierBucket = firstNonEmpty(opts.Party, item.Supplier)
 		}
 	}
 	unitCost := resolvedMovementUnitCost(item, t, opts.UnitCost)
@@ -979,6 +979,9 @@ func CreateInventoryMovement(input CreateInventoryMovementInput) (*models.Invent
 	var lot *models.InventoryStockLot
 	normalizedLotID := trimOrEmpty(input.LotID)
 	normalizedSupplierBucket := trimOrEmpty(input.SupplierBucket)
+	if delta > 0 && normalizedSupplierBucket == "" {
+		normalizedSupplierBucket = firstNonEmpty(input.Party, item.Supplier)
+	}
 	if delta < 0 {
 		lot, err = resolveOutgoingStockLot(item, normalizedLotID, normalizedSupplierBucket)
 		if err != nil {
@@ -1186,11 +1189,14 @@ func ListInventoryMovements(filter InventoryMovementFilter) ([]models.InventoryM
 
 func enrichInventoryMovements(movements []models.InventoryMovement) error {
 	type logEntrySnapshot struct {
-		ID           primitive.ObjectID `bson:"_id"`
-		ProjectID    primitive.ObjectID `bson:"project_id"`
-		LogTypeName  string             `bson:"log_type_name"`
-		CategoryName string             `bson:"category_name"`
-		ItemName     string             `bson:"item_name"`
+		ID                   primitive.ObjectID           `bson:"_id"`
+		ProjectID            primitive.ObjectID           `bson:"project_id"`
+		ItemID               *primitive.ObjectID          `bson:"item_id"`
+		LogTypeName          string                       `bson:"log_type_name"`
+		CategoryName         string                       `bson:"category_name"`
+		ItemName             string                       `bson:"item_name"`
+		Quantity             *float64                     `bson:"quantity"`
+		InventoryConsumption *models.InventoryConsumption `bson:"inventory_consumption"`
 	}
 	type projectSnapshot struct {
 		ID        primitive.ObjectID `bson:"_id"`
@@ -1259,6 +1265,31 @@ func enrichInventoryMovements(movements []models.InventoryMovement) error {
 		if entry == nil {
 			continue
 		}
+		if entry.InventoryConsumption != nil {
+			displayQuantity := entry.InventoryConsumption.LoggedQuantity
+			if displayQuantity <= 0 && entry.Quantity != nil {
+				displayQuantity = *entry.Quantity
+			}
+			displayUnit := trimOrEmpty(entry.InventoryConsumption.QuantityUnit)
+			if displayQuantity > 0 && displayUnit == "" {
+				item, cached := itemCache[entry.InventoryConsumption.InventoryItemID]
+				if !cached {
+					loaded, err := GetInventoryItem(entry.InventoryConsumption.InventoryItemID)
+					if err != nil {
+						return err
+					}
+					item = loaded
+					itemCache[entry.InventoryConsumption.InventoryItemID] = item
+				}
+				if item != nil && trimOrEmpty(item.UsageUnit) != "" {
+					displayUnit = item.UsageUnit
+				}
+			}
+			if displayQuantity > 0 && displayUnit != "" {
+				movement.DisplayQuantity = displayQuantity
+				movement.DisplayUnit = displayUnit
+			}
+		}
 
 		projectKey := entry.ProjectID.Hex()
 		project, cached := projectCache[projectKey]
@@ -1292,6 +1323,27 @@ func enrichInventoryMovements(movements []models.InventoryMovement) error {
 			}
 			if len(description) > 0 {
 				movement.Notes = strings.Join(description, " · ")
+			}
+		}
+		if entry.InventoryConsumption != nil && movement.Reference != "" {
+			displayQuantity := entry.InventoryConsumption.LoggedQuantity
+			if displayQuantity <= 0 && entry.Quantity != nil {
+				displayQuantity = *entry.Quantity
+			}
+			displayUnit := trimOrEmpty(entry.InventoryConsumption.QuantityUnit)
+			if displayQuantity > 0 && displayUnit != "" {
+				consumedText := fmt.Sprintf("%.3f", entry.InventoryConsumption.ConsumedQuantity)
+				consumedText = strings.TrimRight(strings.TrimRight(consumedText, "0"), ".")
+				loggedText := fmt.Sprintf("%.3f", displayQuantity)
+				loggedText = strings.TrimRight(strings.TrimRight(loggedText, "0"), ".")
+				movement.Notes = fmt.Sprintf(
+					"%s · logged %s %s · deducted %s %s",
+					movement.Notes,
+					loggedText,
+					displayUnit,
+					consumedText,
+					entry.InventoryConsumption.InventoryUnit,
+				)
 			}
 		}
 	}

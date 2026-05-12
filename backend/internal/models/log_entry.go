@@ -17,6 +17,8 @@ type InventoryConsumption struct {
 	InventoryItemID   string                   `bson:"inventory_item_id" json:"inventory_item_id"`
 	InventoryItemName string                   `bson:"inventory_item_name" json:"inventory_item_name"`
 	InventoryUnit     string                   `bson:"inventory_unit" json:"inventory_unit"`
+	QuantityUnit      string                   `bson:"quantity_unit,omitempty" json:"quantity_unit,omitempty"`
+	LoggedQuantity    float64                  `bson:"logged_quantity,omitempty" json:"logged_quantity,omitempty"`
 	InventoryLotID    string                   `bson:"inventory_lot_id,omitempty" json:"inventory_lot_id,omitempty"`
 	InventoryLotLabel string                   `bson:"inventory_lot_label,omitempty" json:"inventory_lot_label,omitempty"`
 	SupplierBucket    string                   `bson:"supplier_bucket,omitempty" json:"supplier_bucket,omitempty"`

@@ -371,7 +371,7 @@ func normalizeInventoryAllocations(itemID string, totalConsumed float64, inputs 
 	return allocations, nil
 }
 
-func inventoryConsumptionFromLink(link *models.LogItemInventoryLink, totalConsumed float64, allocations []models.InventoryLotAllocation, supplierBucket string, lotID string) *models.InventoryConsumption {
+func inventoryConsumptionFromLink(link *models.LogItemInventoryLink, loggedQuantity float64, totalConsumed float64, allocations []models.InventoryLotAllocation, supplierBucket string, lotID string) *models.InventoryConsumption {
 	if link == nil {
 		return nil
 	}
@@ -379,6 +379,8 @@ func inventoryConsumptionFromLink(link *models.LogItemInventoryLink, totalConsum
 		InventoryItemID:   link.InventoryItemID,
 		InventoryItemName: link.InventoryItemName,
 		InventoryUnit:     link.InventoryUnit,
+		QuantityUnit:      strings.TrimSpace(link.QuantityUnit),
+		LoggedQuantity:    loggedQuantity,
 		SupplierBucket:    strings.TrimSpace(supplierBucket),
 		InventoryLotID:    strings.TrimSpace(lotID),
 		UsagePerQuantity:  link.UsagePerQuantity,
@@ -989,13 +991,22 @@ func UpdateLogItem(id string, input UpdateLogItemInput) (*models.LogItem, error)
 	if err != nil {
 		return nil, err
 	}
-	inventoryLink, err := resolveLogItemInventoryLink(input.InventoryLink)
-	if err != nil {
-		return nil, err
-	}
-	inventoryMappings, err := resolveLogItemInventoryMappings(input.InventoryMappings, entrySchemaForLogType(lt))
-	if err != nil {
-		return nil, err
+	inventoryLink := current.InventoryLink
+	inventoryMappings := current.InventoryMappings
+	hasExistingInventoryLink := current.InventoryLink != nil || len(current.InventoryMappings) > 0
+	if hasExistingInventoryLink {
+		if input.InventoryLink != nil || len(input.InventoryMappings) > 0 {
+			return nil, fmt.Errorf("inventory linking is locked after it is set; remove the link from inventory instead")
+		}
+	} else {
+		inventoryLink, err = resolveLogItemInventoryLink(input.InventoryLink)
+		if err != nil {
+			return nil, err
+		}
+		inventoryMappings, err = resolveLogItemInventoryMappings(input.InventoryMappings, entrySchemaForLogType(lt))
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	name := deriveItemName(itemSchemaForLogType(lt), normalizedFields)
@@ -1016,6 +1027,34 @@ func UpdateLogItem(id string, input UpdateLogItemInput) (*models.LogItem, error)
 			"schema_version":     lt.CurrentVersion,
 			"updated_at":         time.Now(),
 		}},
+		opts,
+	).Decode(&updated)
+	if errors.Is(err, mongo.ErrNoDocuments) {
+		return nil, nil
+	}
+	return &updated, err
+}
+
+func DeleteLogItemInventoryLink(id string) (*models.LogItem, error) {
+	oid, err := primitive.ObjectIDFromHex(id)
+	if err != nil {
+		return nil, fmt.Errorf("invalid id")
+	}
+
+	opts := options.FindOneAndUpdate().SetReturnDocument(options.After)
+	var updated models.LogItem
+	err = logItemCol().FindOneAndUpdate(
+		context.Background(),
+		bson.M{"_id": oid, "status": models.LogItemActive},
+		bson.M{
+			"$set": bson.M{
+				"updated_at": time.Now(),
+			},
+			"$unset": bson.M{
+				"inventory_link":     "",
+				"inventory_mappings": "",
+			},
+		},
 		opts,
 	).Decode(&updated)
 	if errors.Is(err, mongo.ErrNoDocuments) {
@@ -1110,6 +1149,7 @@ func CreateLogEntry(projectOID primitive.ObjectID, input CreateLogEntryInput) (*
 			}
 			inventoryConsumption = inventoryConsumptionFromLink(
 				effectiveLink,
+				*quantity,
 				totalConsumed,
 				allocations,
 				input.InventorySupplierBucket,
@@ -1330,6 +1370,8 @@ func UpdateLogEntry(entryOID primitive.ObjectID, input UpdateLogEntryInput) (*mo
 				InventoryItemID:   current.InventoryConsumption.InventoryItemID,
 				InventoryItemName: current.InventoryConsumption.InventoryItemName,
 				InventoryUnit:     current.InventoryConsumption.InventoryUnit,
+				QuantityUnit:      current.InventoryConsumption.QuantityUnit,
+				LoggedQuantity:    current.InventoryConsumption.LoggedQuantity,
 				InventoryLotID:    current.InventoryConsumption.InventoryLotID,
 				InventoryLotLabel: current.InventoryConsumption.InventoryLotLabel,
 				SupplierBucket:    current.InventoryConsumption.SupplierBucket,
@@ -1351,6 +1393,7 @@ func UpdateLogEntry(entryOID primitive.ObjectID, input UpdateLogEntryInput) (*mo
 						nextInventoryConsumption.InventoryItemID = effectiveLink.InventoryItemID
 						nextInventoryConsumption.InventoryItemName = effectiveLink.InventoryItemName
 						nextInventoryConsumption.InventoryUnit = effectiveLink.InventoryUnit
+						nextInventoryConsumption.QuantityUnit = effectiveLink.QuantityUnit
 						nextInventoryConsumption.UsagePerQuantity = effectiveLink.UsagePerQuantity
 					} else if item.InventoryLink != nil || len(item.InventoryMappings) > 0 {
 						return nil, fmt.Errorf("no inventory mapping matched the selected daily-entry values")
@@ -1365,6 +1408,7 @@ func UpdateLogEntry(entryOID primitive.ObjectID, input UpdateLogEntryInput) (*mo
 				nextInventoryConsumption.InventoryLotLabel = ""
 			}
 			nextConsumed := *currentQuantity * nextInventoryConsumption.UsagePerQuantity
+			nextInventoryConsumption.LoggedQuantity = *currentQuantity
 			allocationInputs := input.InventoryLotAllocations
 			if allocationInputs == nil && len(nextInventoryConsumption.Allocations) > 0 {
 				if math.Abs(nextConsumed-current.InventoryConsumption.ConsumedQuantity) <= 0.000001 {
