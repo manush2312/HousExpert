@@ -627,10 +627,15 @@ export default function LogTypeDetailPage() {
         label: field.label,
         value: normalizeFieldDraftValue(field, editingItemValues[field.field_id]),
       }))
-      await updateLogItem(item.id, {
-        fields,
-        inventory_link: buildInventoryLinkPayload(editingItemInventoryLink, inventoryItems),
-      })
+      await updateLogItem(
+        item.id,
+        item.inventory_link
+          ? { fields }
+          : {
+              fields,
+              inventory_link: buildInventoryLinkPayload(editingItemInventoryLink, inventoryItems),
+            },
+      )
       cancelEditingItem()
       await fetchAll()
     } finally {
@@ -1360,7 +1365,7 @@ export default function LogTypeDetailPage() {
                                         )
                                       })}
                                     <td className="px-3 py-3 align-top" style={{ color: 'var(--ink-3)' }}>
-                                      {isEditing ? (
+                                      {isEditing && !item.inventory_link ? (
                                         <InventoryLinkEditor
                                           draft={editingItemInventoryLink}
                                           inventoryItems={inventoryItems}
@@ -1373,6 +1378,11 @@ export default function LogTypeDetailPage() {
                                           <div className="text-[11px] numeral" style={{ color: 'var(--ink-4)' }}>
                                             {item.inventory_link.inventory_item_id}
                                           </div>
+                                          {isEditing && (
+                                            <div className="text-[11px] mt-1" style={{ color: 'var(--ink-4)' }}>
+                                              Unlink this from Inventory instead of here.
+                                            </div>
+                                          )}
                                         </div>
                                       ) : (
                                         <span style={{ color: 'var(--ink-5)' }}>—</span>

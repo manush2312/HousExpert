@@ -36,6 +36,15 @@ type LotAllocationDraft = {
   allocated_quantity: string
 }
 
+function formatQty(value: number): string {
+  return Number.isInteger(value) ? String(value) : value.toFixed(3).replace(/\.?0+$/, '')
+}
+
+function inventoryUsageSummary(loggedQuantity: number | null, quantityUnit: string | null | undefined, consumedQuantity: number | null, inventoryUnit: string | null | undefined) {
+  if (loggedQuantity == null || !quantityUnit || consumedQuantity == null || !inventoryUnit) return null
+  return `${formatQty(loggedQuantity)} ${quantityUnit} logged · ${formatQty(consumedQuantity)} ${inventoryUnit} deducted from stock`
+}
+
 export default function NewLogEntryPage() {
   const { id: projectId } = useParams<{ id: string }>()
   const navigate = useNavigate()
@@ -371,7 +380,7 @@ export default function NewLogEntryPage() {
                       .join(' · ') || 'No saved item details.'}
                   </div>
                   {inventoryLinked && (
-                    <div className="mt-2" style={{ color: 'var(--accent-ink)' }}>
+                  <div className="mt-2" style={{ color: 'var(--accent-ink)' }}>
                       {resolvedInventoryLink ? (
                         <>
                           Linked inventory: <strong>{resolvedInventoryLink.inventory_item_name}</strong>
@@ -432,9 +441,9 @@ export default function NewLogEntryPage() {
             {error && (
               <p className="text-[13px] px-4 py-2.5 rounded-lg" style={{ background: 'var(--bad-wash)', color: 'var(--bad-ink)' }}>{error}</p>
             )}
-            {!error && lotSelectionRequired && inventoryConsumption != null && !lotAllocationReady && (
+                  {!error && lotSelectionRequired && inventoryConsumption != null && !lotAllocationReady && (
               <p className="text-[13px] px-4 py-2.5 rounded-lg" style={{ background: 'var(--warn-wash)', color: 'var(--warn-ink)' }}>
-                Allocate exactly {inventoryConsumption} {resolvedInventoryLink?.inventory_unit} across the selected lots before saving.
+                Allocate exactly {formatQty(inventoryConsumption)} {resolvedInventoryLink?.inventory_unit} across the selected lots before saving.
               </p>
             )}
 
@@ -508,7 +517,7 @@ export default function NewLogEntryPage() {
                       ? 'Select the matching dropdown values to resolve the inventory item.'
                       : inventoryConsumption == null
                         ? `${resolvedInventoryLink.inventory_item_name} linked`
-                        : `${inventoryConsumption} ${resolvedInventoryLink.inventory_unit} from ${resolvedInventoryLink.inventory_item_name}${parsedLotAllocations.length > 0 ? ` · ${summarizeLotAllocations(parsedLotAllocations, stockLotRows)}` : ''} for ${parsedQuantity} ${resolvedInventoryLink.quantity_unit}`}
+                        : `${inventoryUsageSummary(parsedQuantity, resolvedInventoryLink.quantity_unit, inventoryConsumption, resolvedInventoryLink.inventory_unit)} from ${resolvedInventoryLink.inventory_item_name}${parsedLotAllocations.length > 0 ? ` · ${summarizeLotAllocations(parsedLotAllocations, stockLotRows)}` : ''}`}
                   </span>
                 </div>
               )}

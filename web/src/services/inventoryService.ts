@@ -43,6 +43,8 @@ export interface InventoryMovement {
   type: InventoryMovementType
   reason?: string
   quantity: number
+  display_quantity?: number
+  display_unit?: string
   unit_cost?: number
   total_amount?: number
   balance_after: number

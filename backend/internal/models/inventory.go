@@ -55,6 +55,8 @@ type InventoryMovement struct {
 	Type            InventoryMovementType `bson:"type" json:"type"`
 	Reason          string                `bson:"reason,omitempty" json:"reason,omitempty"`
 	Quantity        float64               `bson:"quantity" json:"quantity"`
+	DisplayQuantity float64               `bson:"-" json:"display_quantity,omitempty"`
+	DisplayUnit     string                `bson:"-" json:"display_unit,omitempty"`
 	UnitCost        float64               `bson:"unit_cost,omitempty" json:"unit_cost,omitempty"`
 	TotalAmount     float64               `bson:"total_amount,omitempty" json:"total_amount,omitempty"`
 	BalanceAfter    float64               `bson:"balance_after" json:"balance_after"`

@@ -104,6 +104,8 @@ export interface InventoryConsumption {
   inventory_item_id: string
   inventory_item_name: string
   inventory_unit: string
+  quantity_unit?: string
+  logged_quantity?: number
   inventory_lot_id?: string
   inventory_lot_label?: string
   supplier_bucket?: string
@@ -205,6 +207,9 @@ export const createLogItem = (categoryId: string, payload: { description?: strin
 
 export const updateLogItem = (id: string, payload: { fields: FieldValue[]; inventory_link?: { inventory_item_id: string; quantity_unit?: string; usage_per_quantity: number } | null }) =>
   api.put<{ success: boolean; data: LogItem }>(`/log-items/${id}`, payload)
+
+export const deleteLogItemInventoryLink = (id: string) =>
+  api.delete<{ success: boolean; data: LogItem }>(`/log-items/${id}/inventory-link`)
 
 export const archiveLogItem = (id: string) =>
   api.delete(`/log-items/${id}`)

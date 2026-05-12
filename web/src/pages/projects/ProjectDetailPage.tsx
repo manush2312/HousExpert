@@ -88,6 +88,15 @@ interface CostSlice {
   color: 'accent' | 'ok' | 'warn' | 'ink-3'
 }
 
+function formatQty(value: number): string {
+  return Number.isInteger(value) ? String(value) : value.toFixed(3).replace(/\.?0+$/, '')
+}
+
+function inventoryUsageSummary(loggedQuantity: number | null, quantityUnit: string | null | undefined, consumedQuantity: number | null, inventoryUnit: string | null | undefined) {
+  if (loggedQuantity == null || !quantityUnit || consumedQuantity == null || !inventoryUnit) return null
+  return `${formatQty(loggedQuantity)} ${quantityUnit} logged · ${formatQty(consumedQuantity)} ${inventoryUnit} deducted`
+}
+
 type LotAllocationDraft = {
   inventory_lot_id: string
   allocated_quantity: string
@@ -1515,7 +1524,7 @@ function InlineDraftComposer({
                     <span style={{ color: 'var(--bad)' }}> *</span>
                   </span>
                   <div className="text-[11px]" style={{ color: 'var(--ink-4)' }}>
-                    Split {inventoryConsumption ?? 0} {resolvedInventoryLink.inventory_unit} across one or more lots.
+                    Split {formatQty(inventoryConsumption ?? 0)} {resolvedInventoryLink.inventory_unit} across one or more lots.
                   </div>
                   <LotAllocationEditor
                     allocations={draft.inventory_lot_allocations}
@@ -1592,6 +1601,12 @@ function InlineDraftComposer({
             <ReviewLine label="Category" value={categories.find((category) => category.id === draft.category_id)?.name || 'Pick a category'} />
             <ReviewLine label="Item" value={selectedItem?.name || (itemSelectionEnabled ? 'Pick an item' : 'Manual entry')} />
             {quantityVisible && <ReviewLine label={quantityLabel} value={parsedQuantity != null ? String(parsedQuantity) : '—'} />}
+            {inventoryLinked && resolvedInventoryLink && inventoryConsumption != null && (
+              <ReviewLine
+                label="Inventory"
+                value={inventoryUsageSummary(parsedQuantity, resolvedInventoryLink.quantity_unit, inventoryConsumption, resolvedInventoryLink.inventory_unit) ?? '—'}
+              />
+            )}
             {inventoryLinked && resolvedInventoryLink && inventoryConsumption != null && (
               <ReviewLine
                 label="Inventory lots"
@@ -2195,11 +2210,18 @@ function buildEntrySecondary(entry: LogEntry): string {
 }
 
 function buildEntryKeyValues(entry: LogEntry): string {
-  return entry.fields
+  const values = entry.fields
     .filter((field) => field.value != null && field.value !== '' && !isNameLikeField(field.label))
     .slice(0, 3)
     .map((field) => `${field.label}: ${displayVal(field.value)}`)
-    .join(' · ')
+  const inventoryText = inventoryUsageSummary(
+    entry.inventory_consumption?.logged_quantity ?? entry.quantity ?? null,
+    entry.inventory_consumption?.quantity_unit,
+    entry.inventory_consumption?.consumed_quantity ?? null,
+    entry.inventory_consumption?.inventory_unit,
+  )
+  if (inventoryText) values.push(`Inventory: ${inventoryText}`)
+  return values.join(' · ')
 }
 
 function isNameLikeField(label: string): boolean {
