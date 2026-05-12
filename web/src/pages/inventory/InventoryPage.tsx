@@ -5,23 +5,28 @@ import {
   AlertTriangle, ArrowDownCircle, ArrowUpCircle, Boxes, Check, History, Info, Package, Pencil, Plus, Trash2, X,
 } from 'lucide-react'
 import DatePicker from '../../components/DatePicker'
+import Modal from '../../components/Modal'
 import SearchableSelect from '../../components/SearchableSelect'
 import {
+  listAllInventoryStockLots,
   createInventoryItem,
   createInventoryMovement,
   deleteInventoryItem,
   getInventorySummary,
   listInventoryItems,
   listInventoryMovements,
+  listInventoryStockLots,
   updateInventoryItem,
   type CreateInventoryItemPayload,
   type CreateInventoryMovementPayload,
   type InventoryItem,
   type InventoryMovement,
+  type InventoryStockLot,
   type InventoryMovementType,
   type InventorySummary,
 } from '../../services/inventoryService'
 import {
+  deleteLogItemInventoryLink,
   listLogCategories,
   listLogItems,
   listLogTypes,
@@ -40,6 +45,16 @@ type ItemDraft = {
   min_stock_level: string
   opening_stock: string
   last_purchase_cost: string
+  vendor_pricing: VendorPricingDraft[]
+  notes: string
+}
+
+type VendorPricingDraft = {
+  supplier_name: string
+  default_buy_price: string
+  default_sell_price: string
+  lead_time_days: string
+  preferred_supplier: boolean
   notes: string
 }
 
@@ -48,8 +63,11 @@ type MovementDraft = {
   type: InventoryMovementType
   reason: string
   quantity: string
+  quantity_unit: 'stock' | 'usage'
   unit_cost: string
   party: string
+  supplier_bucket: string
+  lot_id: string
   document_number: string
   transaction_date: string
   reference: string
@@ -68,6 +86,7 @@ const EMPTY_ITEM_DRAFT: ItemDraft = {
   min_stock_level: '0',
   opening_stock: '0',
   last_purchase_cost: '0',
+  vendor_pricing: [],
   notes: '',
 }
 
@@ -93,6 +112,9 @@ type InventoryLogLink = {
   categoryName: string
   itemId: string
   itemName: string
+  inventoryUnit: string
+  quantityUnit: string
+  usagePerQuantity: number
 }
 
 const MOVEMENT_REASON_OPTIONS: Record<InventoryMovementType, MovementReasonOption[]> = {
@@ -135,8 +157,11 @@ function emptyMovementDraft(itemId = '', type: InventoryMovementType = 'in'): Mo
     type,
     reason: defaultReasonForType(type),
     quantity: '',
+    quantity_unit: 'stock',
     unit_cost: '',
     party: '',
+    supplier_bucket: '',
+    lot_id: '',
     document_number: '',
     transaction_date: new Date().toISOString().split('T')[0],
     reference: '',
@@ -145,12 +170,15 @@ function emptyMovementDraft(itemId = '', type: InventoryMovementType = 'in'): Mo
 }
 
 function fmtQty(value: number, unit: string) {
-  const text = Number.isInteger(value) ? value.toString() : value.toFixed(2)
+  const text = Number.isInteger(value) ? value.toString() : value.toFixed(3).replace(/\.?0+$/, '')
   return `${text} ${unit}`
 }
 
 function fmtMoney(value: number) {
-  return new Intl.NumberFormat('en-IN', { maximumFractionDigits: 0 }).format(value)
+  return new Intl.NumberFormat('en-IN', {
+    minimumFractionDigits: value % 1 === 0 ? 0 : 2,
+    maximumFractionDigits: value % 1 === 0 ? 0 : 2,
+  }).format(value)
 }
 
 function isNumericOnlyUnit(value: string) {
@@ -164,6 +192,26 @@ function usageConversionLabel(item: InventoryItem) {
     return `1 ${item.unit} = 1 ${item.usage_unit}`
   }
   return `1 ${item.unit} = ${item.usage_units_per_stock_unit} ${item.usage_unit}`
+}
+
+function stockQuantityFromUsage(item: InventoryItem | undefined, quantity: number) {
+  if (!item?.usage_unit || !item.usage_units_per_stock_unit || item.usage_units_per_stock_unit <= 0) {
+    return quantity
+  }
+  return quantity / item.usage_units_per_stock_unit
+}
+
+function normalizeVendorPricingDrafts(rows: VendorPricingDraft[]) {
+  return rows
+    .map((row) => ({
+      supplier_name: row.supplier_name.trim(),
+      default_buy_price: Number(row.default_buy_price || 0) || 0,
+      default_sell_price: Number(row.default_sell_price || 0) || 0,
+      lead_time_days: Number(row.lead_time_days || 0) || 0,
+      preferred_supplier: row.preferred_supplier,
+      notes: row.notes.trim(),
+    }))
+    .filter((row) => row.supplier_name)
 }
 
 function movementTone(type: InventoryMovementType) {
@@ -180,10 +228,162 @@ function movementReasonLabel(reason?: string) {
     .join(' ')
 }
 
+function movementSourceText(movement: InventoryMovement) {
+  if (movement.supplier_bucket?.trim()) return movement.supplier_bucket
+  if (movement.type === 'in') return 'Unassigned supplier'
+  return '—'
+}
+
+function movementPartyText(movement: InventoryMovement) {
+  return movement.party?.trim() || '—'
+}
+
 function movementSignedQuantity(movement: InventoryMovement) {
   if (movement.type === 'in') return movement.quantity
   if (movement.type === 'out') return -movement.quantity
   return movement.quantity
+}
+
+function inferredMovementDisplay(movement: InventoryMovement, item?: InventoryItem) {
+  if (movement.display_quantity != null && movement.display_unit) {
+    return {
+      quantity: movement.display_quantity,
+      unit: movement.display_unit,
+      inferred: false,
+    }
+  }
+  if (
+    movement.reference?.startsWith('log-entry:')
+    && item?.usage_unit
+    && item.usage_units_per_stock_unit
+    && item.usage_units_per_stock_unit > 0
+    && item.usage_unit !== item.unit
+  ) {
+    return {
+      quantity: Math.abs(movement.quantity) * item.usage_units_per_stock_unit,
+      unit: item.usage_unit,
+      inferred: true,
+    }
+  }
+  return null
+}
+
+function movementDisplayQty(movement: InventoryMovement, item?: InventoryItem) {
+  const display = inferredMovementDisplay(movement, item)
+  if (display) {
+    const signed = movement.type === 'out' ? -display.quantity : display.quantity
+    return fmtQty(signed, display.unit)
+  }
+  return fmtQty(movementSignedQuantity(movement), movement.item_unit)
+}
+
+function movementStockEffectLabel(movement: InventoryMovement) {
+  return fmtQty(movementSignedQuantity(movement), movement.item_unit)
+}
+
+function movementBalanceLabel(movement: InventoryMovement, item?: InventoryItem) {
+  if (
+    item?.usage_unit
+    && item.usage_units_per_stock_unit
+    && item.usage_units_per_stock_unit > 0
+    && item.usage_unit !== item.unit
+  ) {
+    const usageBalance = movement.balance_after * item.usage_units_per_stock_unit
+    return `${fmtQty(movement.balance_after, movement.item_unit)} (${fmtQty(usageBalance, item.usage_unit)})`
+  }
+  return fmtQty(movement.balance_after, movement.item_unit)
+}
+
+function movementSummaryLine(movement: InventoryMovement, item?: InventoryItem) {
+  const documentLabel = formatMovementDocumentLabel(movement)
+  const display = inferredMovementDisplay(movement, item)
+  if (display) {
+    return [
+      `Used ${fmtQty(display.quantity, display.unit)}`,
+      `Stock deducted ${fmtQty(Math.abs(movement.quantity), movement.item_unit)}`,
+      `Balance ${movementBalanceLabel(movement, item)}`,
+      documentLabel !== '—' ? documentLabel : '',
+    ].filter(Boolean).join(' · ')
+  }
+  return [
+    `${movementReasonLabel(movement.reason)} · Qty ${movementStockEffectLabel(movement)}`,
+    `Balance ${movementBalanceLabel(movement, item)}`,
+    documentLabel !== '—' ? documentLabel : '',
+  ].filter(Boolean).join(' · ')
+}
+
+function movementSourceFieldMeta(type: InventoryMovementType) {
+  if (type === 'in') {
+    return {
+      label: 'Supplier / stock source',
+      tooltip: 'Who supplied this stock. This name becomes the supplier bucket shown in inventory lots and vendor-wise stock.',
+      placeholder: 'e.g. MK Screws',
+    }
+  }
+  return {
+    label: 'Stock source',
+    tooltip: 'When adding stock by adjustment, choose which supplier bucket this quantity should belong to.',
+    placeholder: 'e.g. JK Screws',
+  }
+}
+
+function movementPartyFieldMeta(type: InventoryMovementType) {
+  if (type === 'in') {
+    return {
+      label: 'Counterparty (optional)',
+      tooltip: 'Optional extra note for the ledger, such as the vendor rep, transfer source, or purchase contact. If not needed, leave it blank.',
+      placeholder: 'e.g. Mohan from MK Screws',
+    }
+  }
+  if (type === 'out') {
+    return {
+      label: 'Issued to / party',
+      tooltip: 'Who received the stock, such as the project, site, carpenter, or team member.',
+      placeholder: 'e.g. Kitchen Project - Site A',
+    }
+  }
+  return {
+    label: 'Related party (optional)',
+    tooltip: 'Optional ledger note for the project, person, team, or contact linked to this adjustment.',
+    placeholder: 'e.g. Store audit team',
+  }
+}
+
+function movementDocumentFieldMeta(type: InventoryMovementType) {
+  if (type === 'in') {
+    return {
+      tooltip: 'Invoice number, purchase order, GRN, or challan for this incoming stock.',
+      placeholder: 'Invoice / PO / GRN no.',
+    }
+  }
+  if (type === 'out') {
+    return {
+      tooltip: 'Issue slip, challan, or project document for this stock issue.',
+      placeholder: 'Issue slip / challan no.',
+    }
+  }
+  return {
+    tooltip: 'Any audit note, stock count sheet, or reference document linked to this adjustment.',
+    placeholder: 'Adjustment ref / stock count no.',
+  }
+}
+
+function aggregateSupplierLots(lots: InventoryStockLot[]) {
+  const grouped = new Map<string, { supplier: string; quantity: number; unit: string }>()
+  lots.forEach((lot) => {
+    const key = lot.supplier_bucket || 'Unassigned stock'
+    const current = grouped.get(key)
+    if (current) {
+      current.quantity += lot.remaining_quantity
+      return
+    }
+    grouped.set(key, {
+      supplier: key,
+      quantity: lot.remaining_quantity,
+      unit: lot.item_unit,
+    })
+  })
+  return Array.from(grouped.values()).sort((a, b) => b.quantity - a.quantity || a.supplier.localeCompare(b.supplier))
 }
 
 function parseSafeDate(value?: string | null): Date | null {
@@ -226,9 +426,18 @@ function formatMovementReferenceHint(movement: InventoryMovement) {
   return `Ref ${movement.reference}`
 }
 
+function inventoryLinkUsageLabel(link: InventoryLogLink) {
+  if (!link.quantityUnit) return '—'
+  const usagePerQuantity = Number.isInteger(link.usagePerQuantity)
+    ? String(link.usagePerQuantity)
+    : link.usagePerQuantity.toFixed(2)
+  return `${usagePerQuantity} ${link.inventoryUnit} per ${link.quantityUnit}`
+}
+
 export default function InventoryPage() {
   const navigate = useNavigate()
   const [items, setItems] = useState<InventoryItem[]>([])
+  const [stockLots, setStockLots] = useState<InventoryStockLot[]>([])
   const [summary, setSummary] = useState<InventorySummary | null>(null)
   const [movements, setMovements] = useState<InventoryMovement[]>([])
   const [inventoryLogLinks, setInventoryLogLinks] = useState<Record<string, InventoryLogLink[]>>({})
@@ -246,17 +455,22 @@ export default function InventoryPage() {
   const [movementFormOpen, setMovementFormOpen] = useState(false)
   const [savingItem, setSavingItem] = useState(false)
   const [savingMovement, setSavingMovement] = useState(false)
+  const [deletingInventoryLinkId, setDeletingInventoryLinkId] = useState<string | null>(null)
+  const [linkManagerItem, setLinkManagerItem] = useState<InventoryItem | null>(null)
+  const [pendingInventoryLinkRemoval, setPendingInventoryLinkRemoval] = useState<InventoryLogLink | null>(null)
 
   const refreshOverview = async () => {
     try {
       setLoading(true)
       setError('')
-      const [itemsRes, summaryRes] = await Promise.all([
+      const [itemsRes, summaryRes, stockLotsRes] = await Promise.all([
         listInventoryItems(),
         getInventorySummary(),
+        listAllInventoryStockLots(),
       ])
       setItems(itemsRes.data.data)
       setSummary(summaryRes.data.data)
+      setStockLots(stockLotsRes.data.data)
     } catch {
       setError('Failed to load inventory. Make sure the backend is running.')
     } finally {
@@ -293,8 +507,9 @@ export default function InventoryPage() {
         await Promise.all(categoriesRes.data.data.map(async (category) => {
           const itemsRes = await listLogItems(category.id, { include_archived: true })
           itemsRes.data.data.forEach((item) => {
-            const inventoryItemId = item.inventory_link?.inventory_item_id
-            if (!inventoryItemId) return
+            const inventoryLink = item.inventory_link
+            const inventoryItemId = inventoryLink?.inventory_item_id
+            if (!inventoryItemId || !inventoryLink) return
             nextLinks[inventoryItemId] = [
               ...(nextLinks[inventoryItemId] ?? []),
               {
@@ -304,6 +519,9 @@ export default function InventoryPage() {
                 categoryName: category.name,
                 itemId: item.id,
                 itemName: item.name,
+                inventoryUnit: inventoryLink.inventory_unit,
+                quantityUnit: inventoryLink.quantity_unit,
+                usagePerQuantity: inventoryLink.usage_per_quantity,
               },
             ]
           })
@@ -329,6 +547,10 @@ export default function InventoryPage() {
     const values = Array.from(new Set(items.map((item) => item.category).filter(Boolean) as string[]))
     return values.sort((a, b) => a.localeCompare(b))
   }, [items])
+  const itemsById = useMemo(
+    () => new Map(items.map((item) => [item.item_id, item])),
+    [items],
+  )
   const categoryFilterOptions = useMemo(
     () => [
       { value: 'all', label: 'All categories', keywords: ['all inventory categories'] },
@@ -352,6 +574,16 @@ export default function InventoryPage() {
       return matchesQuery && matchesCategory
     })
   }, [items, query, categoryFilter])
+
+  const stockLotsByItem = useMemo(() => {
+    const next = new Map<string, InventoryStockLot[]>()
+    stockLots.forEach((lot) => {
+      const rows = next.get(lot.item_id) ?? []
+      rows.push(lot)
+      next.set(lot.item_id, rows)
+    })
+    return next
+  }, [stockLots])
 
   const stockViewCounts = useMemo(() => ({
     all: filteredItems.length,
@@ -478,6 +710,14 @@ export default function InventoryPage() {
       min_stock_level: String(item.min_stock_level ?? 0),
       opening_stock: String(item.current_stock ?? 0),
       last_purchase_cost: String(item.last_purchase_cost ?? 0),
+      vendor_pricing: (item.vendor_pricing ?? []).map((row) => ({
+        supplier_name: row.supplier_name,
+        default_buy_price: String(row.default_buy_price ?? 0),
+        default_sell_price: String(row.default_sell_price ?? 0),
+        lead_time_days: String(row.lead_time_days ?? 0),
+        preferred_supplier: Boolean(row.preferred_supplier),
+        notes: row.notes ?? '',
+      })),
       notes: item.notes ?? '',
     })
     setItemFormOpen(true)
@@ -508,6 +748,7 @@ export default function InventoryPage() {
       location: itemDraft.location.trim() || undefined,
       min_stock_level: Number(itemDraft.min_stock_level || 0),
       last_purchase_cost: Number(itemDraft.last_purchase_cost || 0),
+      vendor_pricing: normalizeVendorPricingDrafts(itemDraft.vendor_pricing),
       notes: itemDraft.notes.trim() || undefined,
     }
 
@@ -533,14 +774,21 @@ export default function InventoryPage() {
 
   const submitMovement = async () => {
     if (!movementDraft.item_id || !movementDraft.quantity.trim()) return
+    const selectedItem = items.find((item) => item.item_id === movementDraft.item_id)
+    const enteredQuantity = Number(movementDraft.quantity)
+    const quantity = movementDraft.quantity_unit === 'usage'
+      ? stockQuantityFromUsage(selectedItem, enteredQuantity)
+      : enteredQuantity
 
     const payload: CreateInventoryMovementPayload = {
       item_id: movementDraft.item_id,
       type: movementDraft.type,
       reason: movementDraft.reason || undefined,
-      quantity: Number(movementDraft.quantity),
+      quantity,
       unit_cost: Number(movementDraft.unit_cost || 0) || undefined,
       party: movementDraft.party.trim() || undefined,
+      supplier_bucket: movementDraft.supplier_bucket.trim() || undefined,
+      lot_id: movementDraft.lot_id || undefined,
       document_number: movementDraft.document_number.trim() || undefined,
       transaction_date: movementDraft.transaction_date || undefined,
       reference: movementDraft.reference.trim() || undefined,
@@ -567,6 +815,19 @@ export default function InventoryPage() {
       await Promise.all([refreshOverview(), refreshMovements()])
     } catch {
       alert('Failed to delete inventory item')
+    }
+  }
+
+  const handleDeleteInventoryLink = async (link: InventoryLogLink) => {
+    try {
+      setDeletingInventoryLinkId(link.itemId)
+      await deleteLogItemInventoryLink(link.itemId)
+      await refreshInventoryLinks()
+      setPendingInventoryLinkRemoval(null)
+    } catch {
+      alert('Failed to remove inventory link')
+    } finally {
+      setDeletingInventoryLinkId(null)
     }
   }
 
@@ -669,7 +930,7 @@ export default function InventoryPage() {
                   <th className="px-4 py-3 text-left eyebrow">Category</th>
                   <th className="px-4 py-3 text-left eyebrow">On hand</th>
                   <th className="px-4 py-3 text-left eyebrow">Usage</th>
-                  <th className="px-4 py-3 text-left eyebrow">Supplier</th>
+                  <th className="px-4 py-3 text-left eyebrow">By supplier</th>
                   <th className="px-4 py-3 text-left eyebrow">Location</th>
                   <th className="px-4 py-3 text-left eyebrow">Status</th>
                 </tr>
@@ -678,6 +939,8 @@ export default function InventoryPage() {
                 {currentStockRows.map((item) => {
                   const isOut = item.current_stock <= 0
                   const isLow = !isOut && item.min_stock_level > 0 && item.current_stock <= item.min_stock_level
+                  const itemLots = stockLotsByItem.get(item.item_id) ?? []
+                  const supplierRows = aggregateSupplierLots(itemLots)
                   return (
                     <tr key={`snapshot-${item.item_id}`} style={{ borderTop: '1px solid var(--line-2)' }}>
                       <td className="px-5 py-3">
@@ -693,7 +956,19 @@ export default function InventoryPage() {
                         <div className="text-[11px]" style={{ color: 'var(--ink-4)' }}>Reorder at {fmtQty(item.min_stock_level, item.unit)}</div>
                       </td>
                       <td className="px-4 py-3" style={{ color: 'var(--ink-2)' }}>{usageConversionLabel(item) || '—'}</td>
-                      <td className="px-4 py-3" style={{ color: 'var(--ink-2)' }}>{item.supplier || '—'}</td>
+                      <td className="px-4 py-3" style={{ color: 'var(--ink-2)' }}>
+                        {supplierRows.length > 0 ? (
+                          <div className="space-y-1">
+                            {supplierRows.map((row) => (
+                              <div key={`${item.item_id}-${row.supplier}`} className="text-[11.5px]">
+                                {row.supplier} · {fmtQty(row.quantity, row.unit)}
+                              </div>
+                            ))}
+                          </div>
+                        ) : (
+                          item.supplier || '—'
+                        )}
+                      </td>
                       <td className="px-4 py-3" style={{ color: 'var(--ink-2)' }}>{item.location || '—'}</td>
                       <td className="px-4 py-3">
                         <span
@@ -741,6 +1016,23 @@ export default function InventoryPage() {
         />
       )}
 
+      {linkManagerItem && (
+        <InventoryLinkManagerModal
+          item={linkManagerItem}
+          links={inventoryLogLinks[linkManagerItem.item_id] ?? []}
+          deletingLinkId={deletingInventoryLinkId}
+          pendingRemoval={pendingInventoryLinkRemoval}
+          onClose={() => {
+            setLinkManagerItem(null)
+            setPendingInventoryLinkRemoval(null)
+          }}
+          onOpenLink={(link) => navigate(`/log-types/${link.logTypeId}?category=${link.categoryId}&item=${link.itemId}`)}
+          onRequestRemove={(link) => setPendingInventoryLinkRemoval(link)}
+          onCancelRemove={() => setPendingInventoryLinkRemoval(null)}
+          onConfirmRemove={(link) => void handleDeleteInventoryLink(link)}
+        />
+      )}
+
       <div className="grid gap-4 xl:grid-cols-[minmax(0,1.4fr)_380px]">
         <div className="space-y-4">
           <div className="card overflow-hidden">
@@ -785,6 +1077,9 @@ export default function InventoryPage() {
               filteredItems.map((item) => {
                 const isOut = item.current_stock <= 0
                 const isLow = item.min_stock_level > 0 && item.current_stock <= item.min_stock_level
+                const itemLots = stockLotsByItem.get(item.item_id) ?? []
+                const supplierRows = aggregateSupplierLots(itemLots)
+                const vendorPricingRows = item.vendor_pricing ?? []
                 return (
                   <div key={item.item_id} className="group px-5 py-4" style={{ borderBottom: '1px solid var(--line-2)' }}>
                     <div className="flex flex-wrap items-start gap-3">
@@ -818,6 +1113,38 @@ export default function InventoryPage() {
                             <span>Usage: <strong style={{ color: 'var(--ink-2)' }}>{usageConversionLabel(item)}</strong></span>
                           )}
                         </div>
+                        {supplierRows.length > 0 && (
+                          <div className="mt-2">
+                            <div className="text-[11px] mb-1" style={{ color: 'var(--ink-4)' }}>Vendor-wise stock</div>
+                            <div className="flex flex-wrap gap-1.5">
+                              {supplierRows.map((row) => (
+                                <span
+                                  key={`${item.item_id}-${row.supplier}`}
+                                  className="text-[11px] px-2 py-1 rounded-full"
+                                  style={{ background: 'var(--bg-sunken)', color: 'var(--ink-2)' }}
+                                >
+                                  {row.supplier} · {fmtQty(row.quantity, row.unit)}
+                                </span>
+                              ))}
+                            </div>
+                          </div>
+                        )}
+                        {vendorPricingRows.length > 0 && (
+                          <div className="mt-2">
+                            <div className="text-[11px] mb-1" style={{ color: 'var(--ink-4)' }}>Vendor selling prices</div>
+                            <div className="flex flex-wrap gap-1.5">
+                              {vendorPricingRows.map((row) => (
+                                <span
+                                  key={`${item.item_id}-sell-${row.supplier_name}`}
+                                  className="text-[11px] px-2 py-1 rounded-full"
+                                  style={{ background: row.preferred_supplier ? 'var(--accent-wash)' : 'var(--bg-sunken)', color: row.preferred_supplier ? 'var(--accent-ink)' : 'var(--ink-2)' }}
+                                >
+                                  {row.supplier_name} · Sell Rs {fmtMoney(row.default_sell_price ?? 0)}
+                                </span>
+                              ))}
+                            </div>
+                          </div>
+                        )}
                         {(inventoryLogLinks[item.item_id] ?? []).length > 0 && (
                           <div className="mt-2 flex flex-wrap items-center gap-2">
                             <span
@@ -826,18 +1153,20 @@ export default function InventoryPage() {
                             >
                               Linked in Log Types
                             </span>
-                            {inventoryLogLinks[item.item_id].map((link) => (
-                              <button
-                                key={link.itemId}
-                                type="button"
-                                onClick={() => navigate(`/log-types/${link.logTypeId}?category=${link.categoryId}&item=${link.itemId}`)}
-                                className="text-[11.5px] underline underline-offset-2"
-                                style={{ color: 'var(--accent-ink)' }}
-                                title={`Open ${link.logTypeName} / ${link.categoryName} / ${link.itemName}`}
-                              >
-                                {link.logTypeName} / {link.categoryName} / {link.itemName}
-                              </button>
-                            ))}
+                            <span className="text-[11.5px]" style={{ color: 'var(--ink-3)' }}>
+                              {inventoryLogLinks[item.item_id].length} linked {inventoryLogLinks[item.item_id].length === 1 ? 'item' : 'items'}
+                            </span>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setPendingInventoryLinkRemoval(null)
+                                setLinkManagerItem(item)
+                              }}
+                              className="text-[10.5px] px-2 py-1 rounded-full"
+                              style={{ background: 'var(--bg-sunken)', color: 'var(--ink-2)' }}
+                            >
+                              Manage links
+                            </button>
                           </div>
                         )}
                       </div>
@@ -904,6 +1233,7 @@ export default function InventoryPage() {
               ) : (
                 movements.map((movement) => {
                   const tone = movementTone(movement.type)
+                  const movementItem = itemsById.get(movement.item_id)
                   return (
                     <div key={movement.movement_id} className="px-4 py-3" style={{ borderBottom: '1px solid var(--line-2)' }}>
                       <div className="flex items-start gap-3">
@@ -918,14 +1248,12 @@ export default function InventoryPage() {
                             </span>
                           </div>
                           <div className="text-[11.5px] mt-1" style={{ color: 'var(--ink-3)' }}>
-                            {movementReasonLabel(movement.reason)} · Qty {movement.quantity} {movement.item_unit}
-                            {' · '}
-                            Balance {movement.balance_after} {movement.item_unit}
-                            {formatMovementDocumentLabel(movement) !== '—' ? ` · ${formatMovementDocumentLabel(movement)}` : ''}
+                            {movementSummaryLine(movement, movementItem)}
                           </div>
-                          {(movement.party || movement.unit_cost) && (
+                          {(movement.supplier_bucket || movement.party || movement.unit_cost) && (
                             <div className="text-[11px] mt-1" style={{ color: 'var(--ink-4)' }}>
-                              {movement.party ? `Party ${movement.party}` : 'No party'}
+                              {movement.supplier_bucket ? `Supplier ${movement.supplier_bucket}` : 'Supplier —'}
+                              {movement.party ? ` · Party ${movement.party}` : ''}
                               {movement.unit_cost ? ` · Rate Rs ${fmtMoney(movement.unit_cost)}` : ''}
                             </div>
                           )}
@@ -1045,14 +1373,16 @@ export default function InventoryPage() {
                   </div>
                 </div>
                 <div className="overflow-x-auto">
-                  <table className="w-full min-w-[900px] text-[12.5px]">
+                          <table className="w-full min-w-[1160px] text-[12.5px]">
                     <thead>
                       <tr style={{ background: 'white' }}>
                         <th className="px-4 py-2 text-left eyebrow">Item</th>
                         <th className="px-4 py-2 text-left eyebrow">Type</th>
                         <th className="px-4 py-2 text-left eyebrow">Reason</th>
-                        <th className="px-4 py-2 text-left eyebrow">Qty</th>
+                        <th className="px-4 py-2 text-left eyebrow">Usage / Qty</th>
+                        <th className="px-4 py-2 text-left eyebrow">Stock effect</th>
                         <th className="px-4 py-2 text-left eyebrow">Balance</th>
+                        <th className="px-4 py-2 text-left eyebrow">Supplier / Source</th>
                         <th className="px-4 py-2 text-left eyebrow">Party</th>
                         <th className="px-4 py-2 text-left eyebrow">Document</th>
                         <th className="px-4 py-2 text-right eyebrow">Rate</th>
@@ -1062,11 +1392,16 @@ export default function InventoryPage() {
                     <tbody>
                       {day.rows.map((movement) => {
                         const tone = movementTone(movement.type)
+                        const movementItem = itemsById.get(movement.item_id)
+                        const movementDisplay = inferredMovementDisplay(movement, movementItem)
                         return (
                           <tr key={movement.movement_id} style={{ borderTop: '1px solid var(--line-2)' }}>
                             <td className="px-4 py-3">
                               <div style={{ color: 'var(--ink)', fontWeight: 500 }}>{movement.item_name}</div>
                               <div className="text-[11px] numeral" style={{ color: 'var(--ink-4)' }}>{movement.item_id}</div>
+                              {movement.lot_label && (
+                                <div className="text-[11px]" style={{ color: 'var(--ink-4)' }}>{movement.lot_label}</div>
+                              )}
                             </td>
                             <td className="px-4 py-3">
                               <span className="text-[10.5px] px-1.5 py-0.5 rounded-full" style={{ background: tone.bg, color: tone.color }}>
@@ -1074,11 +1409,22 @@ export default function InventoryPage() {
                               </span>
                             </td>
                             <td className="px-4 py-3" style={{ color: 'var(--ink-2)' }}>{movementReasonLabel(movement.reason)}</td>
-                            <td className="px-4 py-3 numeral" style={{ color: movementSignedQuantity(movement) < 0 ? '#991b1b' : 'var(--ink)' }}>
-                              {movementSignedQuantity(movement)} {movement.item_unit}
+                            <td className="px-4 py-3" style={{ color: 'var(--ink)' }}>
+                              <div className="numeral" style={{ color: movement.type === 'out' ? '#991b1b' : 'var(--ink)' }}>
+                                {movementDisplayQty(movement, movementItem)}
+                              </div>
+                              {movementDisplay && (
+                                <div className="text-[11px]" style={{ color: 'var(--ink-4)' }}>
+                                  {movementDisplay.inferred ? 'Converted from project quantity' : 'Logged from project entry'}
+                                </div>
+                              )}
                             </td>
-                            <td className="px-4 py-3 numeral" style={{ color: 'var(--ink)' }}>{movement.balance_after} {movement.item_unit}</td>
-                            <td className="px-4 py-3" style={{ color: 'var(--ink-2)' }}>{movement.party || '—'}</td>
+                            <td className="px-4 py-3 numeral" style={{ color: movement.type === 'out' ? '#991b1b' : 'var(--ink-2)' }}>
+                              {movementStockEffectLabel(movement)}
+                            </td>
+                            <td className="px-4 py-3 numeral" style={{ color: 'var(--ink)' }}>{movementBalanceLabel(movement, movementItem)}</td>
+                            <td className="px-4 py-3" style={{ color: 'var(--ink-2)' }}>{movementSourceText(movement)}</td>
+                            <td className="px-4 py-3" style={{ color: 'var(--ink-2)' }}>{movementPartyText(movement)}</td>
                             <td className="px-4 py-3" style={{ color: 'var(--ink-2)' }}>
                               <div>{formatMovementDocumentLabel(movement)}</div>
                               {formatMovementReferenceHint(movement) && (
@@ -1105,6 +1451,123 @@ export default function InventoryPage() {
         </div>
       </div>
     </div>
+  )
+}
+
+function InventoryLinkManagerModal({
+  item,
+  links,
+  deletingLinkId,
+  pendingRemoval,
+  onClose,
+  onOpenLink,
+  onRequestRemove,
+  onCancelRemove,
+  onConfirmRemove,
+}: {
+  item: InventoryItem
+  links: InventoryLogLink[]
+  deletingLinkId: string | null
+  pendingRemoval: InventoryLogLink | null
+  onClose: () => void
+  onOpenLink: (link: InventoryLogLink) => void
+  onRequestRemove: (link: InventoryLogLink) => void
+  onCancelRemove: () => void
+  onConfirmRemove: (link: InventoryLogLink) => void
+}) {
+  return (
+    <Modal open onClose={onClose} panelClassName="max-w-5xl">
+      <div
+        className="w-full rounded-[28px] overflow-hidden"
+        style={{ background: 'white', boxShadow: '0 28px 80px rgba(15, 23, 42, 0.25)' }}
+      >
+        <div className="flex items-start justify-between gap-4 px-6 py-5" style={{ borderBottom: '1px solid var(--line-2)', background: 'var(--bg-sunken)' }}>
+          <div>
+            <div className="text-[18px] font-semibold" style={{ color: 'var(--ink)' }}>Manage inventory links</div>
+            <div className="text-[13px] mt-1" style={{ color: 'var(--ink-3)' }}>
+              <strong style={{ color: 'var(--ink-2)' }}>{item.name}</strong> is linked to {links.length} {links.length === 1 ? 'log item' : 'log items'}.
+            </div>
+            <div className="text-[12px] mt-2" style={{ color: 'var(--ink-4)' }}>
+              Remove a link only when this inventory item should no longer be consumed by future project logs for that log item. Past entries stay unchanged.
+            </div>
+          </div>
+          <button onClick={onClose} className="btn btn-ghost btn-sm btn-icon" title="Close">
+            <X size={15} />
+          </button>
+        </div>
+
+        <div className="px-6 py-5 space-y-4 max-h-[80vh] overflow-y-auto">
+          <div className="rounded-2xl px-4 py-3" style={{ background: '#fff7ed', border: '1px solid #fed7aa', color: '#9a3412' }}>
+            Unlinking stops future stock deduction for that linked log item. Historical project logs and historical inventory movements are not deleted.
+          </div>
+
+          {links.length === 0 ? (
+            <div className="rounded-2xl px-4 py-10 text-center" style={{ border: '1px solid var(--line-2)', color: 'var(--ink-3)' }}>
+              This inventory item has no linked log items right now.
+            </div>
+          ) : (
+            <div className="space-y-3">
+              {links.map((link) => {
+                const isPending = pendingRemoval?.itemId === link.itemId
+                const isDeleting = deletingLinkId === link.itemId
+                return (
+                  <div key={link.itemId} className="rounded-2xl px-4 py-4" style={{ border: '1px solid var(--line-2)' }}>
+                    <div className="flex flex-wrap items-start justify-between gap-3">
+                      <div className="min-w-[220px] flex-1">
+                        <div className="text-[14px] font-semibold" style={{ color: 'var(--ink)' }}>
+                          {link.logTypeName} / {link.categoryName} / {link.itemName}
+                        </div>
+                        <div className="text-[12px] mt-1 flex flex-wrap gap-x-3 gap-y-1" style={{ color: 'var(--ink-3)' }}>
+                          <span>Usage rule: <strong style={{ color: 'var(--ink-2)' }}>{inventoryLinkUsageLabel(link)}</strong></span>
+                          <span className="numeral">Log item ID: {link.itemId}</span>
+                        </div>
+                      </div>
+
+                      <div className="flex flex-wrap items-center gap-2">
+                        <button onClick={() => onOpenLink(link)} className="btn btn-ghost btn-sm">
+                          Open
+                        </button>
+                        <button
+                          onClick={() => onRequestRemove(link)}
+                          className="btn btn-ghost btn-sm"
+                          style={{ color: '#991b1b' }}
+                          disabled={isDeleting}
+                        >
+                          {isDeleting ? 'Removing…' : 'Unlink'}
+                        </button>
+                      </div>
+                    </div>
+
+                    {isPending && (
+                      <div className="mt-4 rounded-2xl px-4 py-4" style={{ background: '#fef2f2', border: '1px solid #fecaca' }}>
+                        <div className="text-[13px] font-semibold" style={{ color: '#991b1b' }}>Remove this link?</div>
+                        <div className="text-[12px] mt-1" style={{ color: '#7f1d1d' }}>
+                          Future logs for <strong>{link.itemName}</strong> will no longer deduct stock from <strong>{item.name}</strong>.
+                        </div>
+                        <div className="text-[12px] mt-1" style={{ color: '#7f1d1d' }}>
+                          Past project logs and past inventory movements will remain as they are.
+                        </div>
+                        <div className="mt-3 flex flex-wrap justify-end gap-2">
+                          <button onClick={onCancelRemove} className="btn btn-ghost btn-sm">Cancel</button>
+                          <button
+                            onClick={() => onConfirmRemove(link)}
+                            className="btn btn-sm"
+                            style={{ background: '#991b1b', color: 'white' }}
+                            disabled={isDeleting}
+                          >
+                            {isDeleting ? 'Removing…' : 'Confirm unlink'}
+                          </button>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                )
+              })}
+            </div>
+          )}
+        </div>
+      </div>
+    </Modal>
   )
 }
 
@@ -1265,6 +1728,80 @@ function ItemFormCard({
               : ' If you buy in packets/boxes but use individual pieces, add a usage unit and pack size here.'}
         </div>
 
+        <div className="rounded-xl border p-4" style={{ borderColor: 'var(--line-2)', background: 'var(--bg-elev)' }}>
+          <div className="flex items-start justify-between gap-3">
+            <div>
+              <div className="text-[12px] font-semibold" style={{ color: 'var(--ink)' }}>Vendor selling prices</div>
+              <div className="text-[11.5px] mt-1" style={{ color: 'var(--ink-4)' }}>
+                Set default buy and sell prices per vendor. Daily logs use the chosen vendor lot price, so one item like Handle can behave differently for JK, MK, and NK.
+              </div>
+            </div>
+            <button
+              type="button"
+              onClick={() => update('vendor_pricing', [...draft.vendor_pricing, {
+                supplier_name: '',
+                default_buy_price: '',
+                default_sell_price: '',
+                lead_time_days: '',
+                preferred_supplier: draft.vendor_pricing.length === 0,
+                notes: '',
+              }])}
+              className="btn btn-ghost"
+            >
+              <Plus size={13} /> Add vendor
+            </button>
+          </div>
+
+          <div className="mt-4 space-y-3">
+            {draft.vendor_pricing.length === 0 ? (
+              <div className="text-[12px]" style={{ color: 'var(--ink-4)' }}>
+                No vendor pricing yet. Add vendors like `JK`, `MK`, and `NK` with their default sell prices.
+              </div>
+            ) : draft.vendor_pricing.map((row, index) => (
+              <div key={`vendor-pricing-${index}`} className="rounded-xl border p-3" style={{ borderColor: 'var(--line-2)', background: 'var(--bg-sunken)' }}>
+                <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-5">
+                  <Field label="Vendor" tooltip="Supplier or vendor name for this commercial price card.">
+                    <input className="input" value={row.supplier_name} onChange={(e) => update('vendor_pricing', draft.vendor_pricing.map((entry, rowIndex) => rowIndex === index ? { ...entry, supplier_name: e.target.value } : entry))} placeholder="JK Suppliers" />
+                  </Field>
+                  <Field label="Default buy" tooltip="Typical purchase price from this vendor, used as a commercial reference.">
+                    <input className="input numeral" type="number" min="0" step="any" value={row.default_buy_price} onChange={(e) => update('vendor_pricing', draft.vendor_pricing.map((entry, rowIndex) => rowIndex === index ? { ...entry, default_buy_price: e.target.value } : entry))} placeholder="90" />
+                  </Field>
+                  <Field label="Default sell" tooltip="Selling price for this vendor. Daily logs multiply this price by the logged quantity when stock is taken from this vendor's lot.">
+                    <input className="input numeral" type="number" min="0" step="any" value={row.default_sell_price} onChange={(e) => update('vendor_pricing', draft.vendor_pricing.map((entry, rowIndex) => rowIndex === index ? { ...entry, default_sell_price: e.target.value } : entry))} placeholder="130" />
+                  </Field>
+                  <Field label="Lead time" tooltip="Typical lead time in days for this vendor.">
+                    <input className="input numeral" type="number" min="0" step="1" value={row.lead_time_days} onChange={(e) => update('vendor_pricing', draft.vendor_pricing.map((entry, rowIndex) => rowIndex === index ? { ...entry, lead_time_days: e.target.value } : entry))} placeholder="2" />
+                  </Field>
+                  <div className="space-y-1.5">
+                    <span className="flex items-center gap-1.5 text-[11px] font-medium uppercase tracking-wider" style={{ color: 'var(--ink-4)' }}>Preferred</span>
+                    <label className="flex h-10 items-center gap-2 rounded-lg border px-3" style={{ borderColor: 'var(--line-2)', background: 'var(--bg-elev)', color: 'var(--ink-2)' }}>
+                      <input
+                        type="checkbox"
+                        checked={row.preferred_supplier}
+                        onChange={(e) => update('vendor_pricing', draft.vendor_pricing.map((entry, rowIndex) => ({
+                          ...entry,
+                          preferred_supplier: rowIndex === index ? e.target.checked : (e.target.checked ? false : entry.preferred_supplier),
+                        })))}
+                      />
+                      Default vendor
+                    </label>
+                  </div>
+                </div>
+                <div className="mt-3 flex items-start gap-3">
+                  <div className="flex-1">
+                    <Field label="Vendor notes" tooltip="Commercial notes like finish, discount pattern, or special terms for this vendor.">
+                      <input className="input" value={row.notes} onChange={(e) => update('vendor_pricing', draft.vendor_pricing.map((entry, rowIndex) => rowIndex === index ? { ...entry, notes: e.target.value } : entry))} placeholder="Premium finish, faster delivery, or better packaging" />
+                    </Field>
+                  </div>
+                  <button type="button" onClick={() => update('vendor_pricing', draft.vendor_pricing.filter((_, rowIndex) => rowIndex !== index))} className="btn btn-ghost" style={{ color: 'var(--bad)' }}>
+                    <Trash2 size={13} /> Remove
+                  </button>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+
         <Field label="Notes" tooltip="Any extra details like brand, finish, size, quality, vendor terms, or handling instructions.">
           <textarea className="input min-h-[92px] resize-none" value={draft.notes} onChange={(e) => update('notes', e.target.value)} placeholder="Board grade, color, vendor terms, or special handling notes" />
         </Field>
@@ -1296,6 +1833,7 @@ function MovementFormCard({
   onCancel: () => void
   onSave: () => void
 }) {
+  const [availableLots, setAvailableLots] = useState<InventoryStockLot[]>([])
   const update = <K extends keyof MovementDraft>(key: K, value: MovementDraft[K]) => onChange({ ...draft, [key]: value })
   const reasonOptions = MOVEMENT_REASON_OPTIONS[draft.type]
   const itemOptions = [
@@ -1311,6 +1849,54 @@ function MovementFormCard({
     { value: 'out', label: 'Stock out' },
     { value: 'adjustment', label: 'Adjustment' },
   ]
+  const selectedItem = items.find((item) => item.item_id === draft.item_id)
+  const hasUsageUnit = Boolean(
+    selectedItem?.usage_unit &&
+    selectedItem.usage_units_per_stock_unit &&
+    selectedItem.usage_units_per_stock_unit > 0 &&
+    selectedItem.usage_unit !== selectedItem.unit,
+  )
+  const needsLotSelection = (draft.type === 'out' || draft.type === 'adjustment') && availableLots.length > 0
+  const sourceFieldMeta = movementSourceFieldMeta(draft.type)
+  const partyFieldMeta = movementPartyFieldMeta(draft.type)
+  const documentFieldMeta = movementDocumentFieldMeta(draft.type)
+
+  useEffect(() => {
+    if (!draft.item_id) {
+      setAvailableLots([])
+      return
+    }
+    listInventoryStockLots(draft.item_id)
+      .then((response) => {
+        const rows = response.data.data ?? []
+        setAvailableLots(rows)
+        if (rows.length === 1 && !draft.lot_id) {
+          update('lot_id', rows[0].lot_id)
+        } else if (draft.lot_id && !rows.some((lot) => lot.lot_id === draft.lot_id)) {
+          update('lot_id', '')
+        }
+      })
+      .catch(() => setAvailableLots([]))
+  }, [draft.item_id])
+
+  useEffect(() => {
+    if (!selectedItem) return
+    if ((draft.type === 'in' || draft.type === 'adjustment') && !draft.supplier_bucket.trim() && selectedItem.supplier) {
+      update('supplier_bucket', selectedItem.supplier)
+    }
+    if (!hasUsageUnit && draft.quantity_unit !== 'stock') {
+      update('quantity_unit', 'stock')
+    }
+  }, [selectedItem?.item_id, selectedItem?.supplier, draft.type, hasUsageUnit])
+
+  const quantityPreview = (() => {
+    if (!selectedItem || !draft.quantity.trim()) return null
+    const parsed = Number(draft.quantity)
+    if (!Number.isFinite(parsed) || parsed === 0) return null
+    if (!hasUsageUnit || draft.quantity_unit === 'stock') return null
+    const converted = stockQuantityFromUsage(selectedItem, parsed)
+    return `${parsed} ${selectedItem.usage_unit} = ${converted.toFixed(2)} ${selectedItem.unit}`
+  })()
 
   return (
     <div className="card mb-4 overflow-hidden">
@@ -1319,6 +1905,9 @@ function MovementFormCard({
           <div className="text-[13.5px] font-semibold" style={{ color: 'var(--ink)' }}>Record stock movement</div>
           <div className="text-[12px]" style={{ color: 'var(--ink-4)' }}>
             Use positive quantity for stock in/out. For adjustments, positive adds stock and negative reduces it.
+          </div>
+          <div className="text-[11.5px] mt-1" style={{ color: 'var(--ink-4)' }}>
+            For purchases, fill <strong style={{ color: 'var(--ink-2)' }}>Supplier / stock source</strong> with the vendor name so future logs clearly show whether stock came from JK Screws, MK Screws, or someone else.
           </div>
         </div>
         <button onClick={onCancel} className="btn btn-ghost btn-sm btn-icon" title="Close">
@@ -1333,7 +1922,7 @@ function MovementFormCard({
         <Field label="Item" tooltip="Choose which inventory item this stock movement belongs to.">
           <SearchableSelect
             value={draft.item_id}
-            onChange={(value) => update('item_id', value)}
+            onChange={(value) => onChange({ ...draft, item_id: value, lot_id: '' })}
             options={itemOptions}
             placeholder="Select item"
             searchPlaceholder="Search inventory item…"
@@ -1343,7 +1932,7 @@ function MovementFormCard({
         <Field label="Type" tooltip="Select whether stock is coming in, going out, or being corrected manually.">
           <SearchableSelect
             value={draft.type}
-            onChange={(value) => onChange({ ...draft, type: value as InventoryMovementType, reason: defaultReasonForType(value as InventoryMovementType) })}
+            onChange={(value) => onChange({ ...draft, type: value as InventoryMovementType, reason: defaultReasonForType(value as InventoryMovementType), lot_id: '' })}
             options={typeOptions}
             placeholder="Select type"
             searchPlaceholder="Search movement type…"
@@ -1363,19 +1952,59 @@ function MovementFormCard({
         <Field label="Quantity" tooltip="Enter the quantity to add, remove, or adjust in the item's stock unit.">
           <input className="input numeral" type="number" value={draft.quantity} onChange={(e) => update('quantity', e.target.value)} placeholder={draft.type === 'adjustment' ? 'e.g. -2 or 4' : 'e.g. 10'} />
         </Field>
+        {hasUsageUnit && (
+          <Field label="Qty unit" tooltip="Choose whether the entered quantity is in the stock unit or the usage unit. The system converts usage units back into stock automatically.">
+            <SearchableSelect
+              value={draft.quantity_unit}
+              onChange={(value) => update('quantity_unit', value as MovementDraft['quantity_unit'])}
+              options={[
+                { value: 'stock', label: `Stock unit (${selectedItem?.unit})` },
+                { value: 'usage', label: `Usage unit (${selectedItem?.usage_unit})` },
+              ]}
+              placeholder="Select quantity unit"
+              searchPlaceholder="Search quantity unit…"
+              emptyMessage="No quantity units found"
+            />
+          </Field>
+        )}
         <Field label="Unit cost" tooltip="Optional rate per stock unit. This is especially useful for purchase entries and inventory value tracking.">
           <input className="input numeral" type="number" min="0" step="any" value={draft.unit_cost} onChange={(e) => update('unit_cost', e.target.value)} placeholder="e.g. 20000" />
         </Field>
-        <Field label="Party" tooltip="Supplier, vendor, project, team member, or site connected to this movement.">
-          <input className="input" value={draft.party} onChange={(e) => update('party', e.target.value)} placeholder="Supplier / site / project" />
+        {(draft.type === 'in' || draft.type === 'adjustment') && (
+          <Field label={sourceFieldMeta.label} tooltip={sourceFieldMeta.tooltip}>
+            <input className="input" value={draft.supplier_bucket} onChange={(e) => update('supplier_bucket', e.target.value)} placeholder={sourceFieldMeta.placeholder} />
+          </Field>
+        )}
+        <Field label={partyFieldMeta.label} tooltip={partyFieldMeta.tooltip}>
+          <input className="input" value={draft.party} onChange={(e) => update('party', e.target.value)} placeholder={partyFieldMeta.placeholder} />
         </Field>
-        <Field label="Document no." tooltip="Invoice number, purchase order, issue slip, challan, or any document connected to this entry.">
-          <input className="input" value={draft.document_number} onChange={(e) => update('document_number', e.target.value)} placeholder="Invoice / PO / slip no." />
+        {needsLotSelection && (
+          <Field label="Stock lot" tooltip="Choose the exact stock lot to consume or adjust. Purchases create these lots automatically.">
+            <SearchableSelect
+              value={draft.lot_id}
+              onChange={(value) => update('lot_id', value)}
+              options={availableLots.map((lot) => ({
+                value: lot.lot_id,
+                label: `${lot.label} · ${lot.remaining_quantity} ${lot.item_unit} available`,
+              }))}
+              placeholder={selectedItem ? 'Select stock lot' : 'Pick an item first'}
+              searchPlaceholder="Search stock lots…"
+              emptyMessage="No stock lots found"
+            />
+          </Field>
+        )}
+        <Field label="Document no." tooltip={documentFieldMeta.tooltip}>
+          <input className="input" value={draft.document_number} onChange={(e) => update('document_number', e.target.value)} placeholder={documentFieldMeta.placeholder} />
         </Field>
         <Field label="Reference" tooltip="An optional internal reference used to trace related records like log entries or system-generated transactions.">
           <input className="input" value={draft.reference} onChange={(e) => update('reference', e.target.value)} placeholder="Optional internal reference" />
         </Field>
         <div className="md:col-span-2 xl:col-span-4">
+          {quantityPreview && (
+            <div className="mb-3 rounded-xl px-3 py-2 text-[12px]" style={{ background: 'var(--bg-sunken)', color: 'var(--ink-3)' }}>
+              {quantityPreview}
+            </div>
+          )}
           <Field label="Notes" tooltip="Explain why the stock changed, such as purchase, site issue, damage, return, or correction.">
             <textarea className="input min-h-[84px] resize-none" value={draft.notes} onChange={(e) => update('notes', e.target.value)} placeholder="Why this stock changed" />
           </Field>
@@ -1383,7 +2012,7 @@ function MovementFormCard({
 
         <div className="md:col-span-2 xl:col-span-4 flex flex-wrap items-center justify-end gap-2">
           <button onClick={onCancel} className="btn btn-ghost">Cancel</button>
-          <button onClick={onSave} disabled={!draft.item_id || !draft.quantity.trim() || saving} className="btn btn-accent">
+          <button onClick={onSave} disabled={!draft.item_id || !draft.quantity.trim() || saving || (needsLotSelection && !draft.lot_id)} className="btn btn-accent">
             <Check size={13} />
             {saving ? 'Saving…' : 'Save movement'}
           </button>

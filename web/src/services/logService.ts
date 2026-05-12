@@ -53,6 +53,7 @@ export interface LogItem {
   name: string
   description?: string
   inventory_link?: LogItemInventoryLink
+  inventory_mappings?: LogItemInventoryMapping[]
   schema_version: number
   fields: FieldValue[]
   entry_count: number
@@ -66,6 +67,11 @@ export interface LogItemInventoryLink {
   inventory_unit: string
   quantity_unit: string
   usage_per_quantity: number
+}
+
+export interface LogItemInventoryMapping {
+  conditions: Record<string, string>
+  link: LogItemInventoryLink
 }
 
 export interface FieldValue {
@@ -98,8 +104,21 @@ export interface InventoryConsumption {
   inventory_item_id: string
   inventory_item_name: string
   inventory_unit: string
+  quantity_unit?: string
+  logged_quantity?: number
+  inventory_lot_id?: string
+  inventory_lot_label?: string
+  supplier_bucket?: string
   usage_per_quantity: number
   consumed_quantity: number
+  allocations?: InventoryLotAllocation[]
+}
+
+export interface InventoryLotAllocation {
+  inventory_lot_id: string
+  inventory_lot_label?: string
+  supplier_bucket?: string
+  allocated_quantity: number
 }
 
 export interface PricingRateEntry {
@@ -189,6 +208,9 @@ export const createLogItem = (categoryId: string, payload: { description?: strin
 export const updateLogItem = (id: string, payload: { fields: FieldValue[]; inventory_link?: { inventory_item_id: string; quantity_unit?: string; usage_per_quantity: number } | null }) =>
   api.put<{ success: boolean; data: LogItem }>(`/log-items/${id}`, payload)
 
+export const deleteLogItemInventoryLink = (id: string) =>
+  api.delete<{ success: boolean; data: LogItem }>(`/log-items/${id}/inventory-link`)
+
 export const archiveLogItem = (id: string) =>
   api.delete(`/log-items/${id}`)
 
@@ -210,6 +232,9 @@ export const createLogEntry = (
     category_id: string
     item_id?: string
     quantity?: number
+    inventory_supplier_bucket?: string
+    inventory_lot_id?: string
+    inventory_lot_allocations?: { inventory_lot_id: string; allocated_quantity: number }[]
     log_date: string        // "YYYY-MM-DD"
     fields: FieldValue[]
     notes?: string
@@ -219,7 +244,7 @@ export const createLogEntry = (
 export const updateLogEntry = (
   projectId: string,
   entryId: string,
-  payload: { fields?: FieldValue[]; notes?: string; quantity?: number },
+  payload: { fields?: FieldValue[]; notes?: string; quantity?: number; inventory_supplier_bucket?: string; inventory_lot_id?: string; inventory_lot_allocations?: { inventory_lot_id: string; allocated_quantity: number }[] },
 ) => api.put<{ success: boolean; data: LogEntry }>(`/projects/${projectId}/logs/${entryId}`, payload)
 
 export const deleteLogEntry = (projectId: string, entryId: string) =>

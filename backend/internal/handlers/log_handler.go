@@ -59,6 +59,7 @@ func RegisterLogRoutes(rg *gin.RouterGroup) {
 	lc.POST("/:id/restore", restoreLogCategory)
 	li := rg.Group("/log-items")
 	li.PUT("/:id", updateLogItem)
+	li.DELETE("/:id/inventory-link", deleteLogItemInventoryLink)
 	li.DELETE("/:id", archiveLogItem)
 	li.POST("/:id/restore", restoreLogItem)
 
@@ -264,6 +265,19 @@ func updateLogItem(c *gin.Context) {
 	}
 
 	item, err := services.UpdateLogItem(c.Param("id"), input)
+	if err != nil {
+		utils.BadRequest(c, err.Error())
+		return
+	}
+	if item == nil {
+		utils.NotFound(c, "item not found")
+		return
+	}
+	utils.OK(c, item)
+}
+
+func deleteLogItemInventoryLink(c *gin.Context) {
+	item, err := services.DeleteLogItemInventoryLink(c.Param("id"))
 	if err != nil {
 		utils.BadRequest(c, err.Error())
 		return

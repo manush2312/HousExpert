@@ -386,9 +386,9 @@ function ItemRow({ item, rowIndex, products, onChange, onRemove, onApplyProduct,
       }}
     >
       <div>
-        <div className="flex items-center gap-1.5">
+        <div className="flex items-start gap-1.5">
           <span className="numeral text-[10.5px] shrink-0" style={{ color: 'var(--ink-5)', minWidth: 16 }}>{rowIndex + 1}</span>
-          <div className="flex-1 min-w-0">
+          <div className="flex-1 min-w-0 space-y-1.5">
             <SearchableSelect
               value={item.product_id ?? ''}
               onChange={(nextValue) => {
