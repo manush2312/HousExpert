@@ -356,31 +356,37 @@ func CreateInventoryItem(input CreateInventoryItemInput) (*models.InventoryItem,
 	if item.CurrentStock > 0 {
 		openingDate := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC)
 		lot, err := createInventoryStockLot(item, item.CurrentStock, inventoryMovementRecordOptions{
-			Reason:          "opening_stock",
-			TransactionDate: openingDate,
-			Reference:       "opening-balance",
-			Notes:           "Opening stock",
-			UnitCost:        item.LastPurchaseCost,
-			Party:           item.Supplier,
-			SupplierBucket:  item.Supplier,
+			Reason:           "opening_stock",
+			TransactionDate:  openingDate,
+			Reference:        "opening-balance",
+			Notes:            "Opening stock",
+			UnitCost:         item.LastPurchaseCost,
+			ResolvedUnitCost: item.LastPurchaseCost,
+			Party:            item.Supplier,
+			SupplierBucket:   item.Supplier,
 		})
 		if err != nil {
 			return nil, err
 		}
 		if _, err := createMovementRecord(item, models.InventoryMovementAdjustment, item.CurrentStock, inventoryMovementRecordOptions{
-			Reason:          "opening_stock",
-			TransactionDate: openingDate,
-			Reference:       "opening-balance",
-			Notes:           "Opening stock",
-			UnitCost:        item.LastPurchaseCost,
-			Party:           item.Supplier,
-			SupplierBucket:  lot.SupplierBucket,
-			LotID:           lot.LotID,
-			LotLabel:        stockLotLabel(lot),
+			Reason:           "opening_stock",
+			TransactionDate:  openingDate,
+			Reference:        "opening-balance",
+			Notes:            "Opening stock",
+			UnitCost:         item.LastPurchaseCost,
+			ResolvedUnitCost: item.LastPurchaseCost,
+			Party:            item.Supplier,
+			SupplierBucket:   lot.SupplierBucket,
+			LotID:            lot.LotID,
+			LotLabel:         stockLotLabel(lot),
 		}); err != nil {
 			return nil, err
 		}
 	}
+
+	avg, value := computeInventoryItemCostMetrics(item, []models.InventoryStockLot{})
+	item.AverageUnitCost = avg
+	item.InventoryValue = value
 
 	return item, nil
 }
@@ -402,6 +408,9 @@ func ListInventoryItems() ([]models.InventoryItem, error) {
 	if items == nil {
 		items = []models.InventoryItem{}
 	}
+	if err := enrichInventoryItemsCostMetrics(items); err != nil {
+		return nil, err
+	}
 	return items, nil
 }
 
@@ -421,7 +430,14 @@ func GetInventoryItem(itemID string) (*models.InventoryItem, error) {
 			}},
 		)
 	}
-	return &item, err
+	if err != nil {
+		return &item, err
+	}
+	enriched := []models.InventoryItem{item}
+	if enrichErr := enrichInventoryItemsCostMetrics(enriched); enrichErr != nil {
+		return nil, enrichErr
+	}
+	return &enriched[0], nil
 }
 
 func UpdateInventoryItem(itemID string, input UpdateInventoryItemInput) (*models.InventoryItem, error) {
@@ -507,7 +523,14 @@ func UpdateInventoryItem(itemID string, input UpdateInventoryItemInput) (*models
 	if errors.Is(err, mongo.ErrNoDocuments) {
 		return nil, nil
 	}
-	return &item, err
+	if err != nil {
+		return nil, err
+	}
+	enriched := []models.InventoryItem{item}
+	if err := enrichInventoryItemsCostMetrics(enriched); err != nil {
+		return nil, err
+	}
+	return &enriched[0], nil
 }
 
 func DeleteInventoryItem(itemID string) error {
@@ -524,32 +547,116 @@ func DeleteInventoryItem(itemID string) error {
 }
 
 type inventoryMovementRecordOptions struct {
-	Reason          string
-	UnitCost        float64
-	Party           string
-	SupplierBucket  string
-	LotID           string
-	LotLabel        string
-	DocumentNumber  string
-	TransactionDate time.Time
-	Reference       string
-	Notes           string
+	Reason           string
+	UnitCost         float64
+	ResolvedUnitCost float64
+	Party            string
+	SupplierBucket   string
+	LotID            string
+	LotLabel         string
+	DocumentNumber   string
+	TransactionDate  time.Time
+	Reference        string
+	Notes            string
 }
 
-func resolvedMovementUnitCost(item *models.InventoryItem, movementType models.InventoryMovementType, provided float64) float64 {
+func costFallback(primary, fallback float64) float64 {
+	if primary > 0 {
+		return primary
+	}
+	if fallback > 0 {
+		return fallback
+	}
+	return 0
+}
+
+func resolvedMovementUnitCost(item *models.InventoryItem, movementType models.InventoryMovementType, provided float64, lot *models.InventoryStockLot) float64 {
 	if provided > 0 {
 		return provided
+	}
+	if lot != nil && lot.UnitCost > 0 {
+		return lot.UnitCost
 	}
 	if item == nil {
 		return 0
 	}
 	switch movementType {
 	case models.InventoryMovementOut, models.InventoryMovementAdjustment:
-		if item.LastPurchaseCost > 0 {
-			return item.LastPurchaseCost
-		}
+		return costFallback(item.AverageUnitCost, item.LastPurchaseCost)
 	}
 	return 0
+}
+
+func computeInventoryItemCostMetrics(item *models.InventoryItem, lots []models.InventoryStockLot) (float64, float64) {
+	if item == nil {
+		return 0, 0
+	}
+
+	var totalQty float64
+	var totalValue float64
+	for _, lot := range lots {
+		if lot.RemainingQuantity <= 0 {
+			continue
+		}
+		totalQty += lot.RemainingQuantity
+		totalValue += lot.RemainingQuantity * costFallback(lot.UnitCost, item.LastPurchaseCost)
+	}
+
+	if totalQty <= 0 {
+		if item.CurrentStock > 0 && item.LastPurchaseCost > 0 {
+			return item.LastPurchaseCost, item.CurrentStock * item.LastPurchaseCost
+		}
+		return 0, 0
+	}
+
+	avg := totalValue / totalQty
+	return avg, item.CurrentStock * avg
+}
+
+func enrichInventoryItemsCostMetrics(items []models.InventoryItem) error {
+	if len(items) == 0 {
+		return nil
+	}
+
+	itemIDs := make([]string, 0, len(items))
+	for _, item := range items {
+		if trimOrEmpty(item.ItemID) != "" {
+			itemIDs = append(itemIDs, item.ItemID)
+		}
+	}
+	if len(itemIDs) == 0 {
+		return nil
+	}
+
+	cursor, err := inventoryStockLotCol().Find(
+		context.Background(),
+		bson.M{
+			"item_id":            bson.M{"$in": itemIDs},
+			"remaining_quantity": bson.M{"$gt": 0},
+		},
+	)
+	if err != nil {
+		return err
+	}
+	defer cursor.Close(context.Background())
+
+	var lots []models.InventoryStockLot
+	if err := cursor.All(context.Background(), &lots); err != nil {
+		return err
+	}
+
+	lotsByItem := make(map[string][]models.InventoryStockLot, len(items))
+	for _, lot := range lots {
+		lotsByItem[lot.ItemID] = append(lotsByItem[lot.ItemID], lot)
+	}
+
+	for index := range items {
+		avg, value := computeInventoryItemCostMetrics(&items[index], lotsByItem[items[index].ItemID])
+		items[index].AverageUnitCost = avg
+		items[index].InventoryValue = value
+	}
+
+	return nil
 }
 
 func findInventoryStockLot(itemID, lotID string) (*models.InventoryStockLot, error) {
@@ -584,7 +691,7 @@ func createInventoryStockLot(item *models.InventoryItem, quantity float64, opts 
 		SupplierBucket:    supplierBucketLabel(firstNonEmpty(opts.SupplierBucket, opts.Party)),
 		ReceivedQuantity:  quantity,
 		RemainingQuantity: quantity,
-		UnitCost:          resolvedMovementUnitCost(item, models.InventoryMovementIn, opts.UnitCost),
+		UnitCost:          costFallback(opts.ResolvedUnitCost, resolvedMovementUnitCost(item, models.InventoryMovementIn, opts.UnitCost, nil)),
 		ReceivedDate:      opts.TransactionDate,
 		DocumentNumber:    trimOrEmpty(opts.DocumentNumber),
 		Reference:         trimOrEmpty(opts.Reference),
@@ -915,7 +1022,7 @@ func createMovementRecord(item *models.InventoryItem, t models.InventoryMovement
 			supplierBucket = firstNonEmpty(opts.Party, item.Supplier)
 		}
 	}
-	unitCost := resolvedMovementUnitCost(item, t, opts.UnitCost)
+	unitCost := costFallback(opts.ResolvedUnitCost, resolvedMovementUnitCost(item, t, opts.UnitCost, nil))
 	movement := &models.InventoryMovement{
 		MovementID:      movementID,
 		ItemID:          item.ItemID,
@@ -1003,6 +1110,8 @@ func CreateInventoryMovement(input CreateInventoryMovementInput) (*models.Invent
 		normalizedSupplierBucket = lot.SupplierBucket
 	}
 
+	resolvedUnitCost := resolvedMovementUnitCost(item, movementType, input.UnitCost, lot)
+
 	item.CurrentStock = nextStock
 	item.UpdatedAt = time.Now()
 	updateSet := bson.M{
@@ -1028,14 +1137,15 @@ func CreateInventoryMovement(input CreateInventoryMovementInput) (*models.Invent
 	switch {
 	case delta > 0 && movementType == models.InventoryMovementIn:
 		lot, err = createInventoryStockLot(item, delta, inventoryMovementRecordOptions{
-			Reason:          input.Reason,
-			UnitCost:        input.UnitCost,
-			Party:           input.Party,
-			SupplierBucket:  normalizedSupplierBucket,
-			DocumentNumber:  input.DocumentNumber,
-			TransactionDate: transactionDate,
-			Reference:       input.Reference,
-			Notes:           input.Notes,
+			Reason:           input.Reason,
+			UnitCost:         input.UnitCost,
+			ResolvedUnitCost: resolvedUnitCost,
+			Party:            input.Party,
+			SupplierBucket:   normalizedSupplierBucket,
+			DocumentNumber:   input.DocumentNumber,
+			TransactionDate:  transactionDate,
+			Reference:        input.Reference,
+			Notes:            input.Notes,
 		})
 		if err != nil {
 			return nil, err
@@ -1051,14 +1161,15 @@ func CreateInventoryMovement(input CreateInventoryMovementInput) (*models.Invent
 			}
 		} else {
 			lot, err = createInventoryStockLot(item, delta, inventoryMovementRecordOptions{
-				Reason:          input.Reason,
-				UnitCost:        input.UnitCost,
-				Party:           input.Party,
-				SupplierBucket:  normalizedSupplierBucket,
-				DocumentNumber:  input.DocumentNumber,
-				TransactionDate: transactionDate,
-				Reference:       input.Reference,
-				Notes:           input.Notes,
+				Reason:           input.Reason,
+				UnitCost:         input.UnitCost,
+				ResolvedUnitCost: resolvedUnitCost,
+				Party:            input.Party,
+				SupplierBucket:   normalizedSupplierBucket,
+				DocumentNumber:   input.DocumentNumber,
+				TransactionDate:  transactionDate,
+				Reference:        input.Reference,
+				Notes:            input.Notes,
 			})
 			if err != nil {
 				return nil, err
@@ -1076,16 +1187,17 @@ func CreateInventoryMovement(input CreateInventoryMovementInput) (*models.Invent
 	}
 
 	return createMovementRecord(item, movementType, input.Quantity, inventoryMovementRecordOptions{
-		Reason:          input.Reason,
-		UnitCost:        input.UnitCost,
-		Party:           input.Party,
-		SupplierBucket:  normalizedSupplierBucket,
-		LotID:           normalizedLotID,
-		LotLabel:        lotLabel,
-		DocumentNumber:  input.DocumentNumber,
-		TransactionDate: transactionDate,
-		Reference:       input.Reference,
-		Notes:           input.Notes,
+		Reason:           input.Reason,
+		UnitCost:         input.UnitCost,
+		ResolvedUnitCost: resolvedUnitCost,
+		Party:            input.Party,
+		SupplierBucket:   normalizedSupplierBucket,
+		LotID:            normalizedLotID,
+		LotLabel:         lotLabel,
+		DocumentNumber:   input.DocumentNumber,
+		TransactionDate:  transactionDate,
+		Reference:        input.Reference,
+		Notes:            input.Notes,
 	})
 }
 
@@ -1098,15 +1210,18 @@ func ListInventorySupplierStock(itemID string) ([]models.InventorySupplierStock,
 		return []models.InventorySupplierStock{}, nil
 	}
 	type bucketAggregate struct {
-		qty      float64
-		unitCost float64
+		qty       float64
+		totalCost float64
+		unitCost  float64
 	}
 	aggregates := map[string]bucketAggregate{}
 	for _, lot := range lots {
 		aggregate := aggregates[lot.SupplierBucket]
 		aggregate.qty += lot.RemainingQuantity
-		if lot.UnitCost > 0 {
-			aggregate.unitCost = lot.UnitCost
+		lotCost := costFallback(lot.UnitCost, 0)
+		if lotCost > 0 {
+			aggregate.totalCost += lot.RemainingQuantity * lotCost
+			aggregate.unitCost = lotCost
 		}
 		aggregates[lot.SupplierBucket] = aggregate
 	}
@@ -1119,7 +1234,13 @@ func ListInventorySupplierStock(itemID string) ([]models.InventorySupplierStock,
 			ItemUnit:       lots[0].ItemUnit,
 			SupplierBucket: bucket,
 			AvailableQty:   aggregate.qty,
-			UnitCost:       aggregate.unitCost,
+			AverageUnitCost: func() float64 {
+				if aggregate.qty <= 0 || aggregate.totalCost <= 0 {
+					return 0
+				}
+				return aggregate.totalCost / aggregate.qty
+			}(),
+			UnitCost: aggregate.unitCost,
 		})
 	}
 	sort.Slice(result, func(i, j int) bool {
@@ -1230,7 +1351,7 @@ func enrichInventoryMovements(movements []models.InventoryMovement) error {
 				itemCache[movement.ItemID] = item
 			}
 			if item != nil {
-				unitCost := resolvedMovementUnitCost(item, movement.Type, 0)
+				unitCost := resolvedMovementUnitCost(item, movement.Type, 0, nil)
 				if unitCost > 0 {
 					movement.UnitCost = unitCost
 					movement.TotalAmount = math.Abs(movement.Quantity) * unitCost
@@ -1360,7 +1481,7 @@ func GetInventorySummary() (*InventorySummary, error) {
 	summary := &InventorySummary{TotalItems: len(items)}
 	for _, item := range items {
 		summary.TotalUnits += item.CurrentStock
-		summary.InventoryValue += item.CurrentStock * item.LastPurchaseCost
+		summary.InventoryValue += item.InventoryValue
 		if item.CurrentStock <= 0 {
 			summary.OutOfStockCount++
 		}
