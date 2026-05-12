@@ -131,6 +131,13 @@ func buildQuotationPDF(q *models.Quotation) (*bytes.Buffer, error) {
 	}
 	y = p.drawQuotGrandTotal(y, q.SubtotalAmount, q.ApplyGST, q.GSTPercent, q.GSTAmount, q.TotalAmount)
 
+	// Appendix notice
+	if y+18 > qph-14 {
+		doc.AddPage()
+		y = 14
+	}
+	y = p.drawQuotationAppendixNotice(y)
+
 	// Notes
 	if q.Notes != "" {
 		if y+20 > qph-14 {
@@ -139,6 +146,9 @@ func buildQuotationPDF(q *models.Quotation) (*bytes.Buffer, error) {
 		}
 		p.drawQuotNotes(y, q.Notes)
 	}
+
+	// Standard specifications & terms appendix
+	p.drawQuotationSpecificationsAppendix()
 
 	// Page footers
 	doc.SetAutoPageBreak(false, 0)
