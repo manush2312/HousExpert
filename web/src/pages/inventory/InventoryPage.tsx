@@ -104,6 +104,7 @@ type MovementReasonOption = {
 }
 
 type StockView = 'all' | 'in_stock' | 'low_stock' | 'out_of_stock'
+type InventoryTab = 'overview' | 'items' | 'snapshot' | 'movements'
 
 type InventoryLogLink = {
   logTypeId: string
@@ -410,6 +411,11 @@ function formatCostValue(value?: number) {
   return `Rs ${fmtMoney(value)}`
 }
 
+function inventoryCategoryLabel(value?: string | null) {
+  const trimmed = value?.trim()
+  return trimmed ? trimmed : 'Uncategorized'
+}
+
 function parseSafeDate(value?: string | null): Date | null {
   if (!value) return null
   const parsed = new Date(value)
@@ -470,6 +476,7 @@ export default function InventoryPage() {
   const [error, setError] = useState('')
   const [query, setQuery] = useState('')
   const [categoryFilter, setCategoryFilter] = useState('all')
+  const [activeTab, setActiveTab] = useState<InventoryTab>('items')
   const [stockView, setStockView] = useState<StockView>('all')
   const [movementFilter, setMovementFilter] = useState<MovementFilter>(EMPTY_MOVEMENT_FILTER)
   const [itemDraft, setItemDraft] = useState<ItemDraft>(EMPTY_ITEM_DRAFT)
@@ -599,6 +606,43 @@ export default function InventoryPage() {
     })
   }, [items, query, categoryFilter])
 
+  const groupedInventorySections = useMemo(() => {
+    const groups = new Map<string, {
+      key: string
+      label: string
+      items: InventoryItem[]
+      totalStock: number
+      totalValue: number
+    }>()
+
+    filteredItems
+      .slice()
+      .sort((a, b) => {
+        const categoryCompare = inventoryCategoryLabel(a.category).localeCompare(inventoryCategoryLabel(b.category))
+        if (categoryCompare !== 0) return categoryCompare
+        return a.name.localeCompare(b.name)
+      })
+      .forEach((item) => {
+        const key = item.category?.trim() || '__uncategorized__'
+        const current = groups.get(key)
+        if (current) {
+          current.items.push(item)
+          current.totalStock += item.current_stock
+          current.totalValue += item.inventory_value ?? 0
+          return
+        }
+        groups.set(key, {
+          key,
+          label: inventoryCategoryLabel(item.category),
+          items: [item],
+          totalStock: item.current_stock,
+          totalValue: item.inventory_value ?? 0,
+        })
+      })
+
+    return Array.from(groups.values())
+  }, [filteredItems])
+
   const stockLotsByItem = useMemo(() => {
     const next = new Map<string, InventoryStockLot[]>()
     stockLots.forEach((lot) => {
@@ -615,6 +659,45 @@ export default function InventoryPage() {
     low_stock: filteredItems.filter((item) => item.current_stock > 0 && item.min_stock_level > 0 && item.current_stock <= item.min_stock_level).length,
     out_of_stock: filteredItems.filter((item) => item.current_stock <= 0).length,
   }), [filteredItems])
+
+  const inventoryCategoryCount = useMemo(
+    () => new Set(items.map((item) => inventoryCategoryLabel(item.category))).size,
+    [items],
+  )
+
+  const linkedInventoryItemCount = useMemo(
+    () => Object.keys(inventoryLogLinks).length,
+    [inventoryLogLinks],
+  )
+
+  const attentionItems = useMemo(
+    () => items
+      .filter((item) => item.current_stock <= 0 || (item.min_stock_level > 0 && item.current_stock <= item.min_stock_level))
+      .sort((a, b) => {
+        const aOut = a.current_stock <= 0 ? 1 : 0
+        const bOut = b.current_stock <= 0 ? 1 : 0
+        if (aOut !== bOut) return bOut - aOut
+        if (a.current_stock !== b.current_stock) return a.current_stock - b.current_stock
+        return a.name.localeCompare(b.name)
+      })
+      .slice(0, 6),
+    [items],
+  )
+
+  const recentMovementPreview = useMemo(
+    () => movements.slice(0, 6),
+    [movements],
+  )
+
+  const inventoryTabs = useMemo(
+    () => [
+      { value: 'overview' as InventoryTab, label: 'Overview' },
+      { value: 'items' as InventoryTab, label: 'Items', count: items.length },
+      { value: 'snapshot' as InventoryTab, label: 'Stock Snapshot', count: stockViewCounts.all },
+      { value: 'movements' as InventoryTab, label: 'Movements', count: movements.length },
+    ],
+    [items.length, movements.length, stockViewCounts.all],
+  )
 
   const currentStockRows = useMemo(() => {
     const next = filteredItems.filter((item) => {
@@ -714,13 +797,18 @@ export default function InventoryPage() {
     setItemFormOpen(false)
   }
 
-  const openCreateItem = () => {
+  const openCreateItem = (category = '') => {
+    setActiveTab('items')
     setEditingItem(null)
-    setItemDraft(EMPTY_ITEM_DRAFT)
+    setItemDraft({
+      ...EMPTY_ITEM_DRAFT,
+      category,
+    })
     setItemFormOpen(true)
   }
 
   const openEditItem = (item: InventoryItem) => {
+    setActiveTab('items')
     setEditingItem(item)
     setItemDraft({
       sku: item.sku ?? '',
@@ -748,6 +836,7 @@ export default function InventoryPage() {
   }
 
   const openMovement = (itemId = '', type: InventoryMovementType = 'in') => {
+    setActiveTab('movements')
     setMovementDraft(emptyMovementDraft(itemId, type))
     setMovementFormOpen(true)
   }
@@ -872,7 +961,7 @@ export default function InventoryPage() {
             <ArrowUpCircle size={15} />
             Record movement
           </button>
-          <button onClick={openCreateItem} className="btn btn-accent">
+          <button onClick={() => openCreateItem()} className="btn btn-accent">
             <Plus size={15} />
             Add inventory item
           </button>
@@ -914,6 +1003,207 @@ export default function InventoryPage() {
       </div>
 
       <div className="card mb-4 overflow-hidden">
+        <div className="px-5 py-4" style={{ borderBottom: '1px solid var(--line)' }}>
+          <div className="flex flex-wrap items-start justify-between gap-3">
+            <div>
+              <div className="text-[15px] font-semibold" style={{ color: 'var(--ink)' }}>Inventory workspace</div>
+              <div className="text-[12px] mt-1" style={{ color: 'var(--ink-4)' }}>
+                Switch between overview, items, stock, and movement history without scrolling through one long page.
+              </div>
+            </div>
+            <div className="text-[11.5px]" style={{ color: 'var(--ink-4)' }}>
+              {inventoryCategoryCount} categories · {linkedInventoryItemCount} linked items
+            </div>
+          </div>
+        </div>
+        <InventoryTabs value={activeTab} onChange={setActiveTab} items={inventoryTabs} />
+      </div>
+
+      {itemFormOpen && (
+        <ItemFormCard
+          draft={itemDraft}
+          editing={Boolean(editingItem)}
+          saving={savingItem}
+          onChange={setItemDraft}
+          onCancel={resetItemForm}
+          onSave={submitItem}
+        />
+      )}
+
+      {movementFormOpen && (
+        <MovementFormCard
+          items={items}
+          draft={movementDraft}
+          saving={savingMovement}
+          onChange={setMovementDraft}
+          onCancel={() => {
+            setMovementFormOpen(false)
+            setMovementDraft(emptyMovementDraft())
+          }}
+          onSave={submitMovement}
+        />
+      )}
+
+      {activeTab === 'overview' && (
+        <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_minmax(0,1.1fr)] mb-4">
+          <div className="card overflow-hidden">
+            <div className="px-5 py-4" style={{ borderBottom: '1px solid var(--line)' }}>
+              <div className="text-[15px] font-semibold" style={{ color: 'var(--ink)' }}>Quick actions</div>
+              <div className="text-[12px] mt-1" style={{ color: 'var(--ink-4)' }}>
+                Jump into the main inventory tasks without opening every section.
+              </div>
+            </div>
+            <div className="p-5 space-y-3">
+              <button onClick={() => openCreateItem()} className="btn btn-accent w-full justify-center">
+                <Plus size={15} />
+                Add inventory item
+              </button>
+              <button onClick={() => openMovement()} className="btn btn-ghost w-full justify-center">
+                <ArrowUpCircle size={15} />
+                Record stock movement
+              </button>
+              <div className="grid gap-3 sm:grid-cols-2">
+                <button onClick={() => setActiveTab('snapshot')} className="rounded-2xl px-4 py-4 text-left" style={{ background: 'var(--bg-sunken)', color: 'var(--ink)' }}>
+                  <div className="text-[13px] font-semibold">Open stock snapshot</div>
+                  <div className="text-[11.5px] mt-1" style={{ color: 'var(--ink-4)' }}>Check on-hand, average cost, and supplier-wise stock.</div>
+                </button>
+                <button onClick={() => setActiveTab('movements')} className="rounded-2xl px-4 py-4 text-left" style={{ background: 'var(--bg-sunken)', color: 'var(--ink)' }}>
+                  <div className="text-[13px] font-semibold">Open movements</div>
+                  <div className="text-[11.5px] mt-1" style={{ color: 'var(--ink-4)' }}>See purchases, issues, adjustments, and stock history.</div>
+                </button>
+              </div>
+            </div>
+          </div>
+
+          <div className="grid gap-4 sm:grid-cols-3">
+            <OverviewInfoCard
+              label="Catalog"
+              value={`${inventoryCategoryCount}`}
+              description={`${items.length} items across inventory categories`}
+            />
+            <OverviewInfoCard
+              label="Linked Logs"
+              value={`${linkedInventoryItemCount}`}
+              description="Inventory items currently linked into Log Types"
+            />
+            <OverviewInfoCard
+              label="Live Lots"
+              value={`${stockLots.length}`}
+              description="Remaining supplier lots available for allocation"
+            />
+            <div className="card sm:col-span-3 overflow-hidden">
+              <div className="px-5 py-4" style={{ borderBottom: '1px solid var(--line)' }}>
+                <div className="text-[15px] font-semibold" style={{ color: 'var(--ink)' }}>Attention needed</div>
+                <div className="text-[12px] mt-1" style={{ color: 'var(--ink-4)' }}>
+                  Items that are out of stock or have reached their reorder level.
+                </div>
+              </div>
+              <div className="p-5">
+                {attentionItems.length === 0 ? (
+                  <div className="rounded-2xl px-4 py-8 text-center" style={{ background: 'var(--bg-sunken)', color: 'var(--ink-3)' }}>
+                    Inventory looks healthy right now. Nothing is low or out of stock.
+                  </div>
+                ) : (
+                  <div className="space-y-3">
+                    {attentionItems.map((item) => {
+                      const isOut = item.current_stock <= 0
+                      return (
+                        <button
+                          key={`attention-${item.item_id}`}
+                          type="button"
+                          onClick={() => {
+                            setCategoryFilter(item.category?.trim() || 'all')
+                            setQuery(item.name)
+                            setActiveTab('items')
+                          }}
+                          className="w-full rounded-2xl px-4 py-3 text-left transition-colors"
+                          style={{ background: 'var(--bg-sunken)', color: 'var(--ink)' }}
+                        >
+                          <div className="flex flex-wrap items-center justify-between gap-2">
+                            <div>
+                              <div className="text-[13px] font-semibold">{item.name}</div>
+                              <div className="text-[11.5px] mt-1" style={{ color: 'var(--ink-4)' }}>
+                                {inventoryCategoryLabel(item.category)} · Reorder at {fmtQty(item.min_stock_level, item.unit)}
+                              </div>
+                            </div>
+                            <span
+                              className="text-[10.5px] px-2 py-1 rounded-full"
+                              style={isOut
+                                ? { background: '#fee2e2', color: '#991b1b' }
+                                : { background: '#fef3c7', color: '#92400e' }}
+                            >
+                              {isOut ? 'Out of stock' : `Low at ${fmtQty(item.current_stock, item.unit)}`}
+                            </span>
+                          </div>
+                        </button>
+                      )
+                    })}
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
+
+          <div className="card lg:col-span-2 overflow-hidden">
+            <div className="px-5 py-4" style={{ borderBottom: '1px solid var(--line)' }}>
+              <div className="flex flex-wrap items-start justify-between gap-3">
+                <div>
+                  <div className="text-[15px] font-semibold" style={{ color: 'var(--ink)' }}>Recent activity</div>
+                  <div className="text-[12px] mt-1" style={{ color: 'var(--ink-4)' }}>
+                    Latest stock movements across purchases, issues, and adjustments.
+                  </div>
+                </div>
+                <button className="btn btn-ghost btn-sm" onClick={() => setActiveTab('movements')}>
+                  View all movements
+                </button>
+              </div>
+            </div>
+            <div className="p-5">
+              {movementLoading ? (
+                <div className="space-y-3">
+                  {[...Array(4)].map((_, i) => (
+                    <div key={i} className="skeleton h-12 w-full" />
+                  ))}
+                </div>
+              ) : recentMovementPreview.length === 0 ? (
+                <div className="rounded-2xl px-4 py-8 text-center" style={{ background: 'var(--bg-sunken)', color: 'var(--ink-3)' }}>
+                  No stock movements yet.
+                </div>
+              ) : (
+                <div className="space-y-3">
+                  {recentMovementPreview.map((movement) => {
+                    const tone = movementTone(movement.type)
+                    const movementItem = itemsById.get(movement.item_id)
+                    return (
+                      <div key={`overview-${movement.movement_id}`} className="rounded-2xl px-4 py-3" style={{ background: 'var(--bg-sunken)' }}>
+                        <div className="flex items-start justify-between gap-3">
+                          <div className="min-w-0">
+                            <div className="flex flex-wrap items-center gap-2">
+                              <span className="text-[12.5px] font-medium" style={{ color: 'var(--ink)' }}>{movement.item_name}</span>
+                              <span className="text-[10.5px] px-1.5 py-0.5 rounded-full" style={{ background: tone.bg, color: tone.color }}>
+                                {tone.label}
+                              </span>
+                            </div>
+                            <div className="text-[11.5px] mt-1" style={{ color: 'var(--ink-3)' }}>
+                              {movementSummaryLine(movement, movementItem)}
+                            </div>
+                          </div>
+                          <div className="text-[10.5px] shrink-0" style={{ color: 'var(--ink-4)' }}>
+                            {formatDisplayDate(movement.transaction_date || movement.created_at)}
+                          </div>
+                        </div>
+                      </div>
+                    )
+                  })}
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {activeTab === 'snapshot' && (
+        <div className="card mb-4 overflow-hidden">
         <div className="px-5 py-4" style={{ borderBottom: '1px solid var(--line)' }}>
           <div className="flex flex-wrap items-start justify-between gap-3">
             <div>
@@ -1024,30 +1314,6 @@ export default function InventoryPage() {
           </div>
         )}
       </div>
-
-      {itemFormOpen && (
-        <ItemFormCard
-          draft={itemDraft}
-          editing={Boolean(editingItem)}
-          saving={savingItem}
-          onChange={setItemDraft}
-          onCancel={resetItemForm}
-          onSave={submitItem}
-        />
-      )}
-
-      {movementFormOpen && (
-        <MovementFormCard
-          items={items}
-          draft={movementDraft}
-          saving={savingMovement}
-          onChange={setMovementDraft}
-          onCancel={() => {
-            setMovementFormOpen(false)
-            setMovementDraft(emptyMovementDraft())
-          }}
-          onSave={submitMovement}
-        />
       )}
 
       {linkManagerItem && (
@@ -1067,7 +1333,7 @@ export default function InventoryPage() {
         />
       )}
 
-      <div className="grid gap-4 xl:grid-cols-[minmax(0,1.4fr)_380px]">
+      {activeTab === 'items' && (
         <div className="space-y-4">
           <div className="card overflow-hidden">
             <div className="px-5 py-4" style={{ borderBottom: '1px solid var(--line)' }}>
@@ -1097,7 +1363,7 @@ export default function InventoryPage() {
                   <div className="skeleton h-3 w-64" />
                 </div>
               ))
-            ) : filteredItems.length === 0 ? (
+            ) : groupedInventorySections.length === 0 ? (
               <div className="px-5 py-16 text-center">
                 <div className="w-12 h-12 rounded-xl flex items-center justify-center mx-auto mb-4" style={{ background: 'var(--bg-sunken)', color: 'var(--ink-3)' }}>
                   <Package size={22} />
@@ -1108,140 +1374,164 @@ export default function InventoryPage() {
                 </p>
               </div>
             ) : (
-              filteredItems.map((item) => {
-                const isOut = item.current_stock <= 0
-                const isLow = item.min_stock_level > 0 && item.current_stock <= item.min_stock_level
-                const itemLots = stockLotsByItem.get(item.item_id) ?? []
-                const supplierRows = aggregateSupplierLots(itemLots)
-                const vendorPricingRows = item.vendor_pricing ?? []
-                return (
-                  <div key={item.item_id} className="group px-5 py-4" style={{ borderBottom: '1px solid var(--line-2)' }}>
-                    <div className="flex flex-wrap items-start gap-3">
-                      <div className="flex-1 min-w-[220px]">
-                        <div className="flex flex-wrap items-center gap-2">
-                          <span className="text-[14px] font-semibold" style={{ color: 'var(--ink)' }}>{item.name}</span>
-                          <span className="text-[10.5px] px-1.5 py-0.5 rounded-full numeral" style={{ background: 'var(--bg-sunken)', color: 'var(--ink-3)' }}>
-                            {item.item_id}
-                          </span>
-                          {item.category && (
-                            <span className="text-[10.5px] px-1.5 py-0.5 rounded-full" style={{ background: 'var(--accent-wash)', color: 'var(--accent-ink)' }}>
-                              {item.category}
-                            </span>
-                          )}
-                          {isOut && (
-                            <span className="text-[10.5px] px-1.5 py-0.5 rounded-full" style={{ background: '#fee2e2', color: '#991b1b' }}>
-                              Out of stock
-                            </span>
-                          )}
-                          {!isOut && isLow && (
-                            <span className="text-[10.5px] px-1.5 py-0.5 rounded-full" style={{ background: '#fef3c7', color: '#92400e' }}>
-                              Low stock
-                            </span>
-                          )}
-                        </div>
-                        <div className="text-[12px] mt-1.5 flex flex-wrap gap-x-3 gap-y-1" style={{ color: 'var(--ink-3)' }}>
-                          <span>SKU: <strong style={{ color: 'var(--ink-2)' }}>{item.sku || '—'}</strong></span>
-                          <span>Supplier: <strong style={{ color: 'var(--ink-2)' }}>{item.supplier || '—'}</strong></span>
-                          <span>Location: <strong style={{ color: 'var(--ink-2)' }}>{item.location || '—'}</strong></span>
-                          <span>Last purchase: <strong style={{ color: 'var(--ink-2)' }}>{formatCostValue(item.last_purchase_cost)}</strong></span>
-                          <span>Avg cost: <strong style={{ color: 'var(--ink-2)' }}>{formatCostValue(item.average_unit_cost)}</strong></span>
-                          {usageConversionLabel(item) && (
-                            <span>Usage: <strong style={{ color: 'var(--ink-2)' }}>{usageConversionLabel(item)}</strong></span>
-                          )}
-                        </div>
-                        {supplierRows.length > 0 && (
-                          <div className="mt-2">
-                            <div className="text-[11px] mb-1" style={{ color: 'var(--ink-4)' }}>Vendor-wise stock</div>
-                            <div className="flex flex-wrap gap-1.5">
-                              {supplierRows.map((row) => (
-                                <span
-                                  key={`${item.item_id}-${row.supplier}`}
-                                  className="text-[11px] px-2 py-1 rounded-full"
-                                  style={{ background: 'var(--bg-sunken)', color: 'var(--ink-2)' }}
-                                >
-                                  {row.supplier} · {fmtQty(row.quantity, row.unit)}{row.averageUnitCost ? ` @ Rs ${fmtMoney(row.averageUnitCost)}` : ''}
-                                </span>
-                              ))}
-                            </div>
-                          </div>
-                        )}
-                        {vendorPricingRows.length > 0 && (
-                          <div className="mt-2">
-                            <div className="text-[11px] mb-1" style={{ color: 'var(--ink-4)' }}>Vendor selling prices</div>
-                            <div className="flex flex-wrap gap-1.5">
-                              {vendorPricingRows.map((row) => (
-                                <span
-                                  key={`${item.item_id}-sell-${row.supplier_name}`}
-                                  className="text-[11px] px-2 py-1 rounded-full"
-                                  style={{ background: row.preferred_supplier ? 'var(--accent-wash)' : 'var(--bg-sunken)', color: row.preferred_supplier ? 'var(--accent-ink)' : 'var(--ink-2)' }}
-                                >
-                                  {row.supplier_name} · Sell Rs {fmtMoney(row.default_sell_price ?? 0)}
-                                </span>
-                              ))}
-                            </div>
-                          </div>
-                        )}
-                        {(inventoryLogLinks[item.item_id] ?? []).length > 0 && (
-                          <div className="mt-2 flex flex-wrap items-center gap-2">
-                            <span
-                              className="text-[10.5px] px-1.5 py-0.5 rounded-full"
-                              style={{ background: 'color-mix(in oklab, var(--accent) 14%, white)', color: 'var(--accent-ink)' }}
-                            >
-                              Linked in Log Types
-                            </span>
-                            <span className="text-[11.5px]" style={{ color: 'var(--ink-3)' }}>
-                              {inventoryLogLinks[item.item_id].length} linked {inventoryLogLinks[item.item_id].length === 1 ? 'item' : 'items'}
-                            </span>
-                            <button
-                              type="button"
-                              onClick={() => {
-                                setPendingInventoryLinkRemoval(null)
-                                setLinkManagerItem(item)
-                              }}
-                              className="text-[10.5px] px-2 py-1 rounded-full"
-                              style={{ background: 'var(--bg-sunken)', color: 'var(--ink-2)' }}
-                            >
-                              Manage links
-                            </button>
-                          </div>
-                        )}
+              groupedInventorySections.map((section, sectionIndex) => (
+                <div key={section.key} style={{ borderTop: sectionIndex === 0 ? 'none' : '1px solid var(--line-2)' }}>
+                  <div className="px-5 py-4 flex flex-wrap items-start justify-between gap-3" style={{ background: 'var(--bg-sunken)', borderBottom: '1px solid var(--line-2)' }}>
+                    <div>
+                      <div className="flex flex-wrap items-center gap-2">
+                        <span className="text-[15px] font-semibold" style={{ color: 'var(--ink)' }}>{section.label}</span>
+                        <span className="text-[10.5px] px-1.5 py-0.5 rounded-full" style={{ background: 'white', color: 'var(--ink-3)' }}>
+                          {section.items.length} {section.items.length === 1 ? 'item' : 'items'}
+                        </span>
                       </div>
-
-                      <div className="grid grid-cols-2 gap-3 min-w-[240px] md:min-w-[360px]">
-                        <MetricCell label="On hand" value={fmtQty(item.current_stock, item.unit)} />
-                        <MetricCell label="Reorder at" value={fmtQty(item.min_stock_level, item.unit)} />
-                        <MetricCell label="Avg cost" value={formatCostValue(item.average_unit_cost)} />
-                        <MetricCell label="Last purchase" value={formatCostValue(item.last_purchase_cost)} />
-                        <MetricCell label="Stock value" value={formatCostValue(item.inventory_value)} />
-                        <MetricCell label="Updated" value={new Date(item.updated_at).toLocaleDateString()} />
-                      </div>
-
-                      <div className="flex items-center gap-1 opacity-100 xl:opacity-0 xl:group-hover:opacity-100 transition-opacity">
-                        <HoverTip content="Stock in: use this when new quantity is added to inventory, like a purchase or return from site.">
-                          <button className="btn btn-ghost btn-sm btn-icon" title="Stock in" onClick={() => openMovement(item.item_id, 'in')}>
-                            <ArrowUpCircle size={14} />
-                          </button>
-                        </HoverTip>
-                        <HoverTip content="Stock out: use this when quantity leaves inventory, like site issue, usage, or damage.">
-                          <button className="btn btn-ghost btn-sm btn-icon" title="Stock out" onClick={() => openMovement(item.item_id, 'out')}>
-                            <ArrowDownCircle size={14} />
-                          </button>
-                        </HoverTip>
-                        <button className="btn btn-ghost btn-sm btn-icon" title="Edit" onClick={() => openEditItem(item)}>
-                          <Pencil size={13} />
-                        </button>
-                        <button className="btn btn-ghost btn-sm btn-icon" title="Delete" style={{ color: 'var(--bad)' }} onClick={() => handleDelete(item)}>
-                          <Trash2 size={13} />
-                        </button>
+                      <div className="text-[12px] mt-1 flex flex-wrap gap-x-3 gap-y-1" style={{ color: 'var(--ink-4)' }}>
+                        <span>On hand <strong style={{ color: 'var(--ink-2)' }}>{fmtMoney(section.totalStock)}</strong></span>
+                        <span>Stock value <strong style={{ color: 'var(--ink-2)' }}>{formatCostValue(section.totalValue)}</strong></span>
                       </div>
                     </div>
+                    <button
+                      type="button"
+                      onClick={() => openCreateItem(section.key === '__uncategorized__' ? '' : section.label)}
+                      className="btn btn-ghost btn-sm"
+                    >
+                      <Plus size={13} />
+                      Add item
+                    </button>
                   </div>
-                )
-              })
+
+                  {section.items.map((item) => {
+                    const isOut = item.current_stock <= 0
+                    const isLow = item.min_stock_level > 0 && item.current_stock <= item.min_stock_level
+                    const itemLots = stockLotsByItem.get(item.item_id) ?? []
+                    const supplierRows = aggregateSupplierLots(itemLots)
+                    const vendorPricingRows = item.vendor_pricing ?? []
+                    return (
+                      <div key={item.item_id} className="group px-5 py-4" style={{ borderBottom: '1px solid var(--line-2)' }}>
+                        <div className="flex flex-wrap items-start gap-3">
+                          <div className="flex-1 min-w-[220px]">
+                            <div className="flex flex-wrap items-center gap-2">
+                              <span className="text-[14px] font-semibold" style={{ color: 'var(--ink)' }}>{item.name}</span>
+                              <span className="text-[10.5px] px-1.5 py-0.5 rounded-full numeral" style={{ background: 'var(--bg-sunken)', color: 'var(--ink-3)' }}>
+                                {item.item_id}
+                              </span>
+                              {isOut && (
+                                <span className="text-[10.5px] px-1.5 py-0.5 rounded-full" style={{ background: '#fee2e2', color: '#991b1b' }}>
+                                  Out of stock
+                                </span>
+                              )}
+                              {!isOut && isLow && (
+                                <span className="text-[10.5px] px-1.5 py-0.5 rounded-full" style={{ background: '#fef3c7', color: '#92400e' }}>
+                                  Low stock
+                                </span>
+                              )}
+                            </div>
+                            <div className="text-[12px] mt-1.5 flex flex-wrap gap-x-3 gap-y-1" style={{ color: 'var(--ink-3)' }}>
+                              <span>SKU: <strong style={{ color: 'var(--ink-2)' }}>{item.sku || '—'}</strong></span>
+                              <span>Supplier: <strong style={{ color: 'var(--ink-2)' }}>{item.supplier || '—'}</strong></span>
+                              <span>Location: <strong style={{ color: 'var(--ink-2)' }}>{item.location || '—'}</strong></span>
+                              <span>Last purchase: <strong style={{ color: 'var(--ink-2)' }}>{formatCostValue(item.last_purchase_cost)}</strong></span>
+                              <span>Avg cost: <strong style={{ color: 'var(--ink-2)' }}>{formatCostValue(item.average_unit_cost)}</strong></span>
+                              {usageConversionLabel(item) && (
+                                <span>Usage: <strong style={{ color: 'var(--ink-2)' }}>{usageConversionLabel(item)}</strong></span>
+                              )}
+                            </div>
+                            {supplierRows.length > 0 && (
+                              <div className="mt-2">
+                                <div className="text-[11px] mb-1" style={{ color: 'var(--ink-4)' }}>Vendor-wise stock</div>
+                                <div className="flex flex-wrap gap-1.5">
+                                  {supplierRows.map((row) => (
+                                    <span
+                                      key={`${item.item_id}-${row.supplier}`}
+                                      className="text-[11px] px-2 py-1 rounded-full"
+                                      style={{ background: 'var(--bg-sunken)', color: 'var(--ink-2)' }}
+                                    >
+                                      {row.supplier} · {fmtQty(row.quantity, row.unit)}{row.averageUnitCost ? ` @ Rs ${fmtMoney(row.averageUnitCost)}` : ''}
+                                    </span>
+                                  ))}
+                                </div>
+                              </div>
+                            )}
+                            {vendorPricingRows.length > 0 && (
+                              <div className="mt-2">
+                                <div className="text-[11px] mb-1" style={{ color: 'var(--ink-4)' }}>Vendor selling prices</div>
+                                <div className="flex flex-wrap gap-1.5">
+                                  {vendorPricingRows.map((row) => (
+                                    <span
+                                      key={`${item.item_id}-sell-${row.supplier_name}`}
+                                      className="text-[11px] px-2 py-1 rounded-full"
+                                      style={{ background: row.preferred_supplier ? 'var(--accent-wash)' : 'var(--bg-sunken)', color: row.preferred_supplier ? 'var(--accent-ink)' : 'var(--ink-2)' }}
+                                    >
+                                      {row.supplier_name} · Sell Rs {fmtMoney(row.default_sell_price ?? 0)}
+                                    </span>
+                                  ))}
+                                </div>
+                              </div>
+                            )}
+                            {(inventoryLogLinks[item.item_id] ?? []).length > 0 && (
+                              <div className="mt-2 flex flex-wrap items-center gap-2">
+                                <span
+                                  className="text-[10.5px] px-1.5 py-0.5 rounded-full"
+                                  style={{ background: 'color-mix(in oklab, var(--accent) 14%, white)', color: 'var(--accent-ink)' }}
+                                >
+                                  Linked in Log Types
+                                </span>
+                                <span className="text-[11.5px]" style={{ color: 'var(--ink-3)' }}>
+                                  {inventoryLogLinks[item.item_id].length} linked {inventoryLogLinks[item.item_id].length === 1 ? 'item' : 'items'}
+                                </span>
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    setPendingInventoryLinkRemoval(null)
+                                    setLinkManagerItem(item)
+                                  }}
+                                  className="text-[10.5px] px-2 py-1 rounded-full"
+                                  style={{ background: 'var(--bg-sunken)', color: 'var(--ink-2)' }}
+                                >
+                                  Manage links
+                                </button>
+                              </div>
+                            )}
+                          </div>
+
+                          <div className="grid grid-cols-2 gap-3 min-w-[240px] md:min-w-[360px]">
+                            <MetricCell label="On hand" value={fmtQty(item.current_stock, item.unit)} />
+                            <MetricCell label="Reorder at" value={fmtQty(item.min_stock_level, item.unit)} />
+                            <MetricCell label="Avg cost" value={formatCostValue(item.average_unit_cost)} />
+                            <MetricCell label="Last purchase" value={formatCostValue(item.last_purchase_cost)} />
+                            <MetricCell label="Stock value" value={formatCostValue(item.inventory_value)} />
+                            <MetricCell label="Updated" value={new Date(item.updated_at).toLocaleDateString()} />
+                          </div>
+
+                          <div className="flex items-center gap-1 opacity-100 xl:opacity-0 xl:group-hover:opacity-100 transition-opacity">
+                            <HoverTip content="Stock in: use this when new quantity is added to inventory, like a purchase or return from site.">
+                              <button className="btn btn-ghost btn-sm btn-icon" title="Stock in" onClick={() => openMovement(item.item_id, 'in')}>
+                                <ArrowUpCircle size={14} />
+                              </button>
+                            </HoverTip>
+                            <HoverTip content="Stock out: use this when quantity leaves inventory, like site issue, usage, or damage.">
+                              <button className="btn btn-ghost btn-sm btn-icon" title="Stock out" onClick={() => openMovement(item.item_id, 'out')}>
+                                <ArrowDownCircle size={14} />
+                              </button>
+                            </HoverTip>
+                            <button className="btn btn-ghost btn-sm btn-icon" title="Edit" onClick={() => openEditItem(item)}>
+                              <Pencil size={13} />
+                            </button>
+                            <button className="btn btn-ghost btn-sm btn-icon" title="Delete" style={{ color: 'var(--bad)' }} onClick={() => handleDelete(item)}>
+                              <Trash2 size={13} />
+                            </button>
+                          </div>
+                        </div>
+                      </div>
+                    )
+                  })}
+                </div>
+              ))
             )}
           </div>
         </div>
+      )}
 
+      {activeTab === 'movements' && (
         <div className="space-y-4">
           <div className="card overflow-hidden">
             <div className="px-4 py-3.5 flex items-center justify-between" style={{ borderBottom: '1px solid var(--line)' }}>
@@ -1315,8 +1605,9 @@ export default function InventoryPage() {
             </div>
           </div>
         </div>
-      </div>
+      )}
 
+      {activeTab === 'movements' && (
       <div className="card mt-4 overflow-hidden">
         <div className="px-5 py-4" style={{ borderBottom: '1px solid var(--line)' }}>
           <div className="flex flex-wrap items-start justify-between gap-3">
@@ -1488,6 +1779,7 @@ export default function InventoryPage() {
           )}
         </div>
       </div>
+      )}
     </div>
   )
 }
@@ -1639,6 +1931,64 @@ function SummaryCard({
           <div className="text-[11.5px] mt-1" style={{ color: 'var(--ink-4)' }}>{sub}</div>
         </div>
       </div>
+    </div>
+  )
+}
+
+function InventoryTabs({
+  value,
+  onChange,
+  items,
+}: {
+  value: InventoryTab
+  onChange: (next: InventoryTab) => void
+  items: Array<{ value: InventoryTab; label: string; count?: number }>
+}) {
+  return (
+    <div className="flex items-center gap-0 overflow-x-auto" style={{ borderTop: '1px solid var(--line)' }}>
+      {items.map((item) => {
+        const active = item.value === value
+        return (
+          <button
+            key={item.value}
+            onClick={() => onChange(item.value)}
+            className="relative flex h-11 shrink-0 items-center gap-2 px-4 text-[13px] font-medium transition-colors"
+            style={{ color: active ? 'var(--ink)' : 'var(--ink-3)' }}
+          >
+            {item.label}
+            {typeof item.count === 'number' && (
+              <span
+                className="rounded px-1.5 py-0.5 text-[11px] font-medium"
+                style={{
+                  background: active ? 'var(--accent-wash)' : 'var(--bg-sunken)',
+                  color: active ? 'var(--accent-ink)' : 'var(--ink-3)',
+                }}
+              >
+                {item.count}
+              </span>
+            )}
+            {active && <div className="tab-active-bar" />}
+          </button>
+        )
+      })}
+    </div>
+  )
+}
+
+function OverviewInfoCard({
+  label,
+  value,
+  description,
+}: {
+  label: string
+  value: string
+  description: string
+}) {
+  return (
+    <div className="card px-4 py-4">
+      <div className="text-[10.5px] uppercase tracking-wider" style={{ color: 'var(--ink-4)' }}>{label}</div>
+      <div className="text-[24px] font-semibold mt-2" style={{ color: 'var(--ink)' }}>{value}</div>
+      <div className="text-[11.5px] mt-1.5" style={{ color: 'var(--ink-4)' }}>{description}</div>
     </div>
   )
 }
