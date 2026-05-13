@@ -3,6 +3,7 @@
 
 # Project temp/output
 /tmp/
+/deploy.sh
 
 # Backend local files
 /backend/.env
