@@ -1,4 +1,16 @@
+// Specifications & Terms appendix — drop-in replacement for
+// backend/internal/handlers/quotation_specs.go.
+//
+// Redesigned to match the editorial walnut + amber + cream identity used by
+// the quotation_export_handler.go template.
 package handlers
+
+import (
+	"fmt"
+	"strings"
+
+	"housexpert/backend/internal/models"
+)
 
 type quotationSpecSection struct {
 	Title string
@@ -65,151 +77,317 @@ var quotationSpecSections = []quotationSpecSection{
 	},
 }
 
+// ── Appendix notice block (sits at end of main quotation) ─────────────────────
+//
+// A subtle outlined cream card pointing the reader to the appendix that follows.
 func (p *pdfWriter) drawQuotationAppendixNotice(y float64) float64 {
 	doc := p.doc
-	const boxH = 15.5
+	const (
+		boxH = 15.4
+		icon = 7.4
+	)
 
-	p.setFill(cBGSUN)
-	p.setDraw(cLINE)
+	// HTML notice: tinted card, square walnut icon, text block.
+	p.setFill(cQPaper2)
+	p.setDraw(cQRule)
 	doc.SetLineWidth(0.25)
-	doc.RoundedRect(qml, y, qcw, boxH, 2.5, "1234", "FD")
+	doc.Rect(qml, y, qcw, boxH, "FD")
 
-	p.setFill(cINK)
-	doc.RoundedRect(qml+4, y+4.7, 2.4, 2.4, 1.2, "1234", "F")
+	p.setFill(cQInk)
+	doc.RoundedRect(qml+4.2, y+4.0, icon, icon, 1.6, "1234", "F")
+	p.sans("B", 11)
+	p.setColor(cQAmberSoft)
+	doc.SetXY(qml+4.2, y+4.8)
+	doc.CellFormat(icon, 5.0, p.text("i"), "", 0, "C", false, 0, "")
 
-	p.setFont("B", 8.5)
-	p.setColor(cINK)
-	doc.SetXY(qml+8.5, y+2.8)
-	doc.CellFormat(qcw-13, 4.5, "Specifications & Terms Appendix Included", "", 0, "L", false, 0, "")
+	p.sans("B", 9.4)
+	p.setColor(cQInk)
+	doc.SetXY(qml+15.8, y+3.4)
+	doc.CellFormat(qcw-18, 4, p.text("Specifications & Terms Appendix Included"), "", 0, "L", false, 0, "")
 
-	p.setFont("", 7.5)
-	p.setColor(cINK3)
-	doc.SetXY(qml+8.5, y+8.5)
-	doc.CellFormat(qcw-13, 4, "Material standards, payment milestones and exclusions are attached on the following pages as part of this quotation.", "", 0, "L", false, 0, "")
+	p.sans("", 8.2)
+	p.setColor(cQInk3)
+	doc.SetXY(qml+15.8, y+8.4)
+	doc.CellFormat(qcw-18, 4,
+		p.text("Material standards, payment milestones and exclusions are attached on the following pages as part of this quotation."),
+		"", 0, "L", false, 0, "")
 
 	return y + boxH + 4
 }
 
-func (p *pdfWriter) drawQuotationSpecificationsAppendix() {
-	y := p.drawQuotationAppendixHeader("Specifications & Terms", "This appendix forms part of the quotation and captures the standard material specifications, inclusions and exclusions shared with the client.")
+// ── Appendix orchestrator ─────────────────────────────────────────────────────
 
-	for _, section := range quotationSpecSections {
-		if y+p.measureQuotationSpecSection(section) > qph-16 {
-			y = p.drawQuotationAppendixHeader("Specifications & Terms", "Continued")
+func (p *pdfWriter) drawQuotationSpecificationsAppendix(q *models.Quotation) {
+	y := p.drawQuotationAppendixHeader(q, false, 1)
+	pageSeq := 1
+
+	for i, section := range quotationSpecSections {
+		if y+p.measureQuotationSpecSection(section) > qph-20 {
+			pageSeq++
+			y = p.drawQuotationAppendixHeader(q, true, pageSeq)
 		}
-		y = p.drawQuotationSpecSection(y, section)
+		y = p.drawQuotationSpecSection(y, i+1, section)
 	}
+
+	if y+28 > qph-20 {
+		pageSeq++
+		y = p.drawQuotationAppendixHeader(q, true, pageSeq)
+	}
+	p.drawQuotationClosingCard(y, q)
 }
 
-func (p *pdfWriter) drawQuotationAppendixHeader(title, subtitle string) float64 {
+// ── Appendix page header (acts as a cover for the first appendix page) ────────
+
+func (p *pdfWriter) drawQuotationAppendixHeader(q *models.Quotation, continued bool, seq int) float64 {
 	doc := p.doc
 	doc.AddPage()
 
-	p.setFill(cINK)
-	doc.Rect(qml, 12, qcw, 2, "F")
+	y := 13.8
+	const logoSize = 11.1
 
-	y := 18.0
-	p.drawLogo(qml, y)
+	p.drawBrandLogo(qml, y, logoSize)
+	p.serif("", 16.5)
+	p.setColor(cQInk)
+	doc.SetXY(qml+logoSize+3.7, y+0.5)
+	doc.CellFormat(80, 6, p.text("HousExpert"), "", 0, "L", false, 0, "")
 
-	p.setFont("B", 13)
-	p.setColor(cINK)
-	doc.SetXY(qml+23, y+2)
-	doc.CellFormat(80, 6, title, "", 0, "L", false, 0, "")
-
-	p.setFont("", 7.5)
-	p.setColor(cINK3)
-	doc.SetXY(qml+23, y+8)
-	doc.MultiCell(115, 4.2, subtitle, "", "L", false)
-
-	p.setFill(cBGSUN)
-	p.setDraw(cLINE)
-	doc.RoundedRect(qml+145, y+1, 37, 12, 2, "1234", "FD")
-	p.setFont("B", 8)
-	p.setColor(cINK2)
-	doc.SetXY(qml+145, y+4.2)
-	doc.CellFormat(37, 4, "APPENDIX", "", 0, "C", false, 0, "")
-
-	bottom := doc.GetY() + 3
-	if bottom < 46 {
-		bottom = 46
+	tag := "Quotation  ·  " + q.QuotationID
+	if continued {
+		tag = "Specifications & Terms  ·  continued"
 	}
-	p.qhLine(bottom, cLINE, 0.4)
-	return bottom + 6
+	p.sans("", 6.8)
+	p.setColor(cQInk3)
+	doc.SetXY(qml+logoSize+3.7, y+6.6)
+	doc.CellFormat(100, 3.6, p.text(tag), "", 0, "L", false, 0, "")
+
+	// Appendix badge top-right
+	badgeText := "APPENDIX"
+	if continued {
+		badgeText = fmt.Sprintf("APPENDIX  ·  %02d", seq)
+	}
+	const badgeW = 34.0
+	badgeX := qml + qcw - badgeW
+	p.setFill(cQPaper)
+	p.setDraw(cQRule)
+	doc.SetLineWidth(0.2)
+	doc.Rect(badgeX, y+1.2, badgeW, 7.2, "FD")
+	p.mono("", 7.5)
+	p.setColor(cQInk3)
+	doc.SetXY(badgeX, y+3.1)
+	doc.CellFormat(badgeW, 3.8, p.text(badgeText), "", 0, "C", false, 0, "")
+
+	headerBottom := y + logoSize + 3.7
+	p.qhLine(headerBottom, cQRule, 0.25)
+
+	if continued {
+		return headerBottom + 4.8
+	}
+
+	heroY := headerBottom + 6.4
+	p.sans("", 7.5)
+	p.setColor(cQAmberDeep)
+	doc.SetXY(qml, heroY)
+	doc.CellFormat(100, 3.8, p.text("PART  OF  QUOTATION  "+q.QuotationID), "", 0, "L", false, 0, "")
+
+	p.serif("I", 27.5)
+	p.setColor(cQInk)
+	doc.SetXY(qml, heroY+5.0)
+	doc.CellFormat(112, 11, p.text("Specifications & Terms"), "", 0, "L", false, 0, "")
+
+	p.mono("", 7.5)
+	p.setColor(cQInk3)
+	sideX := qml + qcw - 58
+	indexRows := []string{
+		"SECTION I · INCLUSIONS",
+		"SECTION II · MILESTONES",
+		"SECTION III · MATERIAL SPEC",
+		"SECTION IV · SITE SCOPE",
+		"SECTION V · EXCLUSIONS",
+	}
+	for i, row := range indexRows {
+		doc.SetXY(sideX, heroY+1+float64(i)*4.1)
+		doc.CellFormat(58, 3.4, p.text(row), "", 0, "R", false, 0, "")
+	}
+
+	heroBottom := heroY + 21.0
+	p.qhLine(heroBottom, cQRule, 0.25)
+
+	p.sans("", 9.4)
+	p.setColor(cQInk2)
+	doc.SetXY(qml, heroBottom+4.7)
+	doc.MultiCell(qcw*0.72, 4.9,
+		p.text("This appendix forms part of the quotation and captures the standard material specifications, inclusions and exclusions shared with the client. Any changes to scope, finishes or quantities will be re-quoted in writing before execution."),
+		"", "L", false)
+
+	return doc.GetY() + 5.3
 }
+
+// ── Spec card measurement ─────────────────────────────────────────────────────
 
 func (p *pdfWriter) measureQuotationSpecSection(section quotationSpecSection) float64 {
 	doc := p.doc
 	const (
-		titleBandH   = 8.5
-		lineH        = 4.4
-		contentW     = qcw - 16
-		bulletIndent = 6.5
+		titleBandH   = 11.4
+		lineH        = 4.5
+		bulletIndent = 5.8
+		bulletGap    = 1.4
+		contentPadX  = 4.8
+		bodyPadV     = 7.9
 	)
 
-	p.setFont("B", 8.5)
-	height := titleBandH + 6
-
-	p.setFont("", 7.8)
+	prevSize, _ := doc.GetFontSize()
+	p.sans("", 8.25)
+	height := titleBandH + bodyPadV
 	for _, item := range section.Items {
-		lines := doc.SplitText(item, contentW-bulletIndent)
+		lines := doc.SplitText(item, qcw-contentPadX*2-bulletIndent)
 		if len(lines) == 0 {
 			lines = []string{item}
 		}
-		height += float64(len(lines))*lineH + 2.4
+		height += float64(len(lines))*lineH + bulletGap + 3
 	}
+	doc.SetFontSize(prevSize)
 
-	return height
+	return height + 2
 }
 
-func (p *pdfWriter) drawQuotationSpecSection(y float64, section quotationSpecSection) float64 {
+// ── Spec card render ──────────────────────────────────────────────────────────
+
+func (p *pdfWriter) drawQuotationSpecSection(y float64, idx int, section quotationSpecSection) float64 {
 	doc := p.doc
 	const (
-		cardPadTop   = 5.0
-		cardPadX     = 8.0
-		titleBandH   = 8.5
-		lineH        = 4.4
-		bulletGap    = 2.4
-		bulletIndent = 6.5
-		bulletRadius = 0.85
+		titleBandH   = 11.4
+		lineH        = 4.5
+		bulletGap    = 1.4
+		contentPadX  = 4.8
+		bulletIndent = 5.8
+		bodyPadTop   = 3.9
 	)
 
 	totalH := p.measureQuotationSpecSection(section)
 
-	p.setFill(cBGSUN)
-	p.setDraw(cLINE)
+	// Card frame — cream paper with rule.
+	p.setFill(cQPaper)
+	p.setDraw(cQRule)
 	doc.SetLineWidth(0.25)
-	doc.RoundedRect(qml, y, qcw, totalH, 2.5, "1234", "FD")
+	doc.Rect(qml, y, qcw, totalH, "FD")
 
-	p.setFill(cINK)
-	doc.RoundedRect(qml, y, qcw, titleBandH, 2.5, "12", "F")
-	doc.Rect(qml, y+titleBandH-2.5, qcw, 2.5, "F")
+	// Walnut title band.
+	p.setFill(cQInk)
+	doc.Rect(qml, y, qcw, titleBandH, "F")
 
-	p.setFont("B", 8.5)
-	p.setColor(rgb{255, 255, 255})
-	doc.SetXY(qml+cardPadX, y+2.1)
-	doc.CellFormat(qcw-cardPadX*2, 4.2, section.Title, "", 0, "L", false, 0, "")
+	roman := toRoman(idx)
+	title := fmt.Sprintf("%s  ·  %s", roman, section.Title)
+	p.serif("I", 13.5)
+	p.setColor(cQWhite)
+	doc.SetXY(qml+4.2, y+3.2)
+	doc.CellFormat(qcw-56, 5.8, p.text(title), "", 0, "L", false, 0, "")
 
-	cursorY := y + titleBandH + cardPadTop
-	p.setFont("", 7.8)
-	p.setColor(cINK2)
+	// Right-side count chip.
+	count := quotationSpecCountLabel(idx, len(section.Items))
+	p.mono("", 7.5)
+	p.setColor(cQAmberSoft)
+	doc.SetXY(qml+qcw-45, y+4.0)
+	doc.CellFormat(40, 3.8, p.text(count), "", 0, "R", false, 0, "")
 
-	for _, item := range section.Items {
-		lines := doc.SplitText(item, qcw-cardPadX*2-bulletIndent)
-		if len(lines) == 0 {
-			lines = []string{item}
+	// Body — bullets as short amber dashes, like editorial article bullets.
+	cursorY := y + titleBandH + bodyPadTop
+	for i, item := range section.Items {
+		// dash bullet (small horizontal line in amber-deep)
+		p.setDraw(cQAmberDeep)
+		doc.SetLineWidth(0.55)
+		doc.Line(qml+contentPadX+1.1, cursorY+2.8, qml+contentPadX+3.2, cursorY+2.8)
+
+		p.sans("", 8.25)
+		p.setColor(cQInk2)
+		doc.SetXY(qml+contentPadX+bulletIndent, cursorY)
+		doc.MultiCell(qcw-contentPadX*2-bulletIndent, lineH, p.text(item), "", "L", false)
+
+		nextY := doc.GetY() + bulletGap
+		// Dashed separator between bullets (skip after the last)
+		if i < len(section.Items)-1 {
+			p.setDraw(cQRule2)
+			doc.SetLineWidth(0.15)
+			drawDashed(doc, qml+contentPadX, nextY-0.6, qml+qcw-contentPadX, nextY-0.6, 0.8, 0.8)
 		}
-
-		p.setColor(cINK)
-		p.setFill(cINK)
-		doc.Circle(qml+cardPadX+bulletRadius, cursorY+2.15, bulletRadius, "F")
-
-		p.setFont("", 7.8)
-		p.setColor(cINK2)
-		doc.SetXY(qml+cardPadX+bulletIndent, cursorY)
-		doc.MultiCell(qcw-cardPadX*2-bulletIndent, lineH, item, "", "L", false)
-
-		cursorY += float64(len(lines))*lineH + bulletGap
+		cursorY = nextY + 1.4
 	}
 
-	return y + totalH + 4
+	return y + totalH + 5
+}
+
+func (p *pdfWriter) drawQuotationClosingCard(y float64, q *models.Quotation) float64 {
+	doc := p.doc
+	const h = 26.0
+
+	p.setFill(cQPaper2)
+	p.setDraw(cQRule)
+	doc.SetLineWidth(0.25)
+	doc.Rect(qml, y, qcw, h, "FD")
+
+	p.sans("", 6.8)
+	p.setColor(cQInk3)
+	doc.SetXY(qml+5.3, y+4.2)
+	doc.CellFormat(70, 3.4, p.text("THANK  YOU"), "", 0, "L", false, 0, "")
+
+	p.serif("I", 16.5)
+	p.setColor(cQInk)
+	doc.SetXY(qml+5.3, y+8.0)
+	doc.CellFormat(90, 6.8, p.text("From all of us at HousExpert."), "", 0, "L", false, 0, "")
+
+	p.sans("", 7.9)
+	p.setColor(cQInk3)
+	doc.SetXY(qml+5.3, y+15.1)
+	doc.MultiCell(qcw-33, 4.2,
+		p.text(fmt.Sprintf("For any clarification on scope, finishes or this quotation, reach us at %s or %s, %s. This quotation is valid for 30 days from the date of issue.", qContactEmail, qContactPhone1, qContactPhone2)),
+		"", "L", false)
+
+	p.drawBrandLogo(qml+qcw-21, y+5.0, 15.9)
+
+	return y + h + 5
+}
+
+// drawDashed strokes a horizontal dashed line. gofpdf has SetDashPattern but
+// resetting it is fiddly; this is simpler and stays local to this file.
+func drawDashed(doc interface {
+	Line(x1, y1, x2, y2 float64)
+}, x1, y, x2, y2, dash, gap float64) {
+	_ = y2
+	for x := x1; x < x2; x += dash + gap {
+		end := x + dash
+		if end > x2 {
+			end = x2
+		}
+		doc.Line(x, y, end, y)
+	}
+}
+
+// toRoman returns a small uppercase Roman numeral for 1..20.
+func toRoman(n int) string {
+	if n < 1 || n > 20 {
+		return strings.ToUpper(fmt.Sprintf("%d", n))
+	}
+	rom := []string{"I", "II", "III", "IV", "V", "VI", "VII", "VIII", "IX", "X",
+		"XI", "XII", "XIII", "XIV", "XV", "XVI", "XVII", "XVIII", "XIX", "XX"}
+	return rom[n-1]
+}
+
+func quotationSpecCountLabel(idx, count int) string {
+	word := "entries"
+	if idx == 1 {
+		word = "items"
+	}
+	if idx == 2 {
+		word = "stages"
+	}
+	if count == 1 {
+		switch idx {
+		case 1:
+			word = "item"
+		case 2:
+			word = "stage"
+		default:
+			word = "entry"
+		}
+	}
+	return fmt.Sprintf("%02d %s", count, word)
 }
