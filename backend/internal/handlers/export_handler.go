@@ -111,14 +111,14 @@ func listEntriesForExport(projectID primitive.ObjectID, filter services.LogEntry
 type rgb struct{ r, g, b int }
 
 var (
-	cINK    = rgb{30, 28, 40}
-	cINK2   = rgb{74, 72, 90}
-	cINK3   = rgb{120, 118, 132}
-	cINK4   = rgb{170, 168, 180}
-	cINK5   = rgb{216, 215, 220}
-	cBGSUN  = rgb{244, 243, 247}
-	cLINE   = rgb{230, 229, 234}
-	cLINE2  = rgb{239, 238, 243}
+	cINK   = rgb{30, 28, 40}
+	cINK2  = rgb{74, 72, 90}
+	cINK3  = rgb{120, 118, 132}
+	cINK4  = rgb{170, 168, 180}
+	cINK5  = rgb{216, 215, 220}
+	cBGSUN = rgb{244, 243, 247}
+	cLINE  = rgb{230, 229, 234}
+	cLINE2 = rgb{239, 238, 243}
 )
 
 // ── Layout constants ──────────────────────────────────────────────────────────
@@ -155,11 +155,12 @@ var tableCols = struct {
 // ── PDF writer ────────────────────────────────────────────────────────────────
 
 type pdfWriter struct {
-	doc      *gofpdf.Fpdf
-	font     string
-	rupee    string // "₹" with NotoSans, "Rs." with Helvetica
-	dash     string // "—" with NotoSans, "-" with Helvetica
-	logoPath string // empty = use initials box fallback
+	doc       *gofpdf.Fpdf
+	font      string
+	rupee     string // "₹" with NotoSans, "Rs." with Helvetica
+	dash      string // "—" with NotoSans, "-" with Helvetica
+	logoPath  string // empty = use initials box fallback
+	translate func(string) string
 }
 
 func newPDFWriter() *pdfWriter {
@@ -243,15 +244,22 @@ func (p *pdfWriter) setFont(style string, size float64) {
 	p.doc.SetFont(p.font, style, size)
 }
 
+func (p *pdfWriter) text(text string) string {
+	if p.translate != nil {
+		return p.translate(text)
+	}
+	return text
+}
+
 // truncate clips text so it fits within maxWidth mm at the current font size.
 func (p *pdfWriter) truncate(text string, maxWidth float64) string {
-	if p.doc.GetStringWidth(text) <= maxWidth {
+	if p.doc.GetStringWidth(p.text(text)) <= maxWidth {
 		return text
 	}
 	runes := []rune(text)
 	for i := len(runes) - 1; i > 0; i-- {
-		s := string(runes[:i]) + "…"
-		if p.doc.GetStringWidth(s) <= maxWidth {
+		s := string(runes[:i]) + "..."
+		if p.doc.GetStringWidth(p.text(s)) <= maxWidth {
 			return s
 		}
 	}
@@ -262,7 +270,7 @@ func (p *pdfWriter) truncate(text string, maxWidth float64) string {
 // gofpdf centers text vertically within the cell height, so the text sits at y + cellH/2.
 func (p *pdfWriter) cell(x, y, w float64, text, align string) {
 	p.doc.SetXY(x, y)
-	p.doc.CellFormat(w, cellH, text, "", 0, align, false, 0, "")
+	p.doc.CellFormat(w, cellH, p.text(text), "", 0, align, false, 0, "")
 }
 
 // hLine draws a horizontal rule across the full content width at y.
@@ -310,9 +318,9 @@ func (p *pdfWriter) drawPageHeader(project *models.Project, logTypeName, dateFil
 
 	// ── Right: report title + meta ─────────────────────────────────────────────
 	const (
-		divX   = 108.0               // vertical separator line x
-		rightX = divX + 5            // meta block starts here
-		rightW = (pw - mr) - rightX  // 283 - 113 = 170mm
+		divX   = 108.0              // vertical separator line x
+		rightX = divX + 5           // meta block starts here
+		rightW = (pw - mr) - rightX // 283 - 113 = 170mm
 	)
 
 	p.setFont("B", 10)
@@ -471,7 +479,7 @@ func (p *pdfWriter) drawDataRow(entry models.LogEntry, shade bool) {
 	p.hLine(y+rowH, cLINE2, 0.15)
 
 	line1Y := y + 1.0
-	line2Y := y + 1.0 + cellH // y + 6
+	line2Y := y + 1.0 + cellH       // y + 6
 	singleY := y + (rowH-cellH)/2.0 // y + 3
 
 	// ── Type + Category ────────────────────────────────────────────────────────
