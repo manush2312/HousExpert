@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react'
 import { useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import { Check, ChevronRight, Edit2, Plus, RotateCcw, Save, Search, Trash2, X } from 'lucide-react'
 import DatePicker from '../../components/DatePicker'
+import LoadingButton from '../../components/LoadingButton'
 import SearchableSelect from '../../components/SearchableSelect'
 import SizeTextInput from '../../components/SizeTextInput'
 import { listInventoryItems, type InventoryItem } from '../../services/inventoryService'
@@ -191,6 +192,8 @@ export default function LogTypeDetailPage() {
   const [editingItemId, setEditingItemId] = useState<string | null>(null)
   const [editingItemValues, setEditingItemValues] = useState<Record<string, unknown>>({})
   const [savingItemId, setSavingItemId] = useState<string | null>(null)
+  const [categoryActionId, setCategoryActionId] = useState<string | null>(null)
+  const [itemActionId, setItemActionId] = useState<string | null>(null)
   const [itemSearchByCategory, setItemSearchByCategory] = useState<Record<string, string>>({})
   const [categorySearch, setCategorySearch] = useState('')
   const [inventoryItems, setInventoryItems] = useState<InventoryItem[]>([])
@@ -322,7 +325,7 @@ export default function LogTypeDetailPage() {
 
   const handleAddCategory = async (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault()
-    if (!id || !newCatName.trim()) return
+    if (!id || addingCat || !newCatName.trim()) return
     setAddingCat(true)
     try {
       await createLogCategory(id, { name: newCatName.trim(), description: newCatDesc.trim() || undefined })
@@ -335,35 +338,59 @@ export default function LogTypeDetailPage() {
   }
 
   const handleArchiveCategory = async (categoryId: string, name: string) => {
+    if (categoryActionId) return
     const category = categories.find((item) => item.id === categoryId)
     const message = category && category.entry_count > 0
       ? `"${name}" has ${category.entry_count} existing entries. Archive anyway?`
       : `Archive category "${name}"?`
     if (!confirm(message)) return
-    await archiveLogCategory(categoryId)
-    await fetchAll()
+    setCategoryActionId(categoryId)
+    try {
+      await archiveLogCategory(categoryId)
+      await fetchAll()
+    } finally {
+      setCategoryActionId(null)
+    }
   }
 
   const handleRestoreCategory = async (categoryId: string, name: string) => {
+    if (categoryActionId) return
     if (!confirm(`Restore category "${name}"?`)) return
-    await restoreLogCategory(categoryId)
-    await fetchAll()
+    setCategoryActionId(categoryId)
+    try {
+      await restoreLogCategory(categoryId)
+      await fetchAll()
+    } finally {
+      setCategoryActionId(null)
+    }
   }
 
   const handleArchiveItem = async (itemId: string, name: string, categoryId: string) => {
+    if (itemActionId) return
     const item = itemsByCategory[categoryId]?.find((row) => row.id === itemId)
     const message = item && item.entry_count > 0
       ? `"${name}" has ${item.entry_count} existing entries. Archive anyway?`
       : `Archive item "${name}"?`
     if (!confirm(message)) return
-    await archiveLogItem(itemId)
-    await fetchAll()
+    setItemActionId(itemId)
+    try {
+      await archiveLogItem(itemId)
+      await fetchAll()
+    } finally {
+      setItemActionId(null)
+    }
   }
 
   const handleRestoreItem = async (itemId: string, name: string) => {
+    if (itemActionId) return
     if (!confirm(`Restore item "${name}"?`)) return
-    await restoreLogItem(itemId)
-    await fetchAll()
+    setItemActionId(itemId)
+    try {
+      await restoreLogItem(itemId)
+      await fetchAll()
+    } finally {
+      setItemActionId(null)
+    }
   }
 
   const updateSchemaDraft = (target: 'item' | 'entry', index: number, patch: Partial<SchemaDraft>) => {
@@ -381,7 +408,7 @@ export default function LogTypeDetailPage() {
   }
 
   const handleSaveSchema = async () => {
-    if (!id) return
+    if (!id || savingSchema) return
     const allDrafts = [...itemSchemaDrafts, ...entrySchemaDrafts]
     const emptyLabel = allDrafts.find((field) => !field.label.trim())
     if (emptyLabel) {
@@ -483,7 +510,7 @@ export default function LogTypeDetailPage() {
   }
 
   const handleSavePricingRule = async () => {
-    if (!id || !logType) return
+    if (!id || !logType || savingPricingRuleDraft) return
     if (costModeDraft !== 'quantity_x_unit_cost') {
       alert('Pricing rules are only used with the "Quantity x unit cost" mode.')
       return
@@ -526,7 +553,7 @@ export default function LogTypeDetailPage() {
   }
 
   const handleDeletePricingRule = async () => {
-    if (!pricingRule || !confirm(`Delete pricing rule "${pricingRule.name}"?`)) return
+    if (!pricingRule || deletingPricingRuleDraft || !confirm(`Delete pricing rule "${pricingRule.name}"?`)) return
     setDeletingPricingRuleDraft(true)
     try {
       await deletePricingRule(pricingRule.id)
@@ -562,7 +589,7 @@ export default function LogTypeDetailPage() {
 
   const handleAddItem = async (e: React.FormEvent<HTMLFormElement>, categoryId: string) => {
     e.preventDefault()
-    if (!logType) return
+    if (!logType || addingItemFor) return
 
     const draft = itemDraftsByCategory[categoryId] ?? initialItemDraft(itemSchema)
     const missingRequired = itemSchema.find((field) => {
@@ -608,7 +635,7 @@ export default function LogTypeDetailPage() {
   }
 
   const saveEditingItem = async (item: LogItem) => {
-    if (!logType) return
+    if (!logType || savingItemId) return
 
     const missingRequired = itemSchema.find((field) => {
       if (!field.required) return false
@@ -760,27 +787,31 @@ export default function LogTypeDetailPage() {
             ) : (
               <div className="flex items-center gap-2">
                 {pricingRule && (
-                  <button
+                  <LoadingButton
                     type="button"
                     onClick={() => void handleDeletePricingRule()}
                     className="btn btn-ghost btn-sm"
-                    disabled={deletingPricingRuleDraft}
+                    loading={deletingPricingRuleDraft}
+                    loadingText="Deleting..."
                     style={{ color: 'var(--bad)' }}
+                    leadingIcon={<Trash2 size={13} />}
                   >
-                    <Trash2 size={13} /> {deletingPricingRuleDraft ? 'Deleting…' : 'Delete'}
-                  </button>
+                    Delete
+                  </LoadingButton>
                 )}
                 <button type="button" onClick={cancelEditingPricingRule} className="btn btn-ghost btn-sm">
                   Cancel
                 </button>
-                <button
+                <LoadingButton
                   type="button"
                   onClick={() => void handleSavePricingRule()}
-                  disabled={savingPricingRuleDraft}
+                  loading={savingPricingRuleDraft}
+                  loadingText="Saving..."
                   className="btn btn-accent btn-sm"
+                  leadingIcon={<Save size={13} />}
                 >
-                  <Save size={13} /> {savingPricingRuleDraft ? 'Saving…' : 'Save pricing rule'}
-                </button>
+                  Save pricing rule
+                </LoadingButton>
               </div>
             )}
           </div>
@@ -990,9 +1021,9 @@ export default function LogTypeDetailPage() {
                 <button type="button" onClick={() => cancelEditingSchema('item')} className="btn btn-ghost btn-sm">
                   Cancel
                 </button>
-                <button type="button" onClick={handleSaveSchema} disabled={savingSchema} className="btn btn-accent btn-sm">
-                  <Save size={13} /> {savingSchema ? 'Saving…' : 'Save all schema changes'}
-                </button>
+                <LoadingButton type="button" onClick={handleSaveSchema} loading={savingSchema} loadingText="Saving..." className="btn btn-accent btn-sm" leadingIcon={<Save size={13} />}>
+                  Save all schema changes
+                </LoadingButton>
               </div>
             )}
           </div>
@@ -1063,9 +1094,9 @@ export default function LogTypeDetailPage() {
                 <button type="button" onClick={() => cancelEditingSchema('entry')} className="btn btn-ghost btn-sm">
                   Cancel
                 </button>
-                <button type="button" onClick={handleSaveSchema} disabled={savingSchema} className="btn btn-accent btn-sm">
-                  <Save size={13} /> {savingSchema ? 'Saving…' : 'Save all schema changes'}
-                </button>
+                <LoadingButton type="button" onClick={handleSaveSchema} loading={savingSchema} loadingText="Saving..." className="btn btn-accent btn-sm" leadingIcon={<Save size={13} />}>
+                  Save all schema changes
+                </LoadingButton>
               </div>
             )}
           </div>
@@ -1149,9 +1180,9 @@ export default function LogTypeDetailPage() {
                 style={{ width: 220 }}
                 disabled={logType.status === 'archived'}
               />
-              <button type="submit" disabled={logType.status === 'archived' || addingCat || !newCatName.trim()} className="btn btn-accent shrink-0">
-                {addingCat ? 'Adding…' : 'Add'}
-              </button>
+              <LoadingButton type="submit" disabled={logType.status === 'archived' || !newCatName.trim()} loading={addingCat} loadingText="Adding..." className="btn btn-accent shrink-0">
+                Add
+              </LoadingButton>
             </div>
           </form>
 
@@ -1197,22 +1228,28 @@ export default function LogTypeDetailPage() {
                         {category.entry_count} {category.entry_count === 1 ? 'entry' : 'entries'}
                       </span>
                       {category.status === 'archived' ? (
-                        <button
+                        <LoadingButton
                           onClick={() => void handleRestoreCategory(category.id, category.name)}
                           className="btn btn-ghost btn-sm btn-icon"
                           title="Restore category"
-                        >
-                          <RotateCcw size={12} />
-                        </button>
+                          loading={categoryActionId === category.id}
+                          loadingText={null}
+                          leadingIcon={<RotateCcw size={12} />}
+                          disabled={Boolean(categoryActionId)}
+                          aria-label="Restore category"
+                        />
                       ) : (
-                        <button
+                        <LoadingButton
                           onClick={() => void handleArchiveCategory(category.id, category.name)}
                           className="btn btn-ghost btn-sm btn-icon"
                           title="Archive category"
                           style={{ color: 'var(--bad)' }}
-                        >
-                          <Trash2 size={12} />
-                        </button>
+                          loading={categoryActionId === category.id}
+                          loadingText={null}
+                          leadingIcon={<Trash2 size={12} />}
+                          disabled={Boolean(categoryActionId)}
+                          aria-label="Archive category"
+                        />
                       )}
                     </div>
                   </div>
@@ -1255,13 +1292,15 @@ export default function LogTypeDetailPage() {
                           onChange={(patch) => updateItemInventoryLinkDraft(category.id, patch)}
                         />
                         <div className="flex justify-end">
-                          <button
+                          <LoadingButton
                             type="submit"
-                            disabled={addingItemFor === category.id}
+                            disabled={Boolean(addingItemFor) && addingItemFor !== category.id}
+                            loading={addingItemFor === category.id}
+                            loadingText="Adding..."
                             className="btn btn-accent"
                           >
-                            {addingItemFor === category.id ? 'Adding…' : 'Add item'}
-                          </button>
+                            Add item
+                          </LoadingButton>
                         </div>
                       </form>
                     )}
@@ -1410,13 +1449,16 @@ export default function LogTypeDetailPage() {
                                       <div className="flex items-center justify-end gap-1">
                                         {isEditing ? (
                                           <>
-                                            <button
+                                            <LoadingButton
                                               onClick={() => void saveEditingItem(item)}
-                                              disabled={savingItemId === item.id}
+                                              disabled={Boolean(savingItemId) && savingItemId !== item.id}
+                                              loading={savingItemId === item.id}
+                                              loadingText="Saving..."
                                               className="btn btn-accent btn-sm"
+                                              leadingIcon={<Check size={12} />}
                                             >
-                                              <Check size={12} /> {savingItemId === item.id ? 'Saving…' : 'Save'}
-                                            </button>
+                                              Save
+                                            </LoadingButton>
                                             <button onClick={cancelEditingItem} className="btn btn-ghost btn-sm">
                                               <X size={12} />
                                             </button>
@@ -1424,13 +1466,16 @@ export default function LogTypeDetailPage() {
                                         ) : (
                                           <>
                                             {item.status === 'archived' ? (
-                                              <button
+                                              <LoadingButton
                                                 onClick={() => void handleRestoreItem(item.id, item.name)}
                                                 className="btn btn-ghost btn-sm btn-icon"
                                                 title="Restore item"
-                                              >
-                                                <RotateCcw size={12} />
-                                              </button>
+                                                loading={itemActionId === item.id}
+                                                loadingText={null}
+                                                leadingIcon={<RotateCcw size={12} />}
+                                                disabled={Boolean(itemActionId)}
+                                                aria-label="Restore item"
+                                              />
                                             ) : (
                                               <>
                                                 <button
@@ -1441,14 +1486,17 @@ export default function LogTypeDetailPage() {
                                                 >
                                                   <Edit2 size={12} />
                                                 </button>
-                                                <button
+                                                <LoadingButton
                                                   onClick={() => void handleArchiveItem(item.id, item.name, category.id)}
                                                   className="btn btn-ghost btn-sm btn-icon"
                                                   title="Archive item"
                                                   style={{ color: 'var(--bad)' }}
-                                                >
-                                                  <Trash2 size={12} />
-                                                </button>
+                                                  loading={itemActionId === item.id}
+                                                  loadingText={null}
+                                                  leadingIcon={<Trash2 size={12} />}
+                                                  disabled={Boolean(itemActionId)}
+                                                  aria-label="Archive item"
+                                                />
                                               </>
                                             )}
                                           </>

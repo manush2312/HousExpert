@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { isAxiosError } from 'axios'
 import { Plus, X } from 'lucide-react'
+import LoadingButton from '../../components/LoadingButton'
 import SearchableSelect from '../../components/SearchableSelect'
 import { createLogType, type FieldType, type LogCostMode } from '../../services/logService'
 
@@ -52,6 +53,7 @@ export default function NewLogTypePage() {
 
   const handleSubmit = async (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault()
+    if (loading) return
     setError('')
     if (!name.trim()) { setError('Name is required'); return }
     const allFields = [...itemFields, ...entryFields]
@@ -160,9 +162,9 @@ export default function NewLogTypePage() {
           )}
 
           <div className="flex items-center gap-2 pt-2">
-            <button type="submit" disabled={loading || !name.trim()} className="btn btn-accent">
-              {loading ? 'Creating…' : 'Create log type'}
-            </button>
+            <LoadingButton type="submit" disabled={!name.trim()} loading={loading} loadingText="Creating..." className="btn btn-accent">
+              Create log type
+            </LoadingButton>
             <button type="button" onClick={() => navigate('/log-types')} className="btn btn-ghost">Cancel</button>
           </div>
         </div>

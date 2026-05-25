@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 import { ArrowRight, Download, Pencil, Send, ThumbsUp, ThumbsDown, Trash2, FolderOpen } from 'lucide-react'
+import LoadingButton from '../../components/LoadingButton'
 import {
   getQuotation, updateQuotationStatus, deleteQuotation,
   type Quotation, type QuotationStatus,
@@ -13,8 +14,9 @@ export default function QuotationDetailPage() {
   const navigate = useNavigate()
   const [quotation, setQuotation] = useState<Quotation | null>(null)
   const [loading, setLoading] = useState(true)
-  const [actionLoading, setActionLoading] = useState(false)
+  const [actionLoading, setActionLoading] = useState<QuotationStatus | null>(null)
   const [exportLoading, setExportLoading] = useState(false)
+  const [deleteLoading, setDeleteLoading] = useState(false)
 
   useEffect(() => {
     if (!id) return
@@ -25,24 +27,31 @@ export default function QuotationDetailPage() {
   }, [id, navigate])
 
   const transition = async (status: QuotationStatus) => {
-    if (!quotation) return
-    setActionLoading(true)
+    if (!quotation || actionLoading) return
+    setActionLoading(status)
     try {
       const res = await updateQuotationStatus(quotation.quotation_id, status)
       setQuotation(res.data.data)
     } finally {
-      setActionLoading(false)
+      setActionLoading(null)
     }
   }
 
   const handleDelete = async () => {
-    if (!quotation || !confirm('Delete this draft quotation? This cannot be undone.')) return
-    await deleteQuotation(quotation.quotation_id)
-    navigate('/quotations')
+    if (!quotation || deleteLoading || !confirm('Delete this draft quotation? This cannot be undone.')) return
+    setDeleteLoading(true)
+    try {
+      await deleteQuotation(quotation.quotation_id)
+      navigate('/quotations')
+    } catch {
+      alert('Failed to delete quotation')
+    } finally {
+      setDeleteLoading(false)
+    }
   }
 
   const handleExportPDF = async () => {
-    if (!quotation) return
+    if (!quotation || exportLoading) return
     setExportLoading(true)
     try {
       const res = await api.get(`/quotations/${quotation.quotation_id}/export`, {
@@ -138,27 +147,56 @@ export default function QuotationDetailPage() {
 
         {/* Action buttons */}
         <div className="flex items-center gap-2 shrink-0 flex-wrap justify-end">
-          <button onClick={handleExportPDF} disabled={exportLoading} className="btn btn-outline">
-            <Download size={14} /> {exportLoading ? 'Exporting…' : 'Download PDF'}
-          </button>
+          <LoadingButton
+            onClick={handleExportPDF}
+            loading={exportLoading}
+            loadingText="Exporting..."
+            className="btn btn-outline"
+            leadingIcon={<Download size={14} />}
+          >
+            Download PDF
+          </LoadingButton>
           {isEditable && (
             <button onClick={() => navigate(`/quotations/${quotation.quotation_id}/edit`)} className="btn btn-outline">
               <Pencil size={14} /> Edit
             </button>
           )}
           {quotation.status === 'draft' && (
-            <button onClick={() => transition('sent')} disabled={actionLoading} className="btn btn-outline">
-              <Send size={14} /> Mark sent
-            </button>
+            <LoadingButton
+              onClick={() => transition('sent')}
+              loading={actionLoading === 'sent'}
+              loadingText="Sending..."
+              disabled={Boolean(actionLoading)}
+              className="btn btn-outline"
+              leadingIcon={<Send size={14} />}
+            >
+              Mark sent
+            </LoadingButton>
           )}
           {quotation.status === 'sent' && (
             <>
-              <button onClick={() => transition('accepted')} disabled={actionLoading} className="btn btn-outline" style={{ color: 'var(--ok-ink)', borderColor: 'var(--ok)' }}>
-                <ThumbsUp size={14} /> Accept
-              </button>
-              <button onClick={() => transition('rejected')} disabled={actionLoading} className="btn btn-outline" style={{ color: 'var(--bad-ink)', borderColor: 'var(--bad)' }}>
-                <ThumbsDown size={14} /> Reject
-              </button>
+              <LoadingButton
+                onClick={() => transition('accepted')}
+                loading={actionLoading === 'accepted'}
+                loadingText="Accepting..."
+                disabled={Boolean(actionLoading)}
+                className="btn btn-outline"
+                style={{ color: 'var(--ok-ink)', borderColor: 'var(--ok)' }}
+                leadingIcon={<ThumbsUp size={14} />}
+              >
+                Accept
+              </LoadingButton>
+              <LoadingButton
+                onClick={() => transition('rejected')}
+                loading={actionLoading === 'rejected'}
+                loadingText="Rejecting..."
+                disabled={Boolean(actionLoading)}
+                className="btn btn-outline"
+                style={{ color: 'var(--bad-ink)', borderColor: 'var(--bad)' }}
+                leadingIcon={<ThumbsDown size={14} />}
+              >
+                Reject
+              </LoadingButton>
             </>
           )}
           {quotation.status === 'accepted' && !quotation.converted_project_id && (
@@ -167,9 +205,15 @@ export default function QuotationDetailPage() {
             </button>
           )}
           {isEditable && (
-            <button onClick={handleDelete} className="btn btn-ghost" style={{ color: 'var(--bad)' }}>
-              <Trash2 size={14} />
-            </button>
+            <LoadingButton
+              onClick={handleDelete}
+              loading={deleteLoading}
+              loadingText={null}
+              className="btn btn-ghost"
+              style={{ color: 'var(--bad)' }}
+              leadingIcon={<Trash2 size={14} />}
+              aria-label="Delete quotation"
+            />
           )}
         </div>
       </div>

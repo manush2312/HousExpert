@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 import { Plus, Trash2, GripVertical, FolderPlus, Save } from 'lucide-react'
+import LoadingButton from '../../components/LoadingButton'
 import SearchableSelect from '../../components/SearchableSelect'
 import SizeTextInput from '../../components/SizeTextInput'
 import {
@@ -177,6 +178,7 @@ export default function EditQuotationPage() {
 
   const handleSave = async (e: React.FormEvent) => {
     e.preventDefault()
+    if (saving) return
     if (!id || !clientName.trim()) return
     const gstRate = Number(gstPercent) || 0
     if (applyGST && gstRate <= 0) {
@@ -347,10 +349,16 @@ export default function EditQuotationPage() {
           </div>
           <div className="flex items-center gap-2">
             <button type="button" onClick={() => navigate(`/quotations/${quotation.quotation_id}`)} className="btn btn-ghost">Cancel</button>
-            <button type="submit" disabled={!clientName.trim() || saving} className="btn btn-accent">
-              <Save size={14} />
-              {saving ? 'Saving…' : 'Save changes'}
-            </button>
+            <LoadingButton
+              type="submit"
+              disabled={!clientName.trim()}
+              loading={saving}
+              loadingText="Saving..."
+              className="btn btn-accent"
+              leadingIcon={<Save size={14} />}
+            >
+              Save changes
+            </LoadingButton>
           </div>
         </div>
       </form>

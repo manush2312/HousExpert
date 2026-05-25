@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import { Plus, Pencil, Trash2, Package, X, Check } from 'lucide-react'
+import LoadingButton from '../../components/LoadingButton'
 import SizeTextInput from '../../components/SizeTextInput'
 import {
   listProducts, createProduct, updateProduct, deleteProduct,
@@ -11,6 +12,7 @@ export default function ProductsPage() {
   const [loading, setLoading] = useState(true)
   const [showAdd, setShowAdd] = useState(false)
   const [editingId, setEditingId] = useState<string | null>(null)
+  const [deletingProductId, setDeletingProductId] = useState<string | null>(null)
 
   const fetch = async () => {
     try {
@@ -27,12 +29,16 @@ export default function ProductsPage() {
   useEffect(() => { fetch() }, [])
 
   const handleDelete = async (productId: string, name: string) => {
+    if (deletingProductId) return
     if (!confirm(`Delete "${name}"? This cannot be undone.`)) return
+    setDeletingProductId(productId)
     try {
       await deleteProduct(productId)
-      fetch()
+      await fetch()
     } catch {
       alert('Failed to delete product')
+    } finally {
+      setDeletingProductId(null)
     }
   }
 
@@ -130,14 +136,17 @@ export default function ProductsPage() {
                     >
                       <Pencil size={12} />
                     </button>
-                    <button
+                    <LoadingButton
                       onClick={() => handleDelete(p.product_id, p.name)}
                       className="btn btn-ghost btn-sm btn-icon"
                       title="Delete"
                       style={{ color: 'var(--bad)' }}
-                    >
-                      <Trash2 size={12} />
-                    </button>
+                      loading={deletingProductId === p.product_id}
+                      loadingText={null}
+                      leadingIcon={<Trash2 size={12} />}
+                      disabled={Boolean(deletingProductId)}
+                      aria-label={`Delete ${p.name}`}
+                    />
                   </div>
                 </div>
               )}
@@ -157,6 +166,7 @@ function AddProductForm({ onSave, onCancel }: { onSave: (name: string, size: str
   const [saving, setSaving] = useState(false)
 
   const handleSave = async () => {
+    if (saving) return
     if (!name.trim()) return
     setSaving(true)
     try { await onSave(name.trim(), size.trim()) }
@@ -214,9 +224,16 @@ function AddProductForm({ onSave, onCancel }: { onSave: (name: string, size: str
           <button onClick={onCancel} className="btn btn-ghost">
             Cancel
           </button>
-          <button onClick={handleSave} disabled={!name.trim() || saving} className="btn btn-accent">
-            <Check size={13} /> {saving ? 'Saving…' : 'Save product'}
-          </button>
+          <LoadingButton
+            onClick={handleSave}
+            disabled={!name.trim()}
+            loading={saving}
+            loadingText="Saving..."
+            className="btn btn-accent"
+            leadingIcon={<Check size={13} />}
+          >
+            Save product
+          </LoadingButton>
         </div>
       </div>
     </div>
@@ -235,6 +252,7 @@ function EditProductRow({ product, onSave, onCancel }: {
   const [saving, setSaving] = useState(false)
 
   const handleSave = async () => {
+    if (saving) return
     if (!name.trim()) return
     setSaving(true)
     try { await onSave(name.trim(), size.trim()) }
@@ -279,10 +297,17 @@ function EditProductRow({ product, onSave, onCancel }: {
           <button onClick={onCancel} className="btn btn-ghost" title="Cancel">
             Cancel
           </button>
-          <button onClick={handleSave} disabled={!name.trim() || saving} className="btn btn-accent" title="Save">
-            <Check size={13} />
-            {saving ? 'Saving…' : 'Save'}
-          </button>
+          <LoadingButton
+            onClick={handleSave}
+            disabled={!name.trim()}
+            loading={saving}
+            loadingText="Saving..."
+            className="btn btn-accent"
+            title="Save"
+            leadingIcon={<Check size={13} />}
+          >
+            Save
+          </LoadingButton>
         </div>
       </div>
     </div>

@@ -19,6 +19,7 @@ import {
   X,
 } from 'lucide-react'
 import DatePicker from '../../components/DatePicker'
+import LoadingButton from '../../components/LoadingButton'
 import SearchableSelect from '../../components/SearchableSelect'
 import SizeTextInput from '../../components/SizeTextInput'
 import { listInventoryStockLots, type InventoryStockLot } from '../../services/inventoryService'
@@ -125,7 +126,10 @@ export default function ProjectDetailPage() {
   const [editingEntry, setEditingEntry] = useState<LogEntry | null>(null)
   const [editingDraft, setEditingDraft] = useState<EditDraft | null>(null)
   const [editLogType, setEditLogType] = useState<LogType | null>(null)
+  const [draftSavingId, setDraftSavingId] = useState<string | null>(null)
   const [editSaving, setEditSaving] = useState(false)
+  const [openingEditEntryId, setOpeningEditEntryId] = useState<string | null>(null)
+  const [deletingEntryId, setDeletingEntryId] = useState<string | null>(null)
 
   const [exportLoading, setExportLoading] = useState(false)
 
@@ -221,7 +225,7 @@ export default function ProjectDetailPage() {
   }, [entries, logTypeFilter, dateFilter, q])
 
   const handleExport = async () => {
-    if (!project) return
+    if (!project || exportLoading) return
     setExportLoading(true)
     try {
       const logTypeName = allLogTypes.find((lt) => lt.id === logTypeFilter)?.name
@@ -326,7 +330,7 @@ export default function ProjectDetailPage() {
   const cancelDraft = (draftId: string) => setDrafts((prev) => prev.filter((draft) => draft.id !== draftId))
 
   const saveDraft = async (draftId: string) => {
-    if (!id) return
+    if (!id || draftSavingId) return
 
     const draft = drafts.find((item) => item.id === draftId)
     if (!draft) return
@@ -360,54 +364,55 @@ export default function ProjectDetailPage() {
         return
       }
     }
-    if (inventoryLinked && resolvedInventoryLink) {
-      try {
-        const stockLots = await listInventoryStockLots(resolvedInventoryLink.inventory_item_id)
-        if ((stockLots.data.data ?? []).length > 0 && !lotAllocationsMatchRequired(draft.inventory_lot_allocations, consumedQuantity)) {
-          alert('Allocate the full inventory quantity across one or more stock lots before saving.')
-          return
-        }
-      } catch {
-        // Ignore and allow save; backend still validates item stock.
-      }
-    }
-
-    const parsedQuantity = parseOptionalNumber(draft.quantity)
-    let computedTotalCost = computeLogTotalCost(
-      costMode,
-      entrySchema,
-      selectedItem?.fields ?? [],
-      draft.values,
-      parsedQuantity,
-      pricingRulesByType[draft.log_type_id],
-    )
-    if (resolvedInventoryLink && parsedQuantity != null && draft.inventory_lot_allocations.length > 0) {
-      try {
-        const stockLots = await listInventoryStockLots(resolvedInventoryLink.inventory_item_id)
-        computedTotalCost = computeInventoryVendorSellTotal(
-          parsedQuantity,
-          resolvedInventoryLink.usage_per_quantity,
-          normalizedLotAllocations(draft.inventory_lot_allocations),
-          stockLots.data.data ?? [],
-        ) ?? computedTotalCost
-      } catch {
-        // Keep schema/pricing-rule total as the fallback preview.
-      }
-    }
-    const fields: FieldValue[] = buildDraftFieldPayload(entrySchema, draft.values, {
-      costMode,
-      quantity: parsedQuantity,
-      totalCost: computedTotalCost,
-    }).map((field) => ({
-      field_id: field.field_id,
-      label: field.label,
-      value: normalizeDraftValue(
-        entrySchema.find((schemaField) => schemaField.field_id === field.field_id) ?? { field_type: 'text' } as SchemaField,
-        field.value,
-      ),
-    }))
-
+    setDraftSavingId(draftId)
     try {
+      if (inventoryLinked && resolvedInventoryLink) {
+        try {
+          const stockLots = await listInventoryStockLots(resolvedInventoryLink.inventory_item_id)
+          if ((stockLots.data.data ?? []).length > 0 && !lotAllocationsMatchRequired(draft.inventory_lot_allocations, consumedQuantity)) {
+            alert('Allocate the full inventory quantity across one or more stock lots before saving.')
+            return
+          }
+        } catch {
+          // Ignore and allow save; backend still validates item stock.
+        }
+      }
+
+      const parsedQuantity = parseOptionalNumber(draft.quantity)
+      let computedTotalCost = computeLogTotalCost(
+        costMode,
+        entrySchema,
+        selectedItem?.fields ?? [],
+        draft.values,
+        parsedQuantity,
+        pricingRulesByType[draft.log_type_id],
+      )
+      if (resolvedInventoryLink && parsedQuantity != null && draft.inventory_lot_allocations.length > 0) {
+        try {
+          const stockLots = await listInventoryStockLots(resolvedInventoryLink.inventory_item_id)
+          computedTotalCost = computeInventoryVendorSellTotal(
+            parsedQuantity,
+            resolvedInventoryLink.usage_per_quantity,
+            normalizedLotAllocations(draft.inventory_lot_allocations),
+            stockLots.data.data ?? [],
+          ) ?? computedTotalCost
+        } catch {
+          // Keep schema/pricing-rule total as the fallback preview.
+        }
+      }
+      const fields: FieldValue[] = buildDraftFieldPayload(entrySchema, draft.values, {
+        costMode,
+        quantity: parsedQuantity,
+        totalCost: computedTotalCost,
+      }).map((field) => ({
+        field_id: field.field_id,
+        label: field.label,
+        value: normalizeDraftValue(
+          entrySchema.find((schemaField) => schemaField.field_id === field.field_id) ?? { field_type: 'text' } as SchemaField,
+          field.value,
+        ),
+      }))
+
       await createLogEntry(id, {
         log_type_id: draft.log_type_id,
         category_id: draft.category_id,
@@ -423,20 +428,27 @@ export default function ProjectDetailPage() {
       await refreshEntries()
     } catch {
       alert('Failed to save log entry.')
+    } finally {
+      setDraftSavingId(null)
     }
   }
 
   const handleDelete = async (entryId: string) => {
-    if (!id || !confirm('Delete this log entry? This cannot be undone.')) return
+    if (!id || deletingEntryId || !confirm('Delete this log entry? This cannot be undone.')) return
+    setDeletingEntryId(entryId)
     try {
       await deleteLogEntry(id, entryId)
       await refreshEntries()
     } catch {
       alert('Failed to delete log entry.')
+    } finally {
+      setDeletingEntryId(null)
     }
   }
 
   const handleOpenEdit = async (entry: LogEntry) => {
+    if (openingEditEntryId) return
+    setOpeningEditEntryId(entry.id)
     setEditingEntry(entry)
     const values: Record<string, unknown> = {}
     entry.fields.forEach((field) => { values[field.field_id] = field.value })
@@ -461,23 +473,27 @@ export default function ProjectDetailPage() {
       notes: entry.notes ?? '',
       values,
     })
-    await Promise.all([
-      ensureCategories(entry.log_type_id),
-      ensurePricingRule(entry.log_type_id),
-    ])
-    await ensureItems(entry.category_id)
-
-    const localLogType = allLogTypes.find((item) => item.id === entry.log_type_id)
-    if (localLogType) {
-      setEditLogType(localLogType)
-      return
-    }
-
     try {
-      const res = await getLogType(entry.log_type_id)
-      setEditLogType(res.data.data)
-    } catch {
-      setEditLogType(null)
+      await Promise.all([
+        ensureCategories(entry.log_type_id),
+        ensurePricingRule(entry.log_type_id),
+      ])
+      await ensureItems(entry.category_id)
+
+      const localLogType = allLogTypes.find((item) => item.id === entry.log_type_id)
+      if (localLogType) {
+        setEditLogType(localLogType)
+        return
+      }
+
+      try {
+        const res = await getLogType(entry.log_type_id)
+        setEditLogType(res.data.data)
+      } catch {
+        setEditLogType(null)
+      }
+    } finally {
+      setOpeningEditEntryId(null)
     }
   }
 
@@ -492,7 +508,7 @@ export default function ProjectDetailPage() {
   }
 
   const handleSaveEdit = async () => {
-    if (!editingEntry || !editingDraft || !id) return
+    if (!editingEntry || !editingDraft || !id || editSaving) return
     setEditSaving(true)
     try {
       const activeLogType = editLogType ?? allLogTypes.find((item) => item.id === editingDraft.log_type_id)
@@ -669,10 +685,15 @@ export default function ProjectDetailPage() {
             )}
           </div>
           <div className="flex items-center gap-2 shrink-0">
-            <button onClick={handleExport} disabled={exportLoading} className="btn btn-outline">
-              <Download size={15} />
-              {exportLoading ? 'Generating…' : 'Export report'}
-            </button>
+            <LoadingButton
+              onClick={handleExport}
+              loading={exportLoading}
+              loadingText="Generating..."
+              className="btn btn-outline"
+              leadingIcon={<Download size={15} />}
+            >
+              Export report
+            </LoadingButton>
             <button onClick={newDraft} className="btn btn-accent">
               <Plus size={15} />
               Add entry
@@ -737,12 +758,15 @@ export default function ProjectDetailPage() {
               onUpdateDraft={updateDraft}
               onCancelDraft={cancelDraft}
               onSaveDraft={saveDraft}
+              draftSavingId={draftSavingId}
               onUpdateEdit={updateEditDraft}
               onCancelEdit={handleCloseEdit}
               onSaveEdit={handleSaveEdit}
               editSaving={editSaving}
               onEdit={handleOpenEdit}
+              openingEditEntryId={openingEditEntryId}
               onDelete={handleDelete}
+              deletingEntryId={deletingEntryId}
             />
           )}
           {tab === 'floorplans' && (
@@ -1003,12 +1027,15 @@ function LogsSection({
   onUpdateDraft,
   onCancelDraft,
   onSaveDraft,
+  draftSavingId,
   onUpdateEdit,
   onCancelEdit,
   onSaveEdit,
   editSaving,
   onEdit,
+  openingEditEntryId,
   onDelete,
+  deletingEntryId,
 }: {
   entries: LogEntry[]
   q: string
@@ -1029,12 +1056,15 @@ function LogsSection({
   onUpdateDraft: (id: string, patch: Partial<DraftEntry>) => void | Promise<void>
   onCancelDraft: (id: string) => void
   onSaveDraft: (id: string) => void | Promise<void>
+  draftSavingId: string | null
   onUpdateEdit: (id: string, patch: Partial<DraftEntry>) => void | Promise<void>
   onCancelEdit: () => void
   onSaveEdit: () => void | Promise<void>
   editSaving: boolean
   onEdit: (entry: LogEntry) => void
+  openingEditEntryId: string | null
   onDelete: (entryId: string) => void
+  deletingEntryId: string | null
 }) {
   const hasFilter = logTypeFilter || dateFilter || q
 
@@ -1107,6 +1137,7 @@ function LogsSection({
               onUpdate={onUpdateDraft}
               onCancel={onCancelDraft}
               onSave={onSaveDraft}
+              saving={draftSavingId === draft.id}
             />
           ))}
         </div>
@@ -1201,13 +1232,28 @@ function LogsSection({
                               {isPlaceholderCreator(entry.created_by) ? 'null' : entry.created_by}
                             </td>
                             <td className="px-4 py-2.5">
-                              <div className="flex items-center justify-end gap-0.5 opacity-0 transition-opacity group-hover:opacity-100">
-                                <button onClick={() => onEdit(entry)} className="btn btn-ghost btn-sm btn-icon" title="Edit">
-                                  <Edit2 size={12} />
-                                </button>
-                                <button onClick={() => onDelete(entry.id)} className="btn btn-ghost btn-sm btn-icon" title="Delete" style={{ color: 'var(--bad)' }}>
-                                  <Trash2 size={12} />
-                                </button>
+                              <div className={`flex items-center justify-end gap-0.5 transition-opacity ${deletingEntryId === entry.id || openingEditEntryId === entry.id ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'}`}>
+                                <LoadingButton
+                                  onClick={() => onEdit(entry)}
+                                  className="btn btn-ghost btn-sm btn-icon"
+                                  title="Edit"
+                                  loading={openingEditEntryId === entry.id}
+                                  loadingText={null}
+                                  leadingIcon={<Edit2 size={12} />}
+                                  disabled={Boolean(openingEditEntryId)}
+                                  aria-label="Edit log entry"
+                                />
+                                <LoadingButton
+                                  onClick={() => onDelete(entry.id)}
+                                  className="btn btn-ghost btn-sm btn-icon"
+                                  title="Delete"
+                                  style={{ color: 'var(--bad)' }}
+                                  loading={deletingEntryId === entry.id}
+                                  loadingText={null}
+                                  leadingIcon={<Trash2 size={12} />}
+                                  disabled={Boolean(deletingEntryId)}
+                                  aria-label="Delete log entry"
+                                />
                               </div>
                             </td>
                           </tr>
@@ -1225,7 +1271,7 @@ function LogsSection({
                                   onSave={() => onSaveEdit()}
                                   title="Inline log editor"
                                   description="Same guided flow as add entry, with source details locked while you update the logged values."
-                                  saveLabel={editSaving ? 'Saving…' : 'Save changes'}
+                                  saveLabel="Save changes"
                                   lockedSource
                                   saving={editSaving}
                                 />
@@ -1649,9 +1695,16 @@ function InlineDraftComposer({
 
             <div className="flex items-center justify-end gap-2">
               <button onClick={() => onCancel(draft.id)} className="btn btn-ghost">Discard</button>
-            <button onClick={() => { void onSave(draft.id) }} disabled={!canSave} className="btn btn-accent">
-              <Check size={13} /> {saveLabel}
-            </button>
+            <LoadingButton
+              onClick={() => { void onSave(draft.id) }}
+              disabled={!canSave}
+              loading={saving}
+              loadingText="Saving..."
+              className="btn btn-accent"
+              leadingIcon={<Check size={13} />}
+            >
+              {saveLabel}
+            </LoadingButton>
           </div>
         </aside>
       </div>
@@ -1909,10 +1962,15 @@ function FloorPlansTab({
                 </div>
               </div>
             </div>
-            <button onClick={() => onBrowse(config.bhk_type)} className="btn btn-outline btn-sm" disabled={uploadingByBhk[config.bhk_type]}>
-              <Upload size={13} />
-              {uploadingByBhk[config.bhk_type] ? 'Uploading…' : 'Upload'}
-            </button>
+            <LoadingButton
+              onClick={() => onBrowse(config.bhk_type)}
+              className="btn btn-outline btn-sm"
+              loading={Boolean(uploadingByBhk[config.bhk_type])}
+              loadingText="Uploading..."
+              leadingIcon={<Upload size={13} />}
+            >
+              Upload
+            </LoadingButton>
           </div>
 
           <div className="grid grid-cols-1 gap-3 p-4 sm:grid-cols-2 lg:grid-cols-3">
