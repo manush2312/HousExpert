@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import { flushSync } from 'react-dom'
 import { useParams, useNavigate } from 'react-router-dom'
 import { Info } from 'lucide-react'
 import DatePicker from '../../components/DatePicker'
@@ -210,7 +211,7 @@ export default function NewLogEntryPage() {
     e.preventDefault()
     if (!projectId || !canSubmit) { setError('Please fill in all required fields.'); return }
     setError('')
-    setLoading(true)
+    flushSync(() => setLoading(true))
     try {
       const fields: FieldValue[] = buildEntryFieldPayload(entrySchema, fieldValues, {
         costMode,
