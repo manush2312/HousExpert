@@ -617,3 +617,20 @@ input:focus, select:focus, textarea:focus, button:focus-visible {
 
 /* ── Divider ── */
 .divider { border: none; border-top: 1px solid var(--line); margin: 0; }
+
+/* ── Save spinner ── */
+@keyframes spin { to { transform: rotate(360deg); } }
+.save-spinner {
+  display: inline-block;
+  width: 13px; height: 13px;
+  border: 2px solid color-mix(in oklab, currentColor 30%, transparent);
+  border-top-color: currentColor;
+  border-radius: 50%;
+  animation: spin 0.6s linear infinite;
+  flex-shrink: 0;
+}
+
+/* ── Remove spinner arrows on number inputs ── */
+input[type=number]::-webkit-inner-spin-button,
+input[type=number]::-webkit-outer-spin-button { -webkit-appearance: none; margin: 0; }
+input[type=number] { -moz-appearance: textfield; appearance: textfield; }
