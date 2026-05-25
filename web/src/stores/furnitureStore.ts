@@ -45,11 +45,13 @@ export interface Drawer {
   sectionIndex: number // which section (0 = leftmost)
   fromBottom: number   // mm from interior bottom of that section
   height: number       // mm
+  frontSetback: number  // mm behind the front/door plane
 }
 
 export interface Material {
-  thickness: number    // mm, typically 18
-  color: string        // hex color for 3D preview
+  thickness: number           // mm, typically 18
+  backPanelThickness: number  // mm, typically 6
+  color: string               // hex color for 3D preview
 }
 
 export interface CustomPanel {
@@ -117,6 +119,7 @@ interface FurnitureState {
 
   // Material
   setThickness: (mm: number) => void
+  setBackPanelThickness: (mm: number) => void
   setMaterialColor: (color: string) => void
 
   // Add elements
@@ -130,6 +133,7 @@ interface FurnitureState {
   movePartition: (id: string, fromLeft: number) => void
   moveDrawer: (id: string, fromBottom: number) => void
   moveShelfPartition: (id: string, fromLeft: number) => void
+  setDrawerFrontSetback: (id: string, frontSetback: number) => void
 
   // Custom panels
   addCustomPanel: (panel: Omit<CustomPanel, 'id'>) => void
@@ -151,7 +155,9 @@ interface FurnitureState {
 let nextId = 1
 function uid() { return `el-${nextId++}` }
 
-const BACK_PANEL_THICKNESS = 6
+export const DEFAULT_BACK_PANEL_THICKNESS = 6
+export const DRAWER_BOX_HEIGHT_ALLOWANCE = 6
+const DRAWER_DEPTH_CLEARANCE = 16
 
 function snap(value: number, step = 1): number {
   const safeValue = Number.isFinite(value) ? value : 0
@@ -168,7 +174,7 @@ function minOuterDimension(thickness: number): number {
 }
 
 function minDrawerHeight(thickness: number): number {
-  return Math.max(20, thickness + BACK_PANEL_THICKNESS + 1)
+  return Math.max(20, thickness + DRAWER_BOX_HEIGHT_ALLOWANCE + 1)
 }
 
 function partitionInsertBounds(partitions: Partition[], target: number, interiorW: number, thickness: number) {
@@ -208,6 +214,27 @@ function sectionDividerBounds(
   const max = rightBoundary - (sectionIndex === sorted.length ? thickness / 2 : thickness)
   if (max < min) return null
   return { min, max }
+}
+
+function backPanelThicknessOf(material: Material) {
+  return material.backPanelThickness ?? DEFAULT_BACK_PANEL_THICKNESS
+}
+
+function maxDrawerFrontSetback(outerBox: OuterBox, thickness: number, backPanelThickness: number) {
+  const interiorD = outerBox.depth - backPanelThickness
+  return Math.max(0, interiorD - thickness - DRAWER_DEPTH_CLEARANCE - 1)
+}
+
+function clampDrawerFrontSetbacks(drawers: Drawer[], outerBox: OuterBox, material: Material) {
+  const maxSetback = maxDrawerFrontSetback(
+    outerBox,
+    material.thickness,
+    backPanelThicknessOf(material),
+  )
+  return drawers.map((drawer) => ({
+    ...drawer,
+    frontSetback: clamp(snap(drawer.frontSetback ?? 0), 0, maxSetback),
+  }))
 }
 
 function shiftSectionConfigsForInsert(
@@ -258,6 +285,7 @@ function clampCustomPanel(panel: Omit<CustomPanel, 'id'>, outerBox: OuterBox, th
 
 const DEFAULT_MATERIAL: Material = {
   thickness: 18,
+  backPanelThickness: DEFAULT_BACK_PANEL_THICKNESS,
   color: '#c8a96e',
 }
 
@@ -316,20 +344,29 @@ export const useFurnitureStore = create<FurnitureState>((set, get) => ({
   setOuterBox: (box) => {
     const { material } = get()
     const minOuter = minOuterDimension(material.thickness)
+    const minDepth = backPanelThicknessOf(material) + 1
     set({
       outerBox: {
         width: Math.max(minOuter, snap(box.width)),
         height: Math.max(minOuter, snap(box.height)),
-        depth: Math.max(BACK_PANEL_THICKNESS + 1, snap(box.depth)),
+        depth: Math.max(minDepth, snap(box.depth)),
       },
       // Switch to select mode once box is drawn
       mode: 'select',
     })
   },
 
-  setDepth: (depth) => set((s) => ({
-    outerBox: s.outerBox ? { ...s.outerBox, depth: Math.max(BACK_PANEL_THICKNESS + 1, snap(depth)) } : null,
-  })),
+  setDepth: (depth) => set((s) => {
+    if (!s.outerBox) return { outerBox: null }
+    const nextOuterBox = {
+      ...s.outerBox,
+      depth: Math.max(backPanelThicknessOf(s.material) + 1, snap(depth)),
+    }
+    return {
+      outerBox: nextOuterBox,
+      drawers: clampDrawerFrontSetbacks(s.drawers, nextOuterBox, s.material),
+    }
+  }),
 
   clearOuterBox: () => set({
     outerBox: null,
@@ -347,7 +384,24 @@ export const useFurnitureStore = create<FurnitureState>((set, get) => ({
     const requested = Math.max(1, snap(mm))
     if (!s.outerBox) return { material: { ...s.material, thickness: requested } }
     const maxThickness = Math.max(1, Math.floor((Math.min(s.outerBox.width, s.outerBox.height) - 1) / 2))
-    return { material: { ...s.material, thickness: clamp(requested, 1, maxThickness) } }
+    const material = { ...s.material, thickness: clamp(requested, 1, maxThickness) }
+    return {
+      material,
+      drawers: clampDrawerFrontSetbacks(s.drawers, s.outerBox, material),
+    }
+  }),
+  setBackPanelThickness: (mm) => set((s) => {
+    const requested = Math.max(1, snap(mm))
+    if (!s.outerBox) return { material: { ...s.material, backPanelThickness: requested } }
+    const maxBackPanelThickness = Math.max(1, s.outerBox.depth - 1)
+    const material = {
+      ...s.material,
+      backPanelThickness: clamp(requested, 1, maxBackPanelThickness),
+    }
+    return {
+      material,
+      drawers: clampDrawerFrontSetbacks(s.drawers, s.outerBox, material),
+    }
   }),
   setMaterialColor: (color) => set((s) => ({ material: { ...s.material, color } })),
 
@@ -398,7 +452,7 @@ export const useFurnitureStore = create<FurnitureState>((set, get) => ({
     const snappedH = clamp(snap(height), minH, interiorH)
     const snapped = clamp(snap(fromBottom), 0, interiorH - snappedH)
     set((s) => ({
-      drawers: [...s.drawers, { id: uid(), sectionIndex, fromBottom: snapped, height: snappedH }],
+      drawers: [...s.drawers, { id: uid(), sectionIndex, fromBottom: snapped, height: snappedH, frontSetback: 0 }],
     }))
   },
 
@@ -436,6 +490,21 @@ export const useFurnitureStore = create<FurnitureState>((set, get) => ({
     const snapped = clamp(snap(fromBottom), 0, Math.max(0, interiorH - drawer.height))
     set((s) => ({
       drawers: s.drawers.map((d) => d.id === id ? { ...d, fromBottom: snapped } : d),
+    }))
+  },
+
+  setDrawerFrontSetback: (id, frontSetback) => {
+    const { outerBox, material, drawers } = get()
+    if (!outerBox) return
+    const drawer = drawers.find((d) => d.id === id)
+    if (!drawer) return
+    const clamped = clamp(
+      snap(frontSetback),
+      0,
+      maxDrawerFrontSetback(outerBox, material.thickness, backPanelThicknessOf(material)),
+    )
+    set((s) => ({
+      drawers: s.drawers.map((d) => d.id === id ? { ...d, frontSetback: clamped } : d),
     }))
   },
 

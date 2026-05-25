@@ -1,7 +1,7 @@
 import { useRef, useState, useEffect, useMemo, useCallback } from 'react'
 import { Stage, Layer, Rect, Line, Text, Group } from 'react-konva'
 import type { KonvaEventObject } from 'konva/lib/Node'
-import { useFurnitureStore } from '../../stores/furnitureStore'
+import { DRAWER_BOX_HEIGHT_ALLOWANCE, useFurnitureStore } from '../../stores/furnitureStore'
 
 // ── Scale ─────────────────────────────────────────────────────────────────────
 const PX_PER_MM = 1          // model scale: 1 canvas unit = 1mm
@@ -13,7 +13,6 @@ const MIN_ZOOM = 0.02
 const MAX_ZOOM = 8
 const VIEWPORT_PADDING = 24
 const BOX_FRAME_PADDING = { top: 40, right: 96, bottom: 24, left: 40 }
-const BACK_PANEL_THICKNESS = 6
 
 function pxToMm(px: number): number {
   return px / PX_PER_MM
@@ -22,7 +21,7 @@ function mmToPx(mm: number): number {
   return mm * PX_PER_MM
 }
 function minDrawerHeightMm(thickness: number): number {
-  return Math.max(20, thickness + BACK_PANEL_THICKNESS + 1)
+  return Math.max(20, thickness + DRAWER_BOX_HEIGHT_ALLOWANCE + 1)
 }
 
 // Euclidean distance between two points (px)
@@ -1196,6 +1195,16 @@ export default function DrawingCanvas() {
                     fill={isSelected || dragLive?.id === drawer.id ? '#3b82f6' : '#aaa'}
                     listening={false}
                   />
+                  {(drawer.frontSetback ?? 0) > 0 && (
+                    <Text
+                      x={rectX + 4}
+                      y={drawerTop - 13}
+                      text={`setback ${drawer.frontSetback}mm`}
+                      fontSize={9}
+                      fill={isSelected ? '#3b82f6' : '#888'}
+                      listening={false}
+                    />
+                  )}
                 </Group>
               )
             })

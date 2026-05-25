@@ -4,7 +4,13 @@ import {
   ArrowLeft, Save, Download,
   Square, MousePointer, Hand, Minus, PanelLeft, LayoutGrid, Trash2, RotateCcw, Pencil,
 } from 'lucide-react'
-import { useFurnitureStore, type DrawingMode, type DoorType, DEFAULT_SECTION_CONFIG } from '../../stores/furnitureStore'
+import {
+  DEFAULT_BACK_PANEL_THICKNESS,
+  DEFAULT_SECTION_CONFIG,
+  useFurnitureStore,
+  type DrawingMode,
+  type DoorType,
+} from '../../stores/furnitureStore'
 import DrawingCanvas, { OUTER_BOX_SELECTION_ID } from '../../components/furniture/DrawingCanvas'
 import ThreeCanvas from '../../components/furniture/ThreeCanvas'
 import { calculateCutList } from '../../utils/cutListCalculator'
@@ -188,7 +194,9 @@ function ModeToolbar() {
 // ── Right panel ───────────────────────────────────────────────────────────────
 
 function RightPanel() {
-  const { outerBox, setDepth, setThickness, material } = useFurnitureStore()
+  const { outerBox, setDepth, setThickness, setBackPanelThickness, material } = useFurnitureStore()
+  const backPanelThickness = material.backPanelThickness ?? DEFAULT_BACK_PANEL_THICKNESS
+  const maxBackPanelThickness = outerBox ? Math.max(1, outerBox.depth - 1) : undefined
 
   return (
     <div
@@ -226,8 +234,17 @@ function RightPanel() {
               onChange={(v) => setThickness(v)}
               hint="Panel board thickness"
             />
+            <SettingRow
+              label="Back sheet"
+              value={backPanelThickness}
+              max={maxBackPanelThickness}
+              onChange={(v) => setBackPanelThickness(v)}
+              hint="Back panel sheet thickness"
+            />
           </div>
         </div>
+
+        <SelectedDrawerSettings />
 
         {/* Structural presets */}
         <PanelPresets />
@@ -305,12 +322,20 @@ function BoxCreator() {
 }
 
 function SettingRow({
-  label, value, disabled, onChange, hint,
+  label, value, disabled, onChange, hint, min = 1, max,
 }: {
-  label: string; value: number; disabled?: boolean; onChange: (v: number) => void; hint?: string
+  label: string
+  value: number
+  disabled?: boolean
+  onChange: (v: number) => void
+  hint?: string
+  min?: number
+  max?: number
 }) {
   const updateValue = (raw: string) => {
-    const next = Math.max(1, Math.round(Number(raw) || 1))
+    const parsed = Number(raw)
+    const rounded = Math.round(Number.isFinite(parsed) ? parsed : min)
+    const next = Math.max(min, Math.min(max ?? Number.MAX_SAFE_INTEGER, rounded))
     onChange(next)
   }
 
@@ -321,7 +346,8 @@ function SettingRow({
         <div className="flex items-center gap-1">
           <input
             type="number"
-            min={1}
+            min={min}
+            max={max}
             step={1}
             value={value}
             disabled={disabled}
@@ -338,6 +364,46 @@ function SettingRow({
         </div>
       </div>
       {hint && <p className="text-[11px]" style={{ color: 'var(--ink-4)' }}>{hint}</p>}
+    </div>
+  )
+}
+
+function SelectedDrawerSettings() {
+  const {
+    selectedId, outerBox, material,
+    drawers, setDrawerFrontSetback,
+  } = useFurnitureStore()
+
+  if (!outerBox || !selectedId) return null
+
+  const drawer = drawers.find((item) => item.id === selectedId)
+  if (!drawer) return null
+
+  const backPanelThickness = material.backPanelThickness ?? DEFAULT_BACK_PANEL_THICKNESS
+  const interiorDepth = Math.max(1, outerBox.depth - backPanelThickness)
+  const maxSetback = Math.max(0, Math.floor(interiorDepth - material.thickness - 16 - 1))
+  const value = Math.min(drawer.frontSetback ?? 0, maxSetback)
+  const drawerBoxDepth = Math.max(1, Math.round(interiorDepth - value - material.thickness - 16))
+
+  return (
+    <div>
+      <label className="eyebrow mb-2 block">Selected Drawer</label>
+      <div
+        className="rounded-md p-3 space-y-2"
+        style={{ background: 'var(--bg-sunken)', border: '1px solid var(--line)' }}
+      >
+        <div className="text-[11.5px] font-semibold" style={{ color: 'var(--ink)' }}>
+          Drawer · Section {drawer.sectionIndex + 1}
+        </div>
+        <SettingRow
+          label="Face setback"
+          value={value}
+          min={0}
+          max={maxSetback}
+          onChange={(v) => setDrawerFrontSetback(drawer.id, v)}
+          hint={`Drawer box depth becomes ${drawerBoxDepth}mm.`}
+        />
+      </div>
     </div>
   )
 }
