@@ -448,7 +448,7 @@ export default function NewLogEntryPage() {
             )}
 
             <div className="flex items-center gap-2 pt-2">
-              <button type="submit" disabled={!canSubmit || loading} className="btn btn-accent" style={{ display: 'flex', alignItems: 'center', gap: 7 }}>
+              <button type="submit" disabled={!canSubmit || loading} className="btn btn-accent" style={loading ? { opacity: 1, cursor: 'wait' } : undefined}>
                 {loading && <span className="save-spinner" />}
                 {loading ? 'Saving…' : 'Save entry'}
               </button>
