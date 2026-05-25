@@ -1,12 +1,14 @@
 import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { Archive, Download, Plus, Search, RotateCcw, ChevronRight } from 'lucide-react'
+import LoadingButton from '../../components/LoadingButton'
 import { listLogTypes, archiveLogType, restoreLogType, type LogType } from '../../services/logService'
 
 export default function LogTypesPage() {
   const navigate = useNavigate()
   const [types, setTypes] = useState<LogType[]>([])
   const [loading, setLoading] = useState(true)
+  const [statusActionId, setStatusActionId] = useState<string | null>(null)
   const [q, setQ] = useState('')
 
   const fetch = async () => {
@@ -22,14 +24,23 @@ export default function LogTypesPage() {
 
   const handleStatusAction = async (e: React.MouseEvent, logType: LogType) => {
     e.stopPropagation()
+    if (statusActionId) return
     if (logType.status === 'archived') {
       if (!confirm(`Restore log type "${logType.name}"? It will be available for logging again.`)) return
-      await restoreLogType(logType.id)
     } else {
       if (!confirm(`Archive log type "${logType.name}"? Existing entries will not be affected.`)) return
-      await archiveLogType(logType.id)
     }
-    fetch()
+    setStatusActionId(logType.id)
+    try {
+      if (logType.status === 'archived') {
+        await restoreLogType(logType.id)
+      } else {
+        await archiveLogType(logType.id)
+      }
+      await fetch()
+    } finally {
+      setStatusActionId(null)
+    }
   }
 
   const filtered = sortArchivedLogTypesLast(
@@ -117,6 +128,8 @@ export default function LogTypesPage() {
               logType={lt}
               onClick={() => navigate(`/log-types/${lt.id}`)}
               onStatusAction={(e) => handleStatusAction(e, lt)}
+              statusLoading={statusActionId === lt.id}
+              statusDisabled={Boolean(statusActionId)}
             />
           ))}
         </div>
@@ -127,7 +140,19 @@ export default function LogTypesPage() {
 
 // ── Log Type Card ─────────────────────────────────────────────────────────────
 
-function LogTypeCard({ logType: lt, onClick, onStatusAction }: { logType: LogType; onClick: () => void; onStatusAction: (e: React.MouseEvent) => void }) {
+function LogTypeCard({
+  logType: lt,
+  onClick,
+  onStatusAction,
+  statusLoading,
+  statusDisabled,
+}: {
+  logType: LogType
+  onClick: () => void
+  onStatusAction: (e: React.MouseEvent) => void
+  statusLoading: boolean
+  statusDisabled: boolean
+}) {
   const totalEntries = lt.categories?.reduce((s, c) => s + (c.entry_count ?? 0), 0) ?? lt.entry_count ?? 0
 
   return (
@@ -164,13 +189,16 @@ function LogTypeCard({ logType: lt, onClick, onStatusAction }: { logType: LogTyp
             </div>
           </div>
         </div>
-        <button
+        <LoadingButton
           onClick={onStatusAction}
           className="btn btn-ghost btn-sm btn-icon opacity-0 group-hover:opacity-100 transition-opacity"
           title={lt.status === 'archived' ? 'Restore log type' : 'Archive log type'}
-        >
-          {lt.status === 'archived' ? <RotateCcw size={13} /> : <Archive size={13} />}
-        </button>
+          loading={statusLoading}
+          loadingText={null}
+          leadingIcon={lt.status === 'archived' ? <RotateCcw size={13} /> : <Archive size={13} />}
+          disabled={statusDisabled}
+          aria-label={lt.status === 'archived' ? 'Restore log type' : 'Archive log type'}
+        />
       </div>
 
       {/* Schema preview chips */}

@@ -516,6 +516,7 @@ input:focus, select:focus, textarea:focus, button:focus-visible {
   text-decoration: none;
 }
 .btn:disabled { opacity: 0.5; pointer-events: none; }
+.btn[aria-busy="true"] { opacity: 1; cursor: wait; }
 
 .btn-primary { background: var(--ink); color: var(--bg-elev); box-shadow: var(--shadow-sm); }
 .btn-primary:hover { background: var(--ink-2); }

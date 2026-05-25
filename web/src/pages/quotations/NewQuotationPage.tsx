@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom'
 import { Plus, Trash2, GripVertical, FolderPlus, Save } from 'lucide-react'
 import { createQuotation, type QuotationSectionInput, type QuotationItemInput } from '../../services/quotationService'
 import { listProducts, type Product } from '../../services/productService'
+import LoadingButton from '../../components/LoadingButton'
 import SearchableSelect from '../../components/SearchableSelect'
 import SizeTextInput from '../../components/SizeTextInput'
 import { deriveSqft, deriveSqftString, parseSizeInches } from '../../utils/sizeFormat'
@@ -143,6 +144,7 @@ export default function NewQuotationPage() {
 
   const handleSave = async (e: React.FormEvent) => {
     e.preventDefault()
+    if (saving) return
     if (!clientName.trim()) return
     const gstRate = Number(gstPercent) || 0
     if (applyGST && gstRate <= 0) {
@@ -317,10 +319,16 @@ export default function NewQuotationPage() {
           </div>
           <div className="flex items-center gap-2">
             <button type="button" onClick={() => navigate('/quotations')} className="btn btn-ghost">Cancel</button>
-            <button type="submit" disabled={!clientName.trim() || saving} className="btn btn-accent">
-              <Save size={14} />
-              {saving ? 'Saving…' : 'Save quotation'}
-            </button>
+            <LoadingButton
+              type="submit"
+              disabled={!clientName.trim()}
+              loading={saving}
+              loadingText="Saving..."
+              className="btn btn-accent"
+              leadingIcon={<Save size={14} />}
+            >
+              Save quotation
+            </LoadingButton>
           </div>
         </div>
       </form>

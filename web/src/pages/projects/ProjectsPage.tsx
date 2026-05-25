@@ -12,6 +12,7 @@ import {
   RotateCcw,
   Search,
 } from 'lucide-react'
+import LoadingButton from '../../components/LoadingButton'
 import SearchableSelect from '../../components/SearchableSelect'
 import { archiveProject, listProjects, restoreProject, type Project } from '../../services/projectService'
 
@@ -30,6 +31,7 @@ export default function ProjectsPage() {
   const [sort, setSort] = useState<SortKey>('updated')
   const [view, setView] = useState<ViewMode>('grid')
   const [lastRefreshedAt, setLastRefreshedAt] = useState<Date | null>(null)
+  const [projectActionId, setProjectActionId] = useState<string | null>(null)
 
   const fetchProjects = async () => {
     try {
@@ -87,18 +89,23 @@ export default function ProjectsPage() {
 
   const handleProjectAction = async (e: React.MouseEvent, project: Project) => {
     e.stopPropagation()
+    if (projectActionId) return
 
     try {
       if (project.status === 'archived') {
         if (!confirm(`Restore "${project.name}"? It will become active again.`)) return
+        setProjectActionId(project.project_id)
         await restoreProject(project.project_id)
       } else {
         if (!confirm(`Archive "${project.name}"? It will stay visible here with an archived tag.`)) return
+        setProjectActionId(project.project_id)
         await archiveProject(project.project_id)
       }
-      fetchProjects()
+      await fetchProjects()
     } catch {
       alert(project.status === 'archived' ? 'Failed to restore project' : 'Failed to archive project')
+    } finally {
+      setProjectActionId(null)
     }
   }
 
@@ -284,11 +291,11 @@ export default function ProjectsPage() {
       )}
 
       {!loading && filtered.length > 0 && view === 'grid' && (
-        <ProjectsGrid rows={filtered} onProjectAction={handleProjectAction} />
+        <ProjectsGrid rows={filtered} onProjectAction={handleProjectAction} actionProjectId={projectActionId} />
       )}
 
       {!loading && filtered.length > 0 && view === 'table' && (
-        <ProjectsTable rows={filtered} onProjectAction={handleProjectAction} />
+        <ProjectsTable rows={filtered} onProjectAction={handleProjectAction} actionProjectId={projectActionId} />
       )}
     </div>
   )
@@ -395,9 +402,11 @@ function Segmented({
 function ProjectsGrid({
   rows,
   onProjectAction,
+  actionProjectId,
 }: {
   rows: Project[]
   onProjectAction: (e: React.MouseEvent, project: Project) => void
+  actionProjectId: string | null
 }) {
   const navigate = useNavigate()
 
@@ -460,14 +469,17 @@ function ProjectsGrid({
               {(project.units ?? 0) > 0 && <span>{fmtCount(project.units ?? 0)} units</span>}
               {(project.budget ?? 0) <= 0 && (project.units ?? 0) <= 0 && <span>Metrics not set</span>}
             </div>
-            <button
+            <LoadingButton
               onClick={(e) => onProjectAction(e, project)}
-              className="opacity-0 transition-opacity group-hover:opacity-100"
+              className={`inline-flex items-center opacity-0 transition-opacity group-hover:opacity-100 ${actionProjectId === project.project_id ? 'opacity-100' : ''}`}
               style={{ color: 'var(--ink-4)' }}
               title={project.status === 'archived' ? 'Restore project' : 'Archive project'}
-            >
-              {project.status === 'archived' ? <RotateCcw size={14} /> : <Archive size={14} />}
-            </button>
+              loading={actionProjectId === project.project_id}
+              loadingText={null}
+              leadingIcon={project.status === 'archived' ? <RotateCcw size={14} /> : <Archive size={14} />}
+              disabled={Boolean(actionProjectId)}
+              aria-label={project.status === 'archived' ? 'Restore project' : 'Archive project'}
+            />
           </div>
         </div>
       ))}
@@ -478,9 +490,11 @@ function ProjectsGrid({
 function ProjectsTable({
   rows,
   onProjectAction,
+  actionProjectId,
 }: {
   rows: Project[]
   onProjectAction: (e: React.MouseEvent, project: Project) => void
+  actionProjectId: string | null
 }) {
   const navigate = useNavigate()
 
@@ -552,13 +566,17 @@ function ProjectsTable({
                   <StatusPill status={project.status} />
                 </td>
                 <td className="px-4 py-2.5 text-right">
-                  <button
+                  <LoadingButton
                     onClick={(e) => onProjectAction(e, project)}
+                    className="inline-flex items-center"
                     style={{ color: 'var(--ink-4)' }}
                     title={project.status === 'archived' ? 'Restore project' : 'Archive project'}
-                  >
-                    {project.status === 'archived' ? <RotateCcw size={14} /> : <Archive size={14} />}
-                  </button>
+                    loading={actionProjectId === project.project_id}
+                    loadingText={null}
+                    leadingIcon={project.status === 'archived' ? <RotateCcw size={14} /> : <Archive size={14} />}
+                    disabled={Boolean(actionProjectId)}
+                    aria-label={project.status === 'archived' ? 'Restore project' : 'Archive project'}
+                  />
                 </td>
               </tr>
             ))}
