@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
-import { createPortal } from 'react-dom'
+import { createPortal, flushSync } from 'react-dom'
 import { useNavigate } from 'react-router-dom'
 import {
   AlertTriangle, ArrowDownCircle, ArrowUpCircle, Boxes, Check, History, Info, Package, Pencil, Plus, Trash2, X,
@@ -869,8 +869,8 @@ export default function InventoryPage() {
       payload.opening_stock = Number(itemDraft.opening_stock || 0)
     }
 
+    flushSync(() => setSavingItem(true))
     try {
-      setSavingItem(true)
       if (editingItem) {
         await updateInventoryItem(editingItem.item_id, payload)
       } else {
@@ -908,8 +908,8 @@ export default function InventoryPage() {
       notes: movementDraft.notes.trim() || undefined,
     }
 
+    flushSync(() => setSavingMovement(true))
     try {
-      setSavingMovement(true)
       await createInventoryMovement(payload)
       setMovementFormOpen(false)
       setMovementDraft(emptyMovementDraft())
