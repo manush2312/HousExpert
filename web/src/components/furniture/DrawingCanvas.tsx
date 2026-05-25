@@ -13,12 +13,16 @@ const MIN_ZOOM = 0.02
 const MAX_ZOOM = 8
 const VIEWPORT_PADDING = 24
 const BOX_FRAME_PADDING = { top: 40, right: 96, bottom: 24, left: 40 }
+const BACK_PANEL_THICKNESS = 6
 
 function pxToMm(px: number): number {
   return px / PX_PER_MM
 }
 function mmToPx(mm: number): number {
   return mm * PX_PER_MM
+}
+function minDrawerHeightMm(thickness: number): number {
+  return Math.max(20, thickness + BACK_PANEL_THICKNESS + 1)
 }
 
 // Euclidean distance between two points (px)
@@ -468,7 +472,7 @@ export default function DrawingCanvas() {
       const botY = Math.min(iBottom, Math.max(drawerDrawStart.y, drawerDrawCurrent.y))
       const heightPx = botY - topY
 
-      if (heightPx >= mmToPx(20)) {
+      if (heightPx >= mmToPx(minDrawerHeightMm(material.thickness))) {
         const midX    = (drawerDrawStart.x + drawerDrawCurrent.x) / 2
         const sorted  = [...partitions].sort((a, b) => a.fromLeft - b.fromLeft)
         const sections = getSectionBoundaries(boxCanvas, sorted, Tpx)
@@ -910,6 +914,16 @@ export default function DrawingCanvas() {
             const displayMm       = dragLive?.id === partition.id ? dragLive.mm : partition.fromLeft
             const partitionCenterX = interiorLeft + mmToPx(displayMm)
             const isSelected      = selectedId === partition.id
+            const sortedForBounds = [...partitions].sort((a, b) => a.fromLeft - b.fromLeft)
+            const sortedIndex = sortedForBounds.findIndex((p) => p.id === partition.id)
+            const prevPartition = sortedForBounds[sortedIndex - 1]
+            const nextPartition = sortedForBounds[sortedIndex + 1]
+            const minCenterX = prevPartition
+              ? interiorLeft + mmToPx(prevPartition.fromLeft + material.thickness)
+              : interiorLeft + T / 2
+            const maxCenterX = nextPartition
+              ? interiorLeft + mmToPx(nextPartition.fromLeft - material.thickness)
+              : interiorRight - T / 2
 
             return (
               <Group key={partition.id}>
@@ -942,10 +956,8 @@ export default function DrawingCanvas() {
                     setDragLive(null)
                   }}
                   dragBoundFunc={(pos) => ({
-                    x: Math.max(
-                      interiorLeft * zoom + stagePos.x,
-                      Math.min((interiorRight - T) * zoom + stagePos.x, pos.x),
-                    ),
+                    x: Math.max((minCenterX - T / 2) * zoom + stagePos.x,
+                      Math.min((maxCenterX - T / 2) * zoom + stagePos.x, pos.x)),
                     y: top * zoom + stagePos.y,
                   })}
                 />
@@ -1020,8 +1032,11 @@ export default function DrawingCanvas() {
                     }}
                     dragBoundFunc={(pos) => {
                       const { left: sLeft, right: sRight } = section
+                      const minCenterX = sLeft + (sp.sectionIndex === 0 ? T / 2 : T)
+                      const maxCenterX = sRight - (sp.sectionIndex === sorted.length ? T / 2 : T)
                       return {
-                        x: Math.max(sLeft * zoom + stagePos.x, Math.min((sRight - T) * zoom + stagePos.x, pos.x)),
+                        x: Math.max((minCenterX - T / 2) * zoom + stagePos.x,
+                          Math.min((maxCenterX - T / 2) * zoom + stagePos.x, pos.x)),
                         y: panelTop * zoom + stagePos.y,
                       }
                     }}

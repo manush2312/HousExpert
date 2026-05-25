@@ -7,6 +7,13 @@ import { useFurnitureStore, DEFAULT_SECTION_CONFIG } from '../../stores/furnitur
 // 1 Three.js unit = 1000 mm (= 1 metre)
 function u(mm: number) { return mm / 1000 }
 
+function getSectionInsets(index: number, lastIndex: number, thickness: number) {
+  return {
+    left:  index === 0 ? 0 : thickness / 2,
+    right: index === lastIndex ? 0 : thickness / 2,
+  }
+}
+
 // ── Camera auto-fit ───────────────────────────────────────────────────────────
 // Runs inside the Canvas so it has access to useThree()
 
@@ -161,7 +168,8 @@ function FurnitureModel() {
         if (!section) return null
 
         const drawerCenterY = T + drawer.fromBottom + drawer.height / 2
-        const drawerW       = section.width - T
+        const inset         = getSectionInsets(drawer.sectionIndex, sortedPartitions.length, T)
+        const drawerW       = section.width - inset.left - inset.right
         const drawerD       = interiorD - T    // slight inset from back
 
         return (
