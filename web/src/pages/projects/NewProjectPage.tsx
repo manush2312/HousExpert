@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
 import { Check, Info } from 'lucide-react'
+import LoadingButton from '../../components/LoadingButton'
 import { createProject } from '../../services/projectService'
 
 const BHK_TYPES = ['1BHK', '2BHK', '3BHK', '4BHK', '5BHK', 'Villa', 'Penthouse']
@@ -31,6 +32,7 @@ export default function NewProjectPage() {
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
+    if (loading) return
     if (!canSubmit) return
     setError('')
     setLoading(true)
@@ -160,9 +162,9 @@ export default function NewProjectPage() {
             )}
 
             <div className="flex items-center gap-2 pt-2">
-              <button type="submit" disabled={!canSubmit || loading} className="btn btn-accent">
-                {loading ? 'Creating…' : 'Create project'}
-              </button>
+              <LoadingButton type="submit" disabled={!canSubmit} loading={loading} loadingText="Creating..." className="btn btn-accent">
+                Create project
+              </LoadingButton>
               <button type="button" onClick={() => navigate('/projects')} className="btn btn-ghost">Cancel</button>
               <span className="ml-auto text-[11.5px] flex items-center gap-1.5" style={{ color: 'var(--ink-4)' }}>
                 <Info size={12} /> You can edit any of this later.

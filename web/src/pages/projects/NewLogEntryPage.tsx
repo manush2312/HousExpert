@@ -3,6 +3,7 @@ import { flushSync } from 'react-dom'
 import { useParams, useNavigate } from 'react-router-dom'
 import { Info } from 'lucide-react'
 import DatePicker from '../../components/DatePicker'
+import LoadingButton from '../../components/LoadingButton'
 import SearchableSelect from '../../components/SearchableSelect'
 import SizeTextInput from '../../components/SizeTextInput'
 import { listInventoryStockLots, type InventoryStockLot } from '../../services/inventoryService'
@@ -209,6 +210,7 @@ export default function NewLogEntryPage() {
 
   const handleSubmit = async (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault()
+    if (loading) return
     if (!projectId || !canSubmit) { setError('Please fill in all required fields.'); return }
     setError('')
     flushSync(() => setLoading(true))
@@ -449,10 +451,9 @@ export default function NewLogEntryPage() {
             )}
 
             <div className="flex items-center gap-2 pt-2">
-              <button type="submit" disabled={!canSubmit || loading} className="btn btn-accent" style={loading ? { opacity: 1, cursor: 'wait' } : undefined}>
-                {loading && <span className="save-spinner" />}
-                {loading ? 'Saving…' : 'Save entry'}
-              </button>
+              <LoadingButton type="submit" disabled={!canSubmit} loading={loading} loadingText="Saving..." className="btn btn-accent">
+                Save entry
+              </LoadingButton>
               <button type="button" onClick={() => navigate(`/projects/${projectId}`)} className="btn btn-ghost">Cancel</button>
             </div>
           </div>

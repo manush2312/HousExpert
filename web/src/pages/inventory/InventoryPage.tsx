@@ -5,6 +5,7 @@ import {
   AlertTriangle, ArrowDownCircle, ArrowUpCircle, Boxes, Check, History, Info, Package, Pencil, Plus, Trash2, X,
 } from 'lucide-react'
 import DatePicker from '../../components/DatePicker'
+import LoadingButton from '../../components/LoadingButton'
 import Modal from '../../components/Modal'
 import SearchableSelect from '../../components/SearchableSelect'
 import {
@@ -486,6 +487,7 @@ export default function InventoryPage() {
   const [movementFormOpen, setMovementFormOpen] = useState(false)
   const [savingItem, setSavingItem] = useState(false)
   const [savingMovement, setSavingMovement] = useState(false)
+  const [deletingItemId, setDeletingItemId] = useState<string | null>(null)
   const [deletingInventoryLinkId, setDeletingInventoryLinkId] = useState<string | null>(null)
   const [linkManagerItem, setLinkManagerItem] = useState<InventoryItem | null>(null)
   const [pendingInventoryLinkRemoval, setPendingInventoryLinkRemoval] = useState<InventoryLogLink | null>(null)
@@ -842,6 +844,7 @@ export default function InventoryPage() {
   }
 
   const submitItem = async () => {
+    if (savingItem) return
     if (!itemDraft.name.trim()) return
     if (isNumericOnlyUnit(itemDraft.usage_unit)) {
       alert('Usage unit should be a name like "piece", "handle", or "ft" — not a number.')
@@ -886,6 +889,7 @@ export default function InventoryPage() {
   }
 
   const submitMovement = async () => {
+    if (savingMovement) return
     if (!movementDraft.item_id || !movementDraft.quantity.trim()) return
     const selectedItem = items.find((item) => item.item_id === movementDraft.item_id)
     const enteredQuantity = Number(movementDraft.quantity)
@@ -922,18 +926,23 @@ export default function InventoryPage() {
   }
 
   const handleDelete = async (item: InventoryItem) => {
+    if (deletingItemId) return
     if (!confirm(`Delete "${item.name}" and its movement history? This cannot be undone.`)) return
+    flushSync(() => setDeletingItemId(item.item_id))
     try {
       await deleteInventoryItem(item.item_id)
       await Promise.all([refreshOverview(), refreshMovements()])
     } catch {
       alert('Failed to delete inventory item')
+    } finally {
+      setDeletingItemId(null)
     }
   }
 
   const handleDeleteInventoryLink = async (link: InventoryLogLink) => {
+    if (deletingInventoryLinkId) return
     try {
-      setDeletingInventoryLinkId(link.itemId)
+      flushSync(() => setDeletingInventoryLinkId(link.itemId))
       await deleteLogItemInventoryLink(link.itemId)
       await refreshInventoryLinks()
       setPendingInventoryLinkRemoval(null)
@@ -1516,9 +1525,17 @@ export default function InventoryPage() {
                             <button className="btn btn-ghost btn-sm btn-icon" title="Edit" onClick={() => openEditItem(item)}>
                               <Pencil size={13} />
                             </button>
-                            <button className="btn btn-ghost btn-sm btn-icon" title="Delete" style={{ color: 'var(--bad)' }} onClick={() => handleDelete(item)}>
-                              <Trash2 size={13} />
-                            </button>
+                            <LoadingButton
+                              className="btn btn-ghost btn-sm btn-icon"
+                              title="Delete"
+                              style={{ color: 'var(--bad)' }}
+                              onClick={() => handleDelete(item)}
+                              loading={deletingItemId === item.item_id}
+                              loadingText={null}
+                              leadingIcon={<Trash2 size={13} />}
+                              disabled={Boolean(deletingItemId)}
+                              aria-label={`Delete ${item.name}`}
+                            />
                           </div>
                         </div>
                       </div>
@@ -1857,14 +1874,15 @@ function InventoryLinkManagerModal({
                         <button onClick={() => onOpenLink(link)} className="btn btn-ghost btn-sm">
                           Open
                         </button>
-                        <button
+                        <LoadingButton
                           onClick={() => onRequestRemove(link)}
                           className="btn btn-ghost btn-sm"
                           style={{ color: '#991b1b' }}
-                          disabled={isDeleting}
+                          loading={isDeleting}
+                          loadingText="Removing..."
                         >
-                          {isDeleting ? 'Removing…' : 'Unlink'}
-                        </button>
+                          Unlink
+                        </LoadingButton>
                       </div>
                     </div>
 
@@ -1879,14 +1897,15 @@ function InventoryLinkManagerModal({
                         </div>
                         <div className="mt-3 flex flex-wrap justify-end gap-2">
                           <button onClick={onCancelRemove} className="btn btn-ghost btn-sm">Cancel</button>
-                          <button
+                          <LoadingButton
                             onClick={() => onConfirmRemove(link)}
                             className="btn btn-sm"
                             style={{ background: '#991b1b', color: 'white' }}
-                            disabled={isDeleting}
+                            loading={isDeleting}
+                            loadingText="Removing..."
                           >
-                            {isDeleting ? 'Removing…' : 'Confirm unlink'}
-                          </button>
+                            Confirm unlink
+                          </LoadingButton>
                         </div>
                       </div>
                     )}
@@ -2196,10 +2215,16 @@ function ItemFormCard({
 
         <div className="flex flex-wrap items-center justify-end gap-2">
           <button onClick={onCancel} className="btn btn-ghost">Cancel</button>
-          <button onClick={onSave} disabled={!draft.name.trim() || saving} className="btn btn-accent" style={saving ? { opacity: 1, cursor: 'wait' } : undefined}>
-            {saving ? <span className="save-spinner" /> : <Check size={13} />}
-            {saving ? 'Saving…' : editing ? 'Save changes' : 'Create item'}
-          </button>
+          <LoadingButton
+            onClick={onSave}
+            disabled={!draft.name.trim()}
+            loading={saving}
+            loadingText={editing ? 'Saving...' : 'Creating...'}
+            className="btn btn-accent"
+            leadingIcon={<Check size={13} />}
+          >
+            {editing ? 'Save changes' : 'Create item'}
+          </LoadingButton>
         </div>
       </div>
     </div>
@@ -2400,10 +2425,16 @@ function MovementFormCard({
 
         <div className="md:col-span-2 xl:col-span-4 flex flex-wrap items-center justify-end gap-2">
           <button onClick={onCancel} className="btn btn-ghost">Cancel</button>
-          <button onClick={onSave} disabled={!draft.item_id || !draft.quantity.trim() || saving || (needsLotSelection && !draft.lot_id)} className="btn btn-accent" style={saving ? { opacity: 1, cursor: 'wait' } : undefined}>
-            {saving ? <span className="save-spinner" /> : <Check size={13} />}
-            {saving ? 'Saving…' : 'Save movement'}
-          </button>
+          <LoadingButton
+            onClick={onSave}
+            disabled={!draft.item_id || !draft.quantity.trim() || (needsLotSelection && !draft.lot_id)}
+            loading={saving}
+            loadingText="Saving..."
+            className="btn btn-accent"
+            leadingIcon={<Check size={13} />}
+          >
+            Save movement
+          </LoadingButton>
         </div>
       </div>
     </div>
