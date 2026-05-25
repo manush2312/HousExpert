@@ -2197,7 +2197,7 @@ function ItemFormCard({
         <div className="flex flex-wrap items-center justify-end gap-2">
           <button onClick={onCancel} className="btn btn-ghost">Cancel</button>
           <button onClick={onSave} disabled={!draft.name.trim() || saving} className="btn btn-accent">
-            <Check size={13} />
+            {saving ? <span className="save-spinner" /> : <Check size={13} />}
             {saving ? 'Saving…' : editing ? 'Save changes' : 'Create item'}
           </button>
         </div>
@@ -2401,7 +2401,7 @@ function MovementFormCard({
         <div className="md:col-span-2 xl:col-span-4 flex flex-wrap items-center justify-end gap-2">
           <button onClick={onCancel} className="btn btn-ghost">Cancel</button>
           <button onClick={onSave} disabled={!draft.item_id || !draft.quantity.trim() || saving || (needsLotSelection && !draft.lot_id)} className="btn btn-accent">
-            <Check size={13} />
+            {saving ? <span className="save-spinner" /> : <Check size={13} />}
             {saving ? 'Saving…' : 'Save movement'}
           </button>
         </div>
