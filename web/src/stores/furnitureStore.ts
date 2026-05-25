@@ -2,7 +2,7 @@ import { create } from 'zustand'
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
-export type DrawingMode = 'draw_box' | 'select' | 'add_shelf' | 'add_partition' | 'add_drawer' | 'add_custom_panel'
+export type DrawingMode = 'draw_box' | 'select' | 'pan' | 'add_shelf' | 'add_partition' | 'add_drawer' | 'add_custom_panel'
 export type DoorType = 'none' | 'single' | 'double'
 
 export interface SectionConfig {

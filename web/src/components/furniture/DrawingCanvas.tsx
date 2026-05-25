@@ -4,11 +4,13 @@ import type { KonvaEventObject } from 'konva/lib/Node'
 import { useFurnitureStore } from '../../stores/furnitureStore'
 
 // ── Scale ─────────────────────────────────────────────────────────────────────
-const PX_PER_MM = 0.5        // base scale; default zoom starts at 200% for 1mm visual precision
+const PX_PER_MM = 1          // model scale: 1 canvas unit = 1mm
 const GRID_MINOR_MM = 50     // minor grid every 50mm
 const GRID_MAJOR_MM = 250    // major grid every 250mm
 export const OUTER_BOX_SELECTION_ID = 'outer-box'
-const DEFAULT_ZOOM = 2
+const DEFAULT_ZOOM = 1
+const MIN_ZOOM = 0.02
+const MAX_ZOOM = 8
 const VIEWPORT_PADDING = 24
 const BOX_FRAME_PADDING = { top: 40, right: 96, bottom: 24, left: 40 }
 
@@ -121,6 +123,8 @@ export default function DrawingCanvas() {
   // ── Zoom / pan ────────────────────────────────────────────────────────────
   const [zoom,     setZoom]     = useState(DEFAULT_ZOOM)
   const [stagePos, setStagePos] = useState({ x: 0, y: 0 })
+  const [isPanning, setIsPanning] = useState(false)
+  const panLastRef = useRef<{ x: number; y: number } | null>(null)
 
   // ── Custom panel inline rename ────────────────────────────────────────────
   const [renamingPanelId, setRenamingPanelId]   = useState<string | null>(null)
@@ -170,7 +174,7 @@ export default function DrawingCanvas() {
     const availableWidth = Math.max(160, size.width - VIEWPORT_PADDING * 2)
     const availableHeight = Math.max(160, size.height - VIEWPORT_PADDING * 2)
     const fitZoom = Math.max(
-      0.1,
+      MIN_ZOOM,
       Math.min(
         DEFAULT_ZOOM,
         availableWidth / contentWidth,
@@ -231,27 +235,41 @@ export default function DrawingCanvas() {
     const lines: React.ReactNode[] = []
     const minor = GRID_MINOR_MM * PX_PER_MM
     const major = GRID_MAJOR_MM * PX_PER_MM
+    const viewLeft = Math.floor((-stagePos.x / zoom) / minor) * minor - minor
+    const viewTop = Math.floor((-stagePos.y / zoom) / minor) * minor - minor
+    const viewRight = Math.ceil(((-stagePos.x + size.width) / zoom) / minor) * minor + minor
+    const viewBottom = Math.ceil(((-stagePos.y + size.height) / zoom) / minor) * minor + minor
+    const boxRight = outerBox
+      ? BOX_FRAME_PADDING.left + mmToPx(outerBox.width) + BOX_FRAME_PADDING.right
+      : 0
+    const boxBottom = outerBox
+      ? BOX_FRAME_PADDING.top + mmToPx(outerBox.height) + BOX_FRAME_PADDING.bottom
+      : 0
+    const left = Math.min(0, viewLeft)
+    const top = Math.min(0, viewTop)
+    const right = Math.max(size.width / zoom, viewRight, boxRight)
+    const bottom = Math.max(size.height / zoom, viewBottom, boxBottom)
 
-    for (let x = 0; x <= size.width; x += minor) {
+    for (let x = left; x <= right; x += minor) {
       const isMajor = Math.round(x) % Math.round(major) === 0
       lines.push(
-        <Line key={`v${x}`} points={[x, 0, x, size.height]}
+        <Line key={`v${x}`} points={[x, top, x, bottom]}
           stroke={isMajor ? '#cccccc' : '#ececec'}
           strokeWidth={isMajor ? 1 : 0.5}
           listening={false} />,
       )
     }
-    for (let y = 0; y <= size.height; y += minor) {
+    for (let y = top; y <= bottom; y += minor) {
       const isMajor = Math.round(y) % Math.round(major) === 0
       lines.push(
-        <Line key={`h${y}`} points={[0, y, size.width, y]}
+        <Line key={`h${y}`} points={[left, y, right, y]}
           stroke={isMajor ? '#cccccc' : '#ececec'}
           strokeWidth={isMajor ? 1 : 0.5}
           listening={false} />,
       )
     }
     return lines
-  }, [size])
+  }, [outerBox?.height, outerBox?.width, size.height, size.width, stagePos.x, stagePos.y, zoom])
 
   // ── Mouse handlers ───────────────────────────────────────────────────────
 
@@ -259,6 +277,14 @@ export default function DrawingCanvas() {
     const raw = e.target.getStage()?.getPointerPosition()
     if (!raw) return
     e.evt.preventDefault()
+
+    if (mode === 'pan') {
+      panLastRef.current = raw
+      setIsPanning(true)
+      viewWasAdjustedRef.current = true
+      return
+    }
+
     const pos = { x: (raw.x - stagePos.x) / zoom, y: (raw.y - stagePos.y) / zoom }
 
     setClickStart(pos)
@@ -288,6 +314,15 @@ export default function DrawingCanvas() {
   const handleMouseMove = useCallback((e: KonvaEventObject<MouseEvent>) => {
     const raw = e.target.getStage()?.getPointerPosition()
     if (!raw) return
+
+    if (mode === 'pan' && panLastRef.current) {
+      const dx = raw.x - panLastRef.current.x
+      const dy = raw.y - panLastRef.current.y
+      panLastRef.current = raw
+      setStagePos((prev) => ({ x: prev.x + dx, y: prev.y + dy }))
+      return
+    }
+
     const pos = { x: (raw.x - stagePos.x) / zoom, y: (raw.y - stagePos.y) / zoom }
 
     // Suppress ghost previews while user is dragging a placed element
@@ -308,6 +343,13 @@ export default function DrawingCanvas() {
   }, [mode, drawStart, customDrawStart, drawerDrawStart, zoom, stagePos])
 
   const handleMouseUp = useCallback((e: KonvaEventObject<MouseEvent>) => {
+    if (mode === 'pan') {
+      panLastRef.current = null
+      setIsPanning(false)
+      setClickStart(null)
+      return
+    }
+
     const raw = e.target.getStage()?.getPointerPosition()
     if (!raw) return
     const pos = { x: (raw.x - stagePos.x) / zoom, y: (raw.y - stagePos.y) / zoom }
@@ -448,12 +490,15 @@ export default function DrawingCanvas() {
 
   const handleMouseLeave = useCallback(() => {
     setMousePos(null)
+    panLastRef.current = null
+    setIsPanning(false)
   }, [])
 
   const handleStageClick = useCallback((e: KonvaEventObject<MouseEvent>) => {
+    if (mode === 'pan') return
     const clickedStage = e.target === e.target.getStage()
     if (clickedStage) setSelected(null)
-  }, [setSelected])
+  }, [mode, setSelected])
 
   const handleWheel = useCallback((e: KonvaEventObject<WheelEvent>) => {
     e.evt.preventDefault()
@@ -463,8 +508,8 @@ export default function DrawingCanvas() {
     if (!pointer) return
     const SCALE_BY = 1.12
     const newZoom = e.evt.deltaY < 0
-      ? Math.min(zoom * SCALE_BY, 8)
-      : Math.max(zoom / SCALE_BY, 0.1)
+      ? Math.min(zoom * SCALE_BY, MAX_ZOOM)
+      : Math.max(zoom / SCALE_BY, MIN_ZOOM)
     const mx = (pointer.x - stagePos.x) / zoom
     const my = (pointer.y - stagePos.y) / zoom
     viewWasAdjustedRef.current = true
@@ -623,6 +668,7 @@ export default function DrawingCanvas() {
   }, [mode, customDrawStart, customDrawCurrent, boxCanvas, material.thickness])
 
   const cursor = (() => {
+    if (mode === 'pan') return isPanning ? 'grabbing' : 'grab'
     if (mode === 'draw_box' || mode === 'add_shelf' || mode === 'add_partition' || mode === 'add_drawer' || mode === 'add_custom_panel') return 'crosshair'
     return 'default'
   })()
@@ -637,10 +683,6 @@ export default function DrawingCanvas() {
       <Stage
         width={size.width}
         height={size.height}
-        scaleX={zoom}
-        scaleY={zoom}
-        x={stagePos.x}
-        y={stagePos.y}
         onMouseDown={handleMouseDown}
         onMouseMove={handleMouseMove}
         onMouseUp={handleMouseUp}
@@ -650,13 +692,13 @@ export default function DrawingCanvas() {
         style={{ cursor }}
       >
         {/* ── Grid ── */}
-        <Layer listening={false}>
+        <Layer listening={false} x={stagePos.x} y={stagePos.y} scaleX={zoom} scaleY={zoom}>
           {gridLines}
-          <Text x={10} y={10} text={`Grid: 50mm · Resolution: ${zoom >= 2 ? '1mm' : '2mm'}+`} fontSize={10} fill="#bbb" />
+          <Text x={10} y={10} text="Grid: 50mm · Precision: 1mm" fontSize={10} fill="#bbb" />
         </Layer>
 
         {/* ── Drawing layer ── */}
-        <Layer>
+        <Layer x={stagePos.x} y={stagePos.y} scaleX={zoom} scaleY={zoom} listening={mode !== 'pan'}>
 
           {/* Ghost rect while drawing outer box */}
           {ghostRect && ghostRect.width > 2 && ghostRect.height > 2 && (

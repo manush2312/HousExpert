@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import {
   ArrowLeft, Save, Download,
-  Square, MousePointer, Minus, PanelLeft, LayoutGrid, Trash2, RotateCcw, Pencil,
+  Square, MousePointer, Hand, Minus, PanelLeft, LayoutGrid, Trash2, RotateCcw, Pencil,
 } from 'lucide-react'
 import { useFurnitureStore, type DrawingMode, type DoorType, DEFAULT_SECTION_CONFIG } from '../../stores/furnitureStore'
 import DrawingCanvas, { OUTER_BOX_SELECTION_ID } from '../../components/furniture/DrawingCanvas'
@@ -113,6 +113,7 @@ interface ModeBtn {
 const MODE_BUTTONS: ModeBtn[] = [
   { mode: 'draw_box',         Icon: Square,       label: 'Draw Box',       shortcut: 'B' },
   { mode: 'select',           Icon: MousePointer, label: 'Select',         shortcut: 'V' },
+  { mode: 'pan',              Icon: Hand,         label: 'Pan Canvas',     shortcut: 'H' },
   { mode: 'add_shelf',        Icon: Minus,        label: 'Add Shelf',      shortcut: 'S' },
   { mode: 'add_partition',    Icon: PanelLeft,    label: 'Add Partition',  shortcut: 'P' },
   { mode: 'add_drawer',       Icon: LayoutGrid,   label: 'Add Drawer',     shortcut: 'D' },
@@ -131,7 +132,7 @@ function ModeToolbar() {
       {MODE_BUTTONS.map(({ mode: m, Icon, label, shortcut }) => {
         const active = mode === m
         // shelf/partition/drawer buttons disabled until outer box is drawn
-        const disabled = (m !== 'draw_box' && m !== 'select') && !outerBox
+        const disabled = (m !== 'draw_box' && m !== 'select' && m !== 'pan') && !outerBox
 
         return (
           <button
@@ -308,6 +309,11 @@ function SettingRow({
 }: {
   label: string; value: number; disabled?: boolean; onChange: (v: number) => void; hint?: string
 }) {
+  const updateValue = (raw: string) => {
+    const next = Math.max(1, Math.round(Number(raw) || 1))
+    onChange(next)
+  }
+
   return (
     <div>
       <div className="flex items-center gap-2 mb-0.5">
@@ -315,9 +321,11 @@ function SettingRow({
         <div className="flex items-center gap-1">
           <input
             type="number"
+            min={1}
+            step={1}
             value={value}
             disabled={disabled}
-            onChange={(e) => onChange(Number(e.target.value))}
+            onChange={(e) => updateValue(e.target.value)}
             className="w-20 h-7 px-2 rounded-md text-[12.5px] text-right"
             style={{
               background: disabled ? 'transparent' : 'var(--bg-sunken)',
