@@ -1,5 +1,9 @@
 import type { OuterBox, Shelf, Partition, Drawer, Material, CustomPanel, ShelfPartition } from '../stores/furnitureStore'
-import { DEFAULT_SECTION_CONFIG } from '../stores/furnitureStore'
+import {
+  DEFAULT_BACK_PANEL_THICKNESS,
+  DEFAULT_SECTION_CONFIG,
+  DRAWER_BOX_HEIGHT_ALLOWANCE,
+} from '../stores/furnitureStore'
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -38,8 +42,6 @@ const CATEGORY_ORDER: CutCategory[] = [
   'shell', 'partition', 'shelf', 'drawer_front', 'drawer_box', 'door', 'custom',
 ]
 
-const BACK_PANEL_THICKNESS = 6
-
 function getSectionInsets(index: number, lastIndex: number, thickness: number) {
   return {
     left:  index === 0 ? 0 : thickness / 2,
@@ -66,9 +68,10 @@ export function calculateCutList(
 ): CutListSummary {
   const { width: W, height: H, depth: D } = outerBox
   const T  = material.thickness
+  const B  = material.backPanelThickness ?? DEFAULT_BACK_PANEL_THICKNESS
   const iW = W - T * 2          // interior width
   const iH = H - T * 2          // interior height
-  const iD = D - BACK_PANEL_THICKNESS
+  const iD = Math.max(1, D - B)
 
   let seq = 0
   const uid = () => `cl-${seq++}`
@@ -87,7 +90,7 @@ export function calculateCutList(
   addItem({ category: 'shell', name: 'Right Side',   length: H, width: D,  thickness: T, qty: 1 })
   addItem({ category: 'shell', name: 'Top Panel',    length: iW, width: D, thickness: T, qty: 1 })
   addItem({ category: 'shell', name: 'Bottom Panel', length: iW, width: D, thickness: T, qty: 1 })
-  addItem({ category: 'shell', name: 'Back Panel',   length: H, width: W,  thickness: BACK_PANEL_THICKNESS, qty: 1 })
+  addItem({ category: 'shell', name: 'Back Panel',   length: H, width: W,  thickness: B, qty: 1 })
 
   // ── Partitions ──────────────────────────────────────────────────────────
 
@@ -150,10 +153,12 @@ export function calculateCutList(
     if (!section) return
 
     const usableW = getUsableSectionWidth(section.width, drawer.sectionIndex, sorted.length, T)
+    const maxSetback = Math.max(0, iD - T - 16 - 1)
+    const frontSetback = Math.max(0, Math.min(Math.round(drawer.frontSetback ?? 0), maxSetback))
     const fW  = Math.round(usableW)              // front width, matching the canvas section opening
     const fH  = drawer.height - 2                // front height (2mm clearance)
-    const boxSideH = Math.round(drawer.height - T - BACK_PANEL_THICKNESS)
-    const boxL     = Math.round(iD - T - 16)             // drawer depth inside carcass
+    const boxSideH = Math.round(drawer.height - T - DRAWER_BOX_HEIGHT_ALLOWANCE)
+    const boxL     = Math.round(iD - frontSetback - T - 16)
     const boxW     = Math.round(fW - 32)                 // box width (leaving 16mm each side for slides)
 
     addItem({
