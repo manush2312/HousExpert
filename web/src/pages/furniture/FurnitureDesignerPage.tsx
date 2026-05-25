@@ -79,11 +79,11 @@ export default function FurnitureDesignerPage() {
 // ── Export PDF button ────────────────────────────────────────────────────────
 
 function ExportPdfButton() {
-  const { designName, outerBox, shelves, partitions, drawers, material, sectionConfigs, customPanels } = useFurnitureStore()
+  const { designName, outerBox, shelves, partitions, drawers, material, sectionConfigs, shelfPartitions, customPanels } = useFurnitureStore()
 
   const handleExport = () => {
     if (!outerBox) return
-    const summary = calculateCutList(outerBox, shelves, partitions, drawers, material, sectionConfigs, customPanels)
+    const summary = calculateCutList(outerBox, shelves, partitions, drawers, material, sectionConfigs, shelfPartitions, customPanels)
     exportCutListPdf(designName, 'Furniture', outerBox, summary)
   }
 
@@ -488,7 +488,7 @@ function SectionSettings() {
 // ── Cut list ──────────────────────────────────────────────────────────────────
 
 function CutList() {
-  const { outerBox, shelves, partitions, drawers, material, sectionConfigs, customPanels } = useFurnitureStore()
+  const { outerBox, shelves, partitions, drawers, material, sectionConfigs, shelfPartitions, customPanels } = useFurnitureStore()
 
   if (!outerBox) {
     return (
@@ -501,7 +501,7 @@ function CutList() {
     )
   }
 
-  const summary = calculateCutList(outerBox, shelves, partitions, drawers, material, sectionConfigs, customPanels)
+  const summary = calculateCutList(outerBox, shelves, partitions, drawers, material, sectionConfigs, shelfPartitions, customPanels)
 
   return (
     <div>

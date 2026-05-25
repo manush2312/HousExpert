@@ -1,4 +1,4 @@
-import type { OuterBox, Shelf, Partition, Drawer, Material, CustomPanel } from '../stores/furnitureStore'
+import type { OuterBox, Shelf, Partition, Drawer, Material, CustomPanel, ShelfPartition } from '../stores/furnitureStore'
 import { DEFAULT_SECTION_CONFIG } from '../stores/furnitureStore'
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -38,6 +38,20 @@ const CATEGORY_ORDER: CutCategory[] = [
   'shell', 'partition', 'shelf', 'drawer_front', 'drawer_box', 'door', 'custom',
 ]
 
+const BACK_PANEL_THICKNESS = 6
+
+function getSectionInsets(index: number, lastIndex: number, thickness: number) {
+  return {
+    left:  index === 0 ? 0 : thickness / 2,
+    right: index === lastIndex ? 0 : thickness / 2,
+  }
+}
+
+function getUsableSectionWidth(sectionWidth: number, index: number, lastIndex: number, thickness: number) {
+  const inset = getSectionInsets(index, lastIndex, thickness)
+  return sectionWidth - inset.left - inset.right
+}
+
 // ── Calculator ────────────────────────────────────────────────────────────────
 
 export function calculateCutList(
@@ -47,33 +61,55 @@ export function calculateCutList(
   drawers:        Drawer[],
   material:       Material,
   sectionConfigs: Record<number, { door: string; hangingRail: boolean }> = {},
+  shelfPartitions: ShelfPartition[] = [],
   customPanels:   CustomPanel[] = [],
 ): CutListSummary {
   const { width: W, height: H, depth: D } = outerBox
   const T  = material.thickness
   const iW = W - T * 2          // interior width
   const iH = H - T * 2          // interior height
-  const iD = D - 6               // interior depth (minus 6mm back panel)
+  const iD = D - BACK_PANEL_THICKNESS
 
   let seq = 0
   const uid = () => `cl-${seq++}`
   const items: CutListItem[] = []
+  const addItem = (item: Omit<CutListItem, 'id'>) => {
+    const length = Math.round(item.length)
+    const width = Math.round(item.width)
+    const thickness = Math.round(item.thickness)
+    if (length <= 0 || width <= 0 || thickness <= 0 || item.qty <= 0) return
+    items.push({ id: uid(), ...item, length, width, thickness })
+  }
 
   // ── Outer shell (5 panels) ──────────────────────────────────────────────
 
-  items.push({ id: uid(), category: 'shell', name: 'Left Side',    length: H, width: D,  thickness: T, qty: 1 })
-  items.push({ id: uid(), category: 'shell', name: 'Right Side',   length: H, width: D,  thickness: T, qty: 1 })
-  items.push({ id: uid(), category: 'shell', name: 'Top Panel',    length: iW, width: D, thickness: T, qty: 1 })
-  items.push({ id: uid(), category: 'shell', name: 'Bottom Panel', length: iW, width: D, thickness: T, qty: 1 })
-  items.push({ id: uid(), category: 'shell', name: 'Back Panel',   length: H, width: W,  thickness: 6, qty: 1 })
+  addItem({ category: 'shell', name: 'Left Side',    length: H, width: D,  thickness: T, qty: 1 })
+  addItem({ category: 'shell', name: 'Right Side',   length: H, width: D,  thickness: T, qty: 1 })
+  addItem({ category: 'shell', name: 'Top Panel',    length: iW, width: D, thickness: T, qty: 1 })
+  addItem({ category: 'shell', name: 'Bottom Panel', length: iW, width: D, thickness: T, qty: 1 })
+  addItem({ category: 'shell', name: 'Back Panel',   length: H, width: W,  thickness: BACK_PANEL_THICKNESS, qty: 1 })
 
   // ── Partitions ──────────────────────────────────────────────────────────
 
   if (partitions.length > 0) {
-    items.push({
-      id: uid(), category: 'partition', name: 'Vertical Partition',
+    addItem({
+      category: 'partition', name: 'Vertical Partition',
       length: iH, width: iD, thickness: T,
       qty: partitions.length,
+    })
+  }
+
+  if (shelfPartitions.length > 0) {
+    const byHeight: Record<number, number> = {}
+    shelfPartitions.forEach((partition) => {
+      const height = Math.round(partition.toBottom - partition.fromBottom)
+      if (height > 0) byHeight[height] = (byHeight[height] ?? 0) + 1
+    })
+    Object.entries(byHeight).forEach(([height, qty]) => {
+      addItem({
+        category: 'partition', name: 'Shelf Partition',
+        length: Number(height), width: iD, thickness: T, qty,
+      })
     })
   }
 
@@ -95,14 +131,13 @@ export function calculateCutList(
     shelves.forEach((shelf) => {
       const sec = sections[shelf.sectionIndex]
       if (!sec) return
-      const leftInset  = shelf.sectionIndex === 0               ? 0 : T
-      const rightInset = shelf.sectionIndex === sorted.length   ? 0 : T
-      const shelfL     = Math.round(sec.width - leftInset - rightInset)
+      const shelfL = Math.round(getUsableSectionWidth(sec.width, shelf.sectionIndex, sorted.length, T))
+      if (shelfL <= 0) return
       byLength[shelfL] = (byLength[shelfL] ?? 0) + 1
     })
     Object.entries(byLength).forEach(([lenStr, qty]) => {
-      items.push({
-        id: uid(), category: 'shelf', name: 'Shelf',
+      addItem({
+        category: 'shelf', name: 'Shelf',
         length: Number(lenStr), width: Math.round(iD), thickness: T, qty,
       })
     })
@@ -114,26 +149,27 @@ export function calculateCutList(
     const section = sections[drawer.sectionIndex]
     if (!section) return
 
-    const fW  = Math.round(section.width - T)   // front width
+    const usableW = getUsableSectionWidth(section.width, drawer.sectionIndex, sorted.length, T)
+    const fW  = Math.round(usableW)              // front width, matching the canvas section opening
     const fH  = drawer.height - 2                // front height (2mm clearance)
-    const boxSideH = Math.round(drawer.height - T - 6)  // box side height
+    const boxSideH = Math.round(drawer.height - T - BACK_PANEL_THICKNESS)
     const boxL     = Math.round(iD - T - 16)             // drawer depth inside carcass
     const boxW     = Math.round(fW - 32)                 // box width (leaving 16mm each side for slides)
 
-    items.push({
-      id: uid(), category: 'drawer_front', name: `Drawer Front ${i + 1}`,
+    addItem({
+      category: 'drawer_front', name: `Drawer Front ${i + 1}`,
       length: fW, width: fH, thickness: T, qty: 1,
     })
-    items.push({
-      id: uid(), category: 'drawer_box', name: `Drawer Side ${i + 1}`,
+    addItem({
+      category: 'drawer_box', name: `Drawer Side ${i + 1}`,
       length: boxL, width: boxSideH, thickness: 15, qty: 2,
     })
-    items.push({
-      id: uid(), category: 'drawer_box', name: `Drawer Back ${i + 1}`,
+    addItem({
+      category: 'drawer_box', name: `Drawer Back ${i + 1}`,
       length: boxW, width: boxSideH, thickness: 15, qty: 1,
     })
-    items.push({
-      id: uid(), category: 'drawer_box', name: `Drawer Bottom ${i + 1}`,
+    addItem({
+      category: 'drawer_box', name: `Drawer Bottom ${i + 1}`,
       length: boxW, width: boxL, thickness: 9, qty: 1,
     })
   })
@@ -148,16 +184,16 @@ export function calculateCutList(
     const doorH = Math.round(iH - 2)              // 1mm clearance top + bottom
 
     if (cfg.door === 'single') {
-      items.push({
-        id: uid(), category: 'door',
+      addItem({
+        category: 'door',
         name: `Door (Section ${section.index + 1})`,
         length: doorW, width: doorH, thickness: T, qty: 1,
       })
     } else if (cfg.door === 'double') {
-      items.push({
-        id: uid(), category: 'door',
+      addItem({
+        category: 'door',
         name: `Door (Section ${section.index + 1})`,
-        length: Math.round(doorW / 2), width: doorH, thickness: T, qty: 2,
+        length: Math.round((section.width - 4) / 2), width: doorH, thickness: T, qty: 2,
       })
     }
   })
@@ -165,14 +201,13 @@ export function calculateCutList(
   // ── Custom panels ────────────────────────────────────────────────────────
 
   customPanels.forEach((cp) => {
-    items.push({
-      id:        uid(),
-      category:  'custom',
-      name:      cp.name,
-      length:    cp.width,      // horizontal dimension as drawn
-      width:     cp.height,     // vertical dimension as drawn
+    addItem({
+      category: 'custom',
+      name: cp.name,
+      length: cp.width,      // horizontal dimension as drawn
+      width: cp.height,      // vertical dimension as drawn
       thickness: cp.thickness,
-      qty:       1,
+      qty: 1,
     })
   })
 
