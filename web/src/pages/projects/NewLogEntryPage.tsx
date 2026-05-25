@@ -448,7 +448,8 @@ export default function NewLogEntryPage() {
             )}
 
             <div className="flex items-center gap-2 pt-2">
-              <button type="submit" disabled={!canSubmit || loading} className="btn btn-accent">
+              <button type="submit" disabled={!canSubmit || loading} className="btn btn-accent" style={{ display: 'flex', alignItems: 'center', gap: 7 }}>
+                {loading && <span className="save-spinner" />}
                 {loading ? 'Saving…' : 'Save entry'}
               </button>
               <button type="button" onClick={() => navigate(`/projects/${projectId}`)} className="btn btn-ghost">Cancel</button>
