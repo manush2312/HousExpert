@@ -129,7 +129,13 @@ func (p *pdfWriter) drawQuotationSpecificationsAppendix(q *models.Quotation) {
 		y = p.drawQuotationSpecSection(y, i+1, section)
 	}
 
-	if y+28 > qph-20 {
+	if y+quotationSignatureCardHeight+quotationClosingCardHeight+5 > qph-20 {
+		pageSeq++
+		y = p.drawQuotationAppendixHeader(q, true, pageSeq)
+	}
+	y = p.drawQuotationClientSignatureCard(y, q)
+
+	if y+quotationClosingCardHeight > qph-20 {
 		pageSeq++
 		y = p.drawQuotationAppendixHeader(q, true, pageSeq)
 	}
@@ -315,9 +321,14 @@ func (p *pdfWriter) drawQuotationSpecSection(y float64, idx int, section quotati
 	return y + totalH + 5
 }
 
+const (
+	quotationClosingCardHeight   = 26.0
+	quotationSignatureCardHeight = 46.0
+)
+
 func (p *pdfWriter) drawQuotationClosingCard(y float64, q *models.Quotation) float64 {
 	doc := p.doc
-	const h = 26.0
+	const h = quotationClosingCardHeight
 
 	p.setFill(cQPaper2)
 	p.setDraw(cQRule)
@@ -342,6 +353,74 @@ func (p *pdfWriter) drawQuotationClosingCard(y float64, q *models.Quotation) flo
 		"", "L", false)
 
 	p.drawBrandLogo(qml+qcw-21, y+5.0, 15.9)
+
+	return y + h + 5
+}
+
+func (p *pdfWriter) drawQuotationClientSignatureCard(y float64, q *models.Quotation) float64 {
+	doc := p.doc
+	const (
+		h          = quotationSignatureCardHeight
+		titleH     = 10.4
+		padX       = 5.3
+		signatureW = 78.0
+		dateW      = 38.0
+	)
+
+	p.setFill(cQPaper)
+	p.setDraw(cQRule)
+	doc.SetLineWidth(0.25)
+	doc.Rect(qml, y, qcw, h, "FD")
+
+	p.setFill(cQInk)
+	doc.Rect(qml, y, qcw, titleH, "F")
+	p.setFill(cQAmber)
+	doc.Rect(qml, y, 1.05, titleH, "F")
+
+	p.sans("B", 7.4)
+	p.setColor(cQAmberSoft)
+	doc.SetXY(qml+padX, y+3.3)
+	doc.CellFormat(72, 3.8, p.text("CLIENT  ACCEPTANCE"), "", 0, "L", false, 0, "")
+
+	p.mono("", 7.2)
+	p.setColor(cQTagText)
+	doc.SetXY(qml+qcw-58, y+3.35)
+	doc.CellFormat(53, 3.8, p.text(q.QuotationID), "", 0, "R", false, 0, "")
+
+	bodyY := y + titleH
+	p.sans("", 8.3)
+	p.setColor(cQInk2)
+	doc.SetXY(qml+padX, bodyY+4.2)
+	doc.MultiCell(qcw-padX*2, 4.4,
+		p.text("I have reviewed the quotation, specifications, payment milestones, exclusions and conditions, and approve the proposal to proceed as agreed in writing."),
+		"", "L", false)
+
+	lineY := y + h - 11.6
+	signX := qml + padX
+	nameX := signX + signatureW + 9.0
+	dateX := qml + qcw - padX - dateW
+
+	p.setDraw(cQInk4)
+	doc.SetLineWidth(0.35)
+	doc.Line(signX, lineY, signX+signatureW, lineY)
+	doc.Line(dateX, lineY, dateX+dateW, lineY)
+
+	p.sans("", 6.8)
+	p.setColor(cQInk3)
+	doc.SetXY(signX, lineY+1.8)
+	doc.CellFormat(signatureW, 3.4, p.text("Client signature"), "", 0, "L", false, 0, "")
+
+	clientLabel := q.ClientName
+	if strings.TrimSpace(clientLabel) == "" {
+		clientLabel = "Client name"
+	}
+	p.setColor(cQInk4)
+	doc.SetXY(nameX, lineY+1.8)
+	doc.CellFormat(dateX-nameX-6, 3.4, p.text(p.truncate(clientLabel, 34)), "", 0, "L", false, 0, "")
+
+	p.setColor(cQInk3)
+	doc.SetXY(dateX, lineY+1.8)
+	doc.CellFormat(dateW, 3.4, p.text("Date"), "", 0, "L", false, 0, "")
 
 	return y + h + 5
 }

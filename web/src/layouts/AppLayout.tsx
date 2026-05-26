@@ -469,6 +469,5 @@ function CommandPalette({ open, onClose, projects, logTypes }: PaletteProps) {
           )}
         </div>
       </div>
-    </Modal>
-  )
+    </Modal>  )
 }

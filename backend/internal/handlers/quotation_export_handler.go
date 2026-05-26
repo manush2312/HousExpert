@@ -254,11 +254,11 @@ func buildQuotationPDF(q *models.Quotation) (*bytes.Buffer, error) {
 	}
 
 	// Grand total
-	if y+34 > qph-18 {
+	if y+54 > qph-18 {
 		doc.AddPage()
 		y = p.drawQuotRunningHeader(q, "Continued", "Sections & Totals")
 	}
-	y = p.drawQuotGrandTotal(y, q.SubtotalAmount, q.ApplyGST, q.GSTPercent, q.GSTAmount, q.TotalAmount)
+	y = p.drawQuotGrandTotal(y, q.SubtotalAmount, q.DiscountPercent, q.DiscountAmount, q.ApplyGST, q.GSTPercent, q.GSTAmount, q.TotalAmount)
 
 	// Appendix notice
 	if y+22 > qph-18 {
@@ -718,7 +718,7 @@ func (p *pdfWriter) drawQuotItemRow(y float64, idx int, item models.QuotationIte
 
 // ── Grand total ───────────────────────────────────────────────────────────────
 
-func (p *pdfWriter) drawQuotGrandTotal(y float64, subtotal float64, applyGST bool, gstPercent float64, gstAmount float64, total float64) float64 {
+func (p *pdfWriter) drawQuotGrandTotal(y float64, subtotal float64, discountPercent float64, discountAmount float64, applyGST bool, gstPercent float64, gstAmount float64, total float64) float64 {
 	doc := p.doc
 	const (
 		rowH   = 8.5
@@ -730,7 +730,11 @@ func (p *pdfWriter) drawQuotGrandTotal(y float64, subtotal float64, applyGST boo
 	startX := qml + qcw - tableW
 
 	if subtotal == 0 {
-		subtotal = total - gstAmount
+		subtotal = total - gstAmount + discountAmount
+	}
+	taxableAmount := subtotal - discountAmount
+	if taxableAmount < 0 {
+		taxableAmount = 0
 	}
 
 	rows := []struct {
@@ -738,6 +742,24 @@ func (p *pdfWriter) drawQuotGrandTotal(y float64, subtotal float64, applyGST boo
 		value string
 	}{
 		{label: "Subtotal", value: p.rupee + " " + formatNum(subtotal)},
+	}
+	if discountPercent > 0 || discountAmount > 0 {
+		rows = append(rows,
+			struct {
+				label string
+				value string
+			}{
+				label: fmt.Sprintf("Discount (%.2f%%)", discountPercent),
+				value: "-" + p.rupee + " " + formatNum(discountAmount),
+			},
+			struct {
+				label string
+				value string
+			}{
+				label: "Taxable amount",
+				value: p.rupee + " " + formatNum(taxableAmount),
+			},
+		)
 	}
 	if applyGST {
 		rows = append(rows, struct {
