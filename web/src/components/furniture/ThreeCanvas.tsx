@@ -10,6 +10,7 @@ import {
 import {
   getFurniturePreviewMaterial,
   useFurniturePreviewStore,
+  type FurniturePreviewBackground,
   type FurniturePreviewView,
 } from '../../stores/furniturePreviewStore'
 
@@ -21,6 +22,41 @@ type ExplodeOffset = [number, number, number]
 type Point3 = [number, number, number]
 
 const NO_EXPLODE_OFFSET: ExplodeOffset = [0, 0, 0]
+
+const CANVAS_BACKGROUND: Record<FurniturePreviewBackground, string> = {
+  dark: 'linear-gradient(160deg, #1e1e2e 0%, #16161f 100%)',
+  light: 'linear-gradient(160deg, #f8fafc 0%, #eef2f7 100%)',
+}
+
+const GRID_COLORS: Record<FurniturePreviewBackground, [string, string]> = {
+  dark: ['#333333', '#222222'],
+  light: ['#cbd5e1', '#e2e8f0'],
+}
+
+interface DimensionTheme {
+  line: string
+  labelBackground: string
+  labelBorder: string
+  labelColor: string
+  labelShadow: string
+}
+
+const DIMENSION_THEME: Record<FurniturePreviewBackground, DimensionTheme> = {
+  dark: {
+    line: '#f8fafc',
+    labelBackground: 'rgba(12,16,22,0.84)',
+    labelBorder: '1px solid rgba(255,255,255,0.18)',
+    labelColor: 'white',
+    labelShadow: '0 8px 22px rgba(0,0,0,0.22)',
+  },
+  light: {
+    line: '#0f172a',
+    labelBackground: 'rgba(255,255,255,0.9)',
+    labelBorder: '1px solid rgba(15,23,42,0.16)',
+    labelColor: '#0f172a',
+    labelShadow: '0 8px 20px rgba(15,23,42,0.14)',
+  },
+}
 
 function getOffsetPosition(
   posX: number,
@@ -136,14 +172,15 @@ interface DimensionGuideProps {
   label: string
   labelPosition: Point3
   ticks: Array<[Point3, Point3]>
+  theme: DimensionTheme
 }
 
-function DimensionGuide({ start, end, label, labelPosition, ticks }: DimensionGuideProps) {
+function DimensionGuide({ start, end, label, labelPosition, ticks, theme }: DimensionGuideProps) {
   return (
     <group>
-      <Line points={[start, end]} color="#f8fafc" lineWidth={1.35} />
+      <Line points={[start, end]} color={theme.line} lineWidth={1.35} />
       {ticks.map(([tickStart, tickEnd], index) => (
-        <Line key={index} points={[tickStart, tickEnd]} color="#f8fafc" lineWidth={1.15} />
+        <Line key={index} points={[tickStart, tickEnd]} color={theme.line} lineWidth={1.15} />
       ))}
       <Html
         position={labelPosition}
@@ -155,10 +192,10 @@ function DimensionGuide({ start, end, label, labelPosition, ticks }: DimensionGu
           style={{
             padding: '2px 6px',
             borderRadius: 4,
-            background: 'rgba(12,16,22,0.84)',
-            border: '1px solid rgba(255,255,255,0.18)',
-            boxShadow: '0 8px 22px rgba(0,0,0,0.22)',
-            color: 'white',
+            background: theme.labelBackground,
+            border: theme.labelBorder,
+            boxShadow: theme.labelShadow,
+            color: theme.labelColor,
             fontSize: 10.5,
             fontWeight: 600,
             lineHeight: '13px',
@@ -177,12 +214,15 @@ function DimensionLabels({
   height,
   depth,
   clearance,
+  backgroundMode,
 }: {
   width: number
   height: number
   depth: number
   clearance: number
+  backgroundMode: FurniturePreviewBackground
 }) {
+  const theme = DIMENSION_THEME[backgroundMode]
   const maxDim = Math.max(width, height, depth)
   const gap = Math.max(130, Math.min(280, maxDim * 0.1)) + clearance * 0.45
   const tick = Math.max(55, Math.min(95, gap * 0.42))
@@ -198,6 +238,7 @@ function DimensionLabels({
         start={point3(-width / 2, bottomY, frontZ)}
         end={point3(width / 2, bottomY, frontZ)}
         labelPosition={point3(0, bottomY, frontZ + tick * 0.38)}
+        theme={theme}
         ticks={[
           [point3(-width / 2, bottomY, frontZ - tick / 2), point3(-width / 2, bottomY, frontZ + tick / 2)],
           [point3(width / 2, bottomY, frontZ - tick / 2), point3(width / 2, bottomY, frontZ + tick / 2)],
@@ -208,6 +249,7 @@ function DimensionLabels({
         start={point3(leftX, 0, frontZ)}
         end={point3(leftX, height, frontZ)}
         labelPosition={point3(leftX - tick * 0.42, height / 2, frontZ)}
+        theme={theme}
         ticks={[
           [point3(leftX - tick / 2, 0, frontZ), point3(leftX + tick / 2, 0, frontZ)],
           [point3(leftX - tick / 2, height, frontZ), point3(leftX + tick / 2, height, frontZ)],
@@ -218,6 +260,7 @@ function DimensionLabels({
         start={point3(rightX, bottomY, -depth / 2)}
         end={point3(rightX, bottomY, depth / 2)}
         labelPosition={point3(rightX + tick * 0.42, bottomY, 0)}
+        theme={theme}
         ticks={[
           [point3(rightX - tick / 2, bottomY, -depth / 2), point3(rightX + tick / 2, bottomY, -depth / 2)],
           [point3(rightX - tick / 2, bottomY, depth / 2), point3(rightX + tick / 2, bottomY, depth / 2)],
@@ -237,6 +280,7 @@ function FurnitureModel() {
   const explodedAmount = useFurniturePreviewStore((state) => state.explodedAmount)
   const selectedMaterialId = useFurniturePreviewStore((state) => state.selectedMaterialId)
   const customColor = useFurniturePreviewStore((state) => state.customColor)
+  const backgroundMode = useFurniturePreviewStore((state) => state.backgroundMode)
 
   // useMemo must be called before any conditional return (Rules of Hooks)
   const sortedPartitions = useMemo(
@@ -459,6 +503,7 @@ function FurnitureModel() {
           height={H}
           depth={D}
           clearance={explodeDistance}
+          backgroundMode={backgroundMode}
         />
       )}
     </group>
@@ -467,11 +512,11 @@ function FurnitureModel() {
 
 // ── Empty state hint (no box drawn yet) ───────────────────────────────────────
 
-function EmptyHint() {
+function EmptyHint({ backgroundMode }: { backgroundMode: FurniturePreviewBackground }) {
   return (
     <mesh rotation={[-Math.PI / 2, 0, 0]}>
       <planeGeometry args={[3, 2]} />
-      <meshStandardMaterial color="#2a2a2a" />
+      <meshStandardMaterial color={backgroundMode === 'light' ? '#e2e8f0' : '#2a2a2a'} />
     </mesh>
   )
 }
@@ -480,6 +525,7 @@ function EmptyHint() {
 
 export default function ThreeCanvas() {
   const { outerBox } = useFurnitureStore()
+  const backgroundMode = useFurniturePreviewStore((state) => state.backgroundMode)
   const controlsRef = useRef<OrbitControlsImpl | null>(null)
 
   const camTarget: [number, number, number] = outerBox
@@ -492,13 +538,13 @@ export default function ThreeCanvas() {
         shadows
         camera={{ position: [2.8, 2.2, 2.8], fov: 45, near: 0.01, far: 50 }}
         gl={{ antialias: true }}
-        style={{ background: 'linear-gradient(160deg, #1e1e2e 0%, #16161f 100%)' }}
+        style={{ background: CANVAS_BACKGROUND[backgroundMode] }}
       >
         <Suspense fallback={null}>
           {/* ── Lighting ── */}
-          <ambientLight intensity={0.55} />
+          <ambientLight intensity={backgroundMode === 'light' ? 0.68 : 0.55} />
           <directionalLight
-            position={[4, 7, 4]} intensity={1.1}
+            position={[4, 7, 4]} intensity={backgroundMode === 'light' ? 0.95 : 1.1}
             castShadow
             shadow-mapSize={[1024, 1024]}
             shadow-camera-near={0.1}
@@ -511,11 +557,11 @@ export default function ThreeCanvas() {
           <directionalLight position={[-3, 2, -2]} intensity={0.25} />
 
           {/* ── Furniture or empty hint ── */}
-          {outerBox ? <FurnitureModel /> : <EmptyHint />}
+          {outerBox ? <FurnitureModel /> : <EmptyHint backgroundMode={backgroundMode} />}
 
           {/* ── Floor grid ── */}
           <gridHelper
-            args={[10, 20, '#333333', '#222222']}
+            args={[10, 20, GRID_COLORS[backgroundMode][0], GRID_COLORS[backgroundMode][1]]}
             position={[0, 0, 0]}
           />
 
@@ -538,7 +584,7 @@ export default function ThreeCanvas() {
           <GizmoHelper alignment="bottom-right" margin={[40, 40]}>
             <GizmoViewport
               axisColors={['#e05252', '#52a852', '#5252e0']}
-              labelColor="white"
+              labelColor={backgroundMode === 'light' ? '#111827' : 'white'}
             />
           </GizmoHelper>
         </Suspense>
@@ -548,7 +594,7 @@ export default function ThreeCanvas() {
       {!outerBox && (
         <div
           className="absolute inset-0 flex items-center justify-center pointer-events-none"
-          style={{ color: '#555', fontSize: 11 }}
+          style={{ color: backgroundMode === 'light' ? '#64748b' : '#555', fontSize: 11 }}
         >
           Draw a box to see 3D preview
         </div>
