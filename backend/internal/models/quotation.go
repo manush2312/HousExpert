@@ -52,11 +52,13 @@ type Quotation struct {
 	Sections []QuotationSection `bson:"sections" json:"sections"`
 
 	// Financials
-	SubtotalAmount float64 `bson:"subtotal_amount" json:"subtotal_amount"`             // sum of all item amounts before GST
-	ApplyGST       bool    `bson:"apply_gst,omitempty" json:"apply_gst,omitempty"`     // whether GST is applied to the quotation
-	GSTPercent     float64 `bson:"gst_percent,omitempty" json:"gst_percent,omitempty"` // GST rate percentage entered by the user
-	GSTAmount      float64 `bson:"gst_amount,omitempty" json:"gst_amount,omitempty"`   // computed GST amount
-	TotalAmount    float64 `bson:"total_amount" json:"total_amount"`                   // final total including GST when applicable
+	SubtotalAmount  float64 `bson:"subtotal_amount" json:"subtotal_amount"`                       // sum of all item amounts before discount and GST
+	DiscountPercent float64 `bson:"discount_percent,omitempty" json:"discount_percent,omitempty"` // discount rate percentage entered by the user
+	DiscountAmount  float64 `bson:"discount_amount,omitempty" json:"discount_amount,omitempty"`   // computed discount amount before GST
+	ApplyGST        bool    `bson:"apply_gst,omitempty" json:"apply_gst,omitempty"`               // whether GST is applied to the quotation
+	GSTPercent      float64 `bson:"gst_percent,omitempty" json:"gst_percent,omitempty"`           // GST rate percentage entered by the user
+	GSTAmount       float64 `bson:"gst_amount,omitempty" json:"gst_amount,omitempty"`             // computed GST amount after discount
+	TotalAmount     float64 `bson:"total_amount" json:"total_amount"`                             // final total including GST when applicable
 
 	// Meta
 	Status             QuotationStatus `bson:"status" json:"status"`

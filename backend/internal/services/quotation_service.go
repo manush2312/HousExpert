@@ -39,23 +39,25 @@ type QuotationSectionInput struct {
 }
 
 type CreateQuotationInput struct {
-	ClientName     string                  `json:"client_name"     binding:"required"`
-	ClientPhone    string                  `json:"client_phone"`
-	ClientLocation string                  `json:"client_location"`
-	Sections       []QuotationSectionInput `json:"sections"`
-	ApplyGST       bool                    `json:"apply_gst"`
-	GSTPercent     float64                 `json:"gst_percent"`
-	Notes          string                  `json:"notes"`
+	ClientName      string                  `json:"client_name"     binding:"required"`
+	ClientPhone     string                  `json:"client_phone"`
+	ClientLocation  string                  `json:"client_location"`
+	Sections        []QuotationSectionInput `json:"sections"`
+	DiscountPercent float64                 `json:"discount_percent"`
+	ApplyGST        bool                    `json:"apply_gst"`
+	GSTPercent      float64                 `json:"gst_percent"`
+	Notes           string                  `json:"notes"`
 }
 
 type UpdateQuotationInput struct {
-	ClientName     *string                 `json:"client_name"`
-	ClientPhone    *string                 `json:"client_phone"`
-	ClientLocation *string                 `json:"client_location"`
-	Sections       []QuotationSectionInput `json:"sections"` // nil means no change
-	ApplyGST       *bool                   `json:"apply_gst"`
-	GSTPercent     *float64                `json:"gst_percent"`
-	Notes          *string                 `json:"notes"`
+	ClientName      *string                 `json:"client_name"`
+	ClientPhone     *string                 `json:"client_phone"`
+	ClientLocation  *string                 `json:"client_location"`
+	Sections        []QuotationSectionInput `json:"sections"` // nil means no change
+	DiscountPercent *float64                `json:"discount_percent"`
+	ApplyGST        *bool                   `json:"apply_gst"`
+	GSTPercent      *float64                `json:"gst_percent"`
+	Notes           *string                 `json:"notes"`
 }
 
 type QuotationListFilter struct {
@@ -173,6 +175,23 @@ func validateGSTInput(applyGST bool, gstPercent float64) error {
 	return nil
 }
 
+func validateDiscountInput(discountPercent float64) error {
+	if discountPercent < 0 {
+		return fmt.Errorf("discount percent cannot be negative")
+	}
+	if discountPercent > 100 {
+		return fmt.Errorf("discount percent cannot be greater than 100")
+	}
+	return nil
+}
+
+func normalizedDiscountPercent(discountPercent float64) float64 {
+	if discountPercent <= 0 {
+		return 0
+	}
+	return roundQuotationMoney(discountPercent)
+}
+
 func normalizedGSTPercent(applyGST bool, gstPercent float64) float64 {
 	if !applyGST {
 		return 0
@@ -180,16 +199,20 @@ func normalizedGSTPercent(applyGST bool, gstPercent float64) float64 {
 	return roundQuotationMoney(gstPercent)
 }
 
-func computeQuotationTotals(subtotal float64, applyGST bool, gstPercent float64) (float64, float64, float64) {
+func computeQuotationTotals(subtotal float64, discountPercent float64, applyGST bool, gstPercent float64) (float64, float64, float64, float64) {
 	subtotal = roundQuotationMoney(subtotal)
+	discountPercent = normalizedDiscountPercent(discountPercent)
+	discountAmount := roundQuotationMoney(subtotal * discountPercent / 100)
+	taxableAmount := roundQuotationMoney(subtotal - discountAmount)
+
 	if !applyGST {
-		return subtotal, 0, subtotal
+		return subtotal, discountAmount, 0, taxableAmount
 	}
 
 	gstPercent = normalizedGSTPercent(applyGST, gstPercent)
-	gstAmount := roundQuotationMoney(subtotal * gstPercent / 100)
-	total := roundQuotationMoney(subtotal + gstAmount)
-	return subtotal, gstAmount, total
+	gstAmount := roundQuotationMoney(taxableAmount * gstPercent / 100)
+	total := roundQuotationMoney(taxableAmount + gstAmount)
+	return subtotal, discountAmount, gstAmount, total
 }
 
 // ── Service functions ─────────────────────────────────────────────────────────
@@ -208,24 +231,29 @@ func CreateQuotation(input CreateQuotationInput) (*models.Quotation, error) {
 	if err := validateGSTInput(input.ApplyGST, input.GSTPercent); err != nil {
 		return nil, err
 	}
-	subtotal, gstAmount, finalTotal := computeQuotationTotals(total, input.ApplyGST, input.GSTPercent)
+	if err := validateDiscountInput(input.DiscountPercent); err != nil {
+		return nil, err
+	}
+	subtotal, discountAmount, gstAmount, finalTotal := computeQuotationTotals(total, input.DiscountPercent, input.ApplyGST, input.GSTPercent)
 
 	now := time.Now()
 	q := &models.Quotation{
-		QuotationID:    quotationID,
-		ClientName:     input.ClientName,
-		ClientPhone:    input.ClientPhone,
-		ClientLocation: input.ClientLocation,
-		Sections:       sections,
-		SubtotalAmount: subtotal,
-		ApplyGST:       input.ApplyGST,
-		GSTPercent:     normalizedGSTPercent(input.ApplyGST, input.GSTPercent),
-		GSTAmount:      gstAmount,
-		TotalAmount:    finalTotal,
-		Status:         models.QuotationDraft,
-		Notes:          input.Notes,
-		CreatedAt:      now,
-		UpdatedAt:      now,
+		QuotationID:     quotationID,
+		ClientName:      input.ClientName,
+		ClientPhone:     input.ClientPhone,
+		ClientLocation:  input.ClientLocation,
+		Sections:        sections,
+		SubtotalAmount:  subtotal,
+		DiscountPercent: normalizedDiscountPercent(input.DiscountPercent),
+		DiscountAmount:  discountAmount,
+		ApplyGST:        input.ApplyGST,
+		GSTPercent:      normalizedGSTPercent(input.ApplyGST, input.GSTPercent),
+		GSTAmount:       gstAmount,
+		TotalAmount:     finalTotal,
+		Status:          models.QuotationDraft,
+		Notes:           input.Notes,
+		CreatedAt:       now,
+		UpdatedAt:       now,
 	}
 
 	if _, err = quotationCol().InsertOne(context.Background(), q); err != nil {
@@ -302,7 +330,8 @@ func UpdateQuotation(quotationID string, input UpdateQuotationInput) (*models.Qu
 	}
 
 	set := bson.M{"updated_at": time.Now()}
-	currentSubtotal := subtotalOrExisting(existing.SubtotalAmount, existing.TotalAmount, existing.GSTAmount)
+	currentSubtotal := subtotalOrExisting(existing.SubtotalAmount, existing.TotalAmount, existing.GSTAmount, existing.DiscountAmount)
+	nextDiscountPercent := existing.DiscountPercent
 	nextApplyGST := existing.ApplyGST
 	nextGSTPercent := existing.GSTPercent
 
@@ -318,11 +347,17 @@ func UpdateQuotation(quotationID string, input UpdateQuotationInput) (*models.Qu
 	if input.Notes != nil {
 		set["notes"] = *input.Notes
 	}
+	if input.DiscountPercent != nil {
+		nextDiscountPercent = *input.DiscountPercent
+	}
 	if input.ApplyGST != nil {
 		nextApplyGST = *input.ApplyGST
 	}
 	if input.GSTPercent != nil {
 		nextGSTPercent = *input.GSTPercent
+	}
+	if err := validateDiscountInput(nextDiscountPercent); err != nil {
+		return nil, err
 	}
 	if err := validateGSTInput(nextApplyGST, nextGSTPercent); err != nil {
 		return nil, err
@@ -332,15 +367,21 @@ func UpdateQuotation(quotationID string, input UpdateQuotationInput) (*models.Qu
 		if err != nil {
 			return nil, err
 		}
-		subtotal, gstAmount, finalTotal := computeQuotationTotals(total, nextApplyGST, nextGSTPercent)
+		subtotal, discountAmount, gstAmount, finalTotal := computeQuotationTotals(total, nextDiscountPercent, nextApplyGST, nextGSTPercent)
 		set["sections"] = sections
 		set["subtotal_amount"] = subtotal
+		set["discount_percent"] = normalizedDiscountPercent(nextDiscountPercent)
+		set["discount_amount"] = discountAmount
+		set["apply_gst"] = nextApplyGST
+		set["gst_percent"] = normalizedGSTPercent(nextApplyGST, nextGSTPercent)
 		set["gst_amount"] = gstAmount
 		set["total_amount"] = finalTotal
 		currentSubtotal = subtotal
 	}
-	if input.ApplyGST != nil || input.GSTPercent != nil {
-		subtotal, gstAmount, finalTotal := computeQuotationTotals(currentSubtotal, nextApplyGST, nextGSTPercent)
+	if input.DiscountPercent != nil || input.ApplyGST != nil || input.GSTPercent != nil {
+		subtotal, discountAmount, gstAmount, finalTotal := computeQuotationTotals(currentSubtotal, nextDiscountPercent, nextApplyGST, nextGSTPercent)
+		set["discount_percent"] = normalizedDiscountPercent(nextDiscountPercent)
+		set["discount_amount"] = discountAmount
 		set["apply_gst"] = nextApplyGST
 		set["gst_percent"] = normalizedGSTPercent(nextApplyGST, nextGSTPercent)
 		set["subtotal_amount"] = subtotal
@@ -363,11 +404,11 @@ func UpdateQuotation(quotationID string, input UpdateQuotationInput) (*models.Qu
 	return &q, err
 }
 
-func subtotalOrExisting(subtotalAmount, totalAmount, gstAmount float64) float64 {
+func subtotalOrExisting(subtotalAmount, totalAmount, gstAmount, discountAmount float64) float64 {
 	if subtotalAmount > 0 {
 		return subtotalAmount
 	}
-	return roundQuotationMoney(totalAmount - gstAmount)
+	return roundQuotationMoney(totalAmount - gstAmount + discountAmount)
 }
 
 // UpdateQuotationStatus transitions a quotation to a new status.

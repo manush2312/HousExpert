@@ -100,7 +100,10 @@ export default function QuotationDetailPage() {
 
   const itemCount = quotation.sections.reduce((n, s) => n + s.items.length, 0)
   const isEditable = quotation.status === 'draft'
-  const subtotal = quotation.subtotal_amount || (quotation.total_amount - (quotation.gst_amount || 0))
+  const discountAmount = quotation.discount_amount || 0
+  const discountPercent = quotation.discount_percent || 0
+  const subtotal = quotation.subtotal_amount || (quotation.total_amount - (quotation.gst_amount || 0) + discountAmount)
+  const taxableAmount = Math.max(0, subtotal - discountAmount)
   const gstAmount = quotation.gst_amount || 0
   const applyGST = Boolean(quotation.apply_gst)
   const gstPercent = quotation.gst_percent || 0
@@ -219,11 +222,20 @@ export default function QuotationDetailPage() {
       </div>
 
       {/* Stats strip */}
-      <div className="grid grid-cols-2 sm:grid-cols-5 gap-3 mb-6">
+      <div className="grid grid-cols-2 sm:grid-cols-3 xl:grid-cols-6 gap-3 mb-6">
         <div className="card px-4 py-3">
           <div className="eyebrow mb-1.5">Subtotal</div>
           <div className="text-[20px] font-semibold numeral" style={{ color: 'var(--ink)' }}>
             {fmtAmount(subtotal)}
+          </div>
+        </div>
+        <div className="card px-4 py-3">
+          <div className="eyebrow mb-1.5">Discount</div>
+          <div className="text-[20px] font-semibold numeral" style={{ color: 'var(--ink)' }}>
+            {discountPercent > 0 ? `${discountPercent}%` : '—'}
+          </div>
+          <div className="text-[11.5px] mt-1" style={{ color: 'var(--ink-4)' }}>
+            {discountPercent > 0 ? `-${fmtINR(discountAmount)}` : 'Not applied'}
           </div>
         </div>
         <div className="card px-4 py-3">
@@ -323,6 +335,14 @@ export default function QuotationDetailPage() {
         <div className="flex items-center justify-between text-[13px]" style={{ color: 'var(--ink-3)' }}>
           <span>Subtotal</span>
           <span className="numeral">{fmtINR(subtotal)}</span>
+        </div>
+        <div className="mt-2 flex items-center justify-between text-[13px]" style={{ color: discountPercent > 0 ? 'var(--ink-2)' : 'var(--ink-4)' }}>
+          <span>Discount{discountPercent > 0 ? ` (${discountPercent}%)` : ''}</span>
+          <span className="numeral">{discountPercent > 0 ? `-${fmtINR(discountAmount)}` : fmtINR(0)}</span>
+        </div>
+        <div className="mt-2 flex items-center justify-between text-[13px]" style={{ color: 'var(--ink-3)' }}>
+          <span>Taxable amount</span>
+          <span className="numeral">{fmtINR(taxableAmount)}</span>
         </div>
         <div className="mt-2 flex items-center justify-between text-[13px]" style={{ color: applyGST ? 'var(--ink-2)' : 'var(--ink-4)' }}>
           <span>GST{applyGST ? ` (${gstPercent}%)` : ''}</span>
