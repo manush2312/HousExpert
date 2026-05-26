@@ -1,15 +1,39 @@
-import { Suspense, useEffect, useMemo } from 'react'
+import { Suspense, useEffect, useMemo, useRef, type RefObject } from 'react'
 import { Canvas, useThree } from '@react-three/fiber'
-import { OrbitControls, GizmoHelper, GizmoViewport } from '@react-three/drei'
+import { OrbitControls, GizmoHelper, GizmoViewport, Html, Line } from '@react-three/drei'
+import type { OrbitControls as OrbitControlsImpl } from 'three-stdlib'
 import {
   DEFAULT_BACK_PANEL_THICKNESS,
   DEFAULT_SECTION_CONFIG,
   useFurnitureStore,
 } from '../../stores/furnitureStore'
+import {
+  getFurniturePreviewMaterial,
+  useFurniturePreviewStore,
+  type FurniturePreviewView,
+} from '../../stores/furniturePreviewStore'
 
 // ── Unit conversion ───────────────────────────────────────────────────────────
 // 1 Three.js unit = 1000 mm (= 1 metre)
 function u(mm: number) { return mm / 1000 }
+
+type ExplodeOffset = [number, number, number]
+type Point3 = [number, number, number]
+
+const NO_EXPLODE_OFFSET: ExplodeOffset = [0, 0, 0]
+
+function getOffsetPosition(
+  posX: number,
+  posY: number,
+  posZ: number,
+  offset: ExplodeOffset = NO_EXPLODE_OFFSET,
+): Point3 {
+  return [u(posX + offset[0]), u(posY + offset[1]), u(posZ + offset[2])]
+}
+
+function point3(posX: number, posY: number, posZ: number): Point3 {
+  return [u(posX), u(posY), u(posZ)]
+}
 
 function getSectionInsets(index: number, lastIndex: number, thickness: number) {
   return {
@@ -18,22 +42,63 @@ function getSectionInsets(index: number, lastIndex: number, thickness: number) {
   }
 }
 
-// ── Camera auto-fit ───────────────────────────────────────────────────────────
+function sideBias(centerX: number) {
+  if (centerX < -1) return -0.28
+  if (centerX > 1) return 0.28
+  return 0
+}
+
+function getCameraPosition(
+  view: FurniturePreviewView,
+  target: [number, number, number],
+  distance: number,
+): [number, number, number] {
+  switch (view) {
+    case 'front':
+      return [target[0], target[1], target[2] + distance]
+    case 'side':
+      return [target[0] + distance, target[1], target[2]]
+    case 'top':
+      return [target[0], target[1] + distance, target[2]]
+    case 'isometric':
+      return [target[0] + distance, target[1] + distance * 0.75, target[2] + distance]
+  }
+}
+
+function getCameraUp(view: FurniturePreviewView): [number, number, number] {
+  return view === 'top' ? [0, 0, -1] : [0, 1, 0]
+}
+
+// ── Camera view controller ───────────────────────────────────────────────────
 // Runs inside the Canvas so it has access to useThree()
 
-function CameraAutoFit() {
+function CameraViewController({ controlsRef }: { controlsRef: RefObject<OrbitControlsImpl | null> }) {
   const { outerBox } = useFurnitureStore()
+  const activeView = useFurniturePreviewStore((state) => state.activeView)
+  const cameraResetKey = useFurniturePreviewStore((state) => state.cameraResetKey)
   const { camera } = useThree()
 
   useEffect(() => {
+    const target: [number, number, number] = outerBox
+      ? [0, u(outerBox.height / 2), 0]
+      : [0, 1, 0]
+
     if (!outerBox) {
       camera.position.set(2.8, 2.2, 2.8)
-      return
+    } else {
+      const maxDim = Math.max(outerBox.width, outerBox.height, outerBox.depth)
+      const distance = u(maxDim) * 2.4
+      camera.position.set(...getCameraPosition(activeView, target, distance))
     }
-    const maxDim = Math.max(outerBox.width, outerBox.height, outerBox.depth)
-    const dist   = u(maxDim) * 2.4
-    camera.position.set(dist, dist * 0.75, dist)
-  }, [outerBox, camera])
+
+    camera.up.set(...getCameraUp(activeView))
+    camera.lookAt(...target)
+
+    if (controlsRef.current) {
+      controlsRef.current.target.set(...target)
+      controlsRef.current.update()
+    }
+  }, [activeView, camera, cameraResetKey, controlsRef, outerBox])
 
   return null
 }
@@ -45,11 +110,12 @@ interface PanelProps {
   w: number; h: number; d: number           // mm
   color: string
   opacity?: number
+  explode?: ExplodeOffset
 }
 
-function Panel({ posX, posY, posZ, w, h, d, color, opacity = 1 }: PanelProps) {
+function Panel({ posX, posY, posZ, w, h, d, color, opacity = 1, explode }: PanelProps) {
   return (
-    <mesh position={[u(posX), u(posY), u(posZ)]} castShadow receiveShadow>
+    <mesh position={getOffsetPosition(posX, posY, posZ, explode)} castShadow receiveShadow>
       <boxGeometry args={[u(w), u(h), u(d)]} />
       <meshStandardMaterial
         color={color}
@@ -62,10 +128,115 @@ function Panel({ posX, posY, posZ, w, h, d, color, opacity = 1 }: PanelProps) {
   )
 }
 
+// ── Dimension labels ─────────────────────────────────────────────────────────
+
+interface DimensionGuideProps {
+  start: Point3
+  end: Point3
+  label: string
+  labelPosition: Point3
+  ticks: Array<[Point3, Point3]>
+}
+
+function DimensionGuide({ start, end, label, labelPosition, ticks }: DimensionGuideProps) {
+  return (
+    <group>
+      <Line points={[start, end]} color="#f8fafc" lineWidth={1.35} />
+      {ticks.map(([tickStart, tickEnd], index) => (
+        <Line key={index} points={[tickStart, tickEnd]} color="#f8fafc" lineWidth={1.15} />
+      ))}
+      <Html
+        position={labelPosition}
+        center
+        pointerEvents="none"
+        zIndexRange={[40, 0]}
+      >
+        <div
+          style={{
+            padding: '2px 6px',
+            borderRadius: 4,
+            background: 'rgba(12,16,22,0.84)',
+            border: '1px solid rgba(255,255,255,0.18)',
+            boxShadow: '0 8px 22px rgba(0,0,0,0.22)',
+            color: 'white',
+            fontSize: 10.5,
+            fontWeight: 600,
+            lineHeight: '13px',
+            whiteSpace: 'nowrap',
+          }}
+        >
+          {label}
+        </div>
+      </Html>
+    </group>
+  )
+}
+
+function DimensionLabels({
+  width,
+  height,
+  depth,
+  clearance,
+}: {
+  width: number
+  height: number
+  depth: number
+  clearance: number
+}) {
+  const maxDim = Math.max(width, height, depth)
+  const gap = Math.max(130, Math.min(280, maxDim * 0.1)) + clearance * 0.45
+  const tick = Math.max(55, Math.min(95, gap * 0.42))
+  const frontZ = depth / 2 + gap
+  const bottomY = -gap * 0.42
+  const leftX = -width / 2 - gap
+  const rightX = width / 2 + gap
+
+  return (
+    <group>
+      <DimensionGuide
+        label={`${width} mm`}
+        start={point3(-width / 2, bottomY, frontZ)}
+        end={point3(width / 2, bottomY, frontZ)}
+        labelPosition={point3(0, bottomY, frontZ + tick * 0.38)}
+        ticks={[
+          [point3(-width / 2, bottomY, frontZ - tick / 2), point3(-width / 2, bottomY, frontZ + tick / 2)],
+          [point3(width / 2, bottomY, frontZ - tick / 2), point3(width / 2, bottomY, frontZ + tick / 2)],
+        ]}
+      />
+      <DimensionGuide
+        label={`${height} mm`}
+        start={point3(leftX, 0, frontZ)}
+        end={point3(leftX, height, frontZ)}
+        labelPosition={point3(leftX - tick * 0.42, height / 2, frontZ)}
+        ticks={[
+          [point3(leftX - tick / 2, 0, frontZ), point3(leftX + tick / 2, 0, frontZ)],
+          [point3(leftX - tick / 2, height, frontZ), point3(leftX + tick / 2, height, frontZ)],
+        ]}
+      />
+      <DimensionGuide
+        label={`${depth} mm`}
+        start={point3(rightX, bottomY, -depth / 2)}
+        end={point3(rightX, bottomY, depth / 2)}
+        labelPosition={point3(rightX + tick * 0.42, bottomY, 0)}
+        ticks={[
+          [point3(rightX - tick / 2, bottomY, -depth / 2), point3(rightX + tick / 2, bottomY, -depth / 2)],
+          [point3(rightX - tick / 2, bottomY, depth / 2), point3(rightX + tick / 2, bottomY, depth / 2)],
+        ]}
+      />
+    </group>
+  )
+}
+
 // ── Full furniture model ──────────────────────────────────────────────────────
 
 function FurnitureModel() {
   const { outerBox, shelves, partitions, drawers, material, sectionConfigs, shelfPartitions } = useFurnitureStore()
+  const showDoors = useFurniturePreviewStore((state) => state.showDoors)
+  const showDimensions = useFurniturePreviewStore((state) => state.showDimensions)
+  const explodedView = useFurniturePreviewStore((state) => state.explodedView)
+  const explodedAmount = useFurniturePreviewStore((state) => state.explodedAmount)
+  const selectedMaterialId = useFurniturePreviewStore((state) => state.selectedMaterialId)
+  const customColor = useFurniturePreviewStore((state) => state.customColor)
 
   // useMemo must be called before any conditional return (Rules of Hooks)
   const sortedPartitions = useMemo(
@@ -78,9 +249,19 @@ function FurnitureModel() {
   const { width: W, height: H, depth: D } = outerBox
   const T   = material.thickness
   const B   = material.backPanelThickness ?? DEFAULT_BACK_PANEL_THICKNESS
-  const col = material.color          // main panel colour
-  const dark = '#a07840'              // slightly darker for top/bottom
-  const back = '#8b6518'              // thin back panel
+  const previewMaterial = getFurniturePreviewMaterial(selectedMaterialId, customColor)
+  const col = selectedMaterialId === 'design' ? material.color : previewMaterial.color
+  const dark = previewMaterial.secondaryColor
+  const back = previewMaterial.backPanelColor
+  const drawerColor = previewMaterial.drawerColor
+  const explodeDistance = explodedView
+    ? Math.max(80, Math.min(260, Math.max(W, H, D) * 0.1)) * explodedAmount
+    : 0
+  const explode = (x: number, y: number, z: number): ExplodeOffset => [
+    x * explodeDistance,
+    y * explodeDistance,
+    z * explodeDistance,
+  ]
 
   const interiorW = W - T * 2
   const interiorH = H - T * 2
@@ -101,34 +282,38 @@ function FurnitureModel() {
 
       {/* Left side */}
       <Panel posX={-W / 2 + T / 2} posY={H / 2} posZ={0}
-             w={T} h={H} d={D} color={col} />
+             w={T} h={H} d={D} color={col} explode={explode(-1, 0, 0)} />
 
       {/* Right side */}
       <Panel posX={W / 2 - T / 2} posY={H / 2} posZ={0}
-             w={T} h={H} d={D} color={col} />
+             w={T} h={H} d={D} color={col} explode={explode(1, 0, 0)} />
 
       {/* Top panel */}
       <Panel posX={0} posY={H - T / 2} posZ={0}
-             w={interiorW} h={T} d={D} color={dark} />
+             w={interiorW} h={T} d={D} color={dark} explode={explode(0, 0.9, 0)} />
 
       {/* Bottom panel */}
       <Panel posX={0} posY={T / 2} posZ={0}
-             w={interiorW} h={T} d={D} color={dark} />
+             w={interiorW} h={T} d={D} color={dark} explode={explode(0, -0.55, 0)} />
 
       {/* Back panel */}
       <Panel posX={0} posY={H / 2} posZ={-D / 2 + B / 2}
-             w={W} h={H} d={B} color={back} />
+             w={W} h={H} d={B} color={back} explode={explode(0, 0, -1)} />
 
       {/* ── Vertical partitions ── */}
-      {sortedPartitions.map((p) => (
-        <Panel key={p.id}
-          posX={-W / 2 + T + p.fromLeft}
-          posY={T + interiorH / 2}
-          posZ={interiorCenterZ}
-          w={T} h={interiorH} d={interiorD}
-          color={col}
-        />
-      ))}
+      {sortedPartitions.map((p) => {
+        const panelCentX = -W / 2 + T + p.fromLeft
+        return (
+          <Panel key={p.id}
+            posX={panelCentX}
+            posY={T + interiorH / 2}
+            posZ={interiorCenterZ}
+            w={T} h={interiorH} d={interiorD}
+            color={col}
+            explode={explode(sideBias(panelCentX), 0, 0.24)}
+          />
+        )
+      })}
 
       {/* ── Shelf partitions (vertical dividers between shelves) ── */}
       {shelfPartitions.map((sp) => {
@@ -144,6 +329,7 @@ function FurnitureModel() {
             posZ={interiorCenterZ}
             w={T} h={panelH} d={interiorD}
             color={col}
+            explode={explode(sideBias(panelCentX), 0, 0.3)}
           />
         )
       })}
@@ -164,6 +350,7 @@ function FurnitureModel() {
             posZ={interiorCenterZ}
             w={shelfW} h={T} d={interiorD}
             color={dark}
+            explode={explode(sideBias(shelfCentX), shelf.fromBottom > interiorH / 2 ? 0.18 : -0.08, 0.42)}
           />
         )
       })}
@@ -190,7 +377,8 @@ function FurnitureModel() {
               posY={drawerCenterY}
               posZ={drawerZ}
               w={drawerW} h={drawer.height - 2} d={drawerD}
-              color="#c8a050"
+              color={drawerColor}
+              explode={explode(sideBias(drawerCenterX), 0, 0.72)}
             />
             {/* Drawer front face */}
             <Panel
@@ -199,6 +387,7 @@ function FurnitureModel() {
               posZ={drawerFrontZ}
               w={drawerW} h={drawer.height - 2} d={T}
               color={col}
+              explode={explode(sideBias(drawerCenterX), 0, 1)}
             />
           </group>
         )
@@ -215,16 +404,17 @@ function FurnitureModel() {
           <group key={`sec-${section.index}`}>
 
             {/* Door */}
-            {cfg.door === 'single' && (
+            {showDoors && cfg.door === 'single' && (
               <Panel
                 posX={section.centerX}
                 posY={doorCenterY}
                 posZ={doorFaceZ}
                 w={section.width - 2} h={doorH} d={T}
                 color={col} opacity={0.82}
+                explode={explode(sideBias(section.centerX), 0, 1.12)}
               />
             )}
-            {cfg.door === 'double' && (() => {
+            {showDoors && cfg.door === 'double' && (() => {
               const halfW = (section.width - 4) / 2
               return (
                 <>
@@ -233,30 +423,44 @@ function FurnitureModel() {
                     posY={doorCenterY} posZ={doorFaceZ}
                     w={halfW} h={doorH} d={T}
                     color={col} opacity={0.82}
+                    explode={explode(sideBias(section.centerX) - 0.22, 0, 1.12)}
                   />
                   <Panel
                     posX={section.centerX + halfW / 2 + 1}
                     posY={doorCenterY} posZ={doorFaceZ}
                     w={halfW} h={doorH} d={T}
                     color={col} opacity={0.82}
+                    explode={explode(sideBias(section.centerX) + 0.22, 0, 1.12)}
                   />
                 </>
               )
             })()}
 
             {/* Hanging rail (25mm diameter rod, ~200mm below top) */}
-            {cfg.hangingRail && (
-              <mesh
-                position={[u(section.centerX), u(T + interiorH - 200), u(interiorCenterZ)]}
-                rotation={[0, 0, Math.PI / 2]}
-              >
-                <cylinderGeometry args={[u(12.5), u(12.5), u(section.width - T * 2), 16]} />
-                <meshStandardMaterial color="#aaaaaa" metalness={0.85} roughness={0.15} />
-              </mesh>
-            )}
+            {cfg.hangingRail && (() => {
+              const railOffset = explode(sideBias(section.centerX), 0, 0.34)
+              return (
+                <mesh
+                  position={getOffsetPosition(section.centerX, T + interiorH - 200, interiorCenterZ, railOffset)}
+                  rotation={[0, 0, Math.PI / 2]}
+                >
+                  <cylinderGeometry args={[u(12.5), u(12.5), u(section.width - T * 2), 16]} />
+                  <meshStandardMaterial color="#aaaaaa" metalness={0.85} roughness={0.15} />
+                </mesh>
+              )
+            })()}
           </group>
         )
       })}
+
+      {showDimensions && (
+        <DimensionLabels
+          width={W}
+          height={H}
+          depth={D}
+          clearance={explodeDistance}
+        />
+      )}
     </group>
   )
 }
@@ -276,6 +480,7 @@ function EmptyHint() {
 
 export default function ThreeCanvas() {
   const { outerBox } = useFurnitureStore()
+  const controlsRef = useRef<OrbitControlsImpl | null>(null)
 
   const camTarget: [number, number, number] = outerBox
     ? [0, u(outerBox.height / 2), 0]
@@ -314,11 +519,12 @@ export default function ThreeCanvas() {
             position={[0, 0, 0]}
           />
 
-          {/* ── Camera auto-fit when furniture changes ── */}
-          <CameraAutoFit />
+          {/* ── Camera view buttons + auto-fit when furniture changes ── */}
+          <CameraViewController controlsRef={controlsRef} />
 
           {/* ── Controls ── */}
           <OrbitControls
+            ref={controlsRef}
             makeDefault
             target={camTarget}
             enablePan={false}
