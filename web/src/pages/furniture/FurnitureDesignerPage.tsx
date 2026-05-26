@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { useNavigate, useParams } from 'react-router-dom'
 import {
   ArrowLeft, Save, Download,
   Square, MousePointer, Hand, Minus, PanelLeft, LayoutGrid, Trash2, RotateCcw, Pencil,
@@ -13,6 +13,12 @@ import {
 } from '../../stores/furnitureStore'
 import DrawingCanvas, { OUTER_BOX_SELECTION_ID } from '../../components/furniture/DrawingCanvas'
 import ThreeCanvas from '../../components/furniture/ThreeCanvas'
+import LoadingButton from '../../components/LoadingButton'
+import {
+  createFurnitureDesign,
+  getFurnitureDesign,
+  updateFurnitureDesign,
+} from '../../services/furnitureDesignService'
 import { calculateCutList } from '../../utils/cutListCalculator'
 import { exportCutListPdf } from '../../utils/exportCutListPdf'
 
@@ -20,7 +26,83 @@ import { exportCutListPdf } from '../../utils/exportCutListPdf'
 
 export default function FurnitureDesignerPage() {
   const navigate = useNavigate()
-  const { designName, setDesignName, reset } = useFurnitureStore()
+  const { id } = useParams<{ id: string }>()
+  const {
+    designId,
+    designName,
+    hasUnsavedChanges,
+    lastSavedAt,
+    setDesignName,
+    reset,
+    loadDesign,
+    markSaved,
+    serializeDesign,
+  } = useFurnitureStore()
+  const [loadingDesign, setLoadingDesign] = useState(Boolean(id))
+  const [loadError, setLoadError] = useState('')
+  const [saveError, setSaveError] = useState('')
+  const [saving, setSaving] = useState(false)
+
+  useEffect(() => {
+    if (!id) {
+      reset()
+      setLoadingDesign(false)
+      setLoadError('')
+      setSaveError('')
+      return
+    }
+
+    let active = true
+    setLoadingDesign(true)
+    setLoadError('')
+    setSaveError('')
+
+    getFurnitureDesign(id)
+      .then((res) => {
+        if (!active) return
+        loadDesign(res.data.data)
+      })
+      .catch(() => {
+        if (!active) return
+        setLoadError('Failed to load this furniture design. It may have been deleted or the backend is not reachable.')
+      })
+      .finally(() => {
+        if (active) setLoadingDesign(false)
+      })
+
+    return () => {
+      active = false
+    }
+  }, [id, loadDesign, reset])
+
+  if (loadingDesign) {
+    return <DesignerLoadingState onBack={() => navigate('/furniture')} />
+  }
+
+  if (loadError) {
+    return <DesignerErrorState message={loadError} onBack={() => navigate('/furniture')} />
+  }
+
+  const handleSave = async () => {
+    if (saving) return
+    setSaving(true)
+    setSaveError('')
+    try {
+      const payload = serializeDesign()
+      if (designId) {
+        const res = await updateFurnitureDesign(designId, payload)
+        markSaved(res.data.data)
+      } else {
+        const res = await createFurnitureDesign(payload)
+        markSaved(res.data.data)
+        navigate(`/furniture/${res.data.data.design_id}`, { replace: true })
+      }
+    } catch {
+      setSaveError('Failed to save. Please try again.')
+    } finally {
+      setSaving(false)
+    }
+  }
 
   return (
     <div className="flex flex-col h-[calc(100vh-56px)]" style={{ background: 'var(--bg)' }}>
@@ -46,6 +128,13 @@ export default function FurnitureDesignerPage() {
           className="bg-transparent outline-none text-[14px] font-medium w-56"
           style={{ color: 'var(--ink)', border: 'none', padding: 0, fontFamily: 'inherit' }}
         />
+        <SaveStatus
+          saving={saving}
+          saveError={saveError}
+          hasUnsavedChanges={hasUnsavedChanges}
+          lastSavedAt={lastSavedAt}
+          designId={designId}
+        />
 
         <div className="flex-1" />
 
@@ -58,10 +147,15 @@ export default function FurnitureDesignerPage() {
           Reset
         </button>
         <ExportPdfButton />
-        <button className="btn btn-primary btn-sm flex items-center gap-1.5">
-          <Save size={13} />
+        <LoadingButton
+          onClick={handleSave}
+          loading={saving}
+          loadingText="Saving..."
+          className="btn btn-primary btn-sm flex items-center gap-1.5"
+          leadingIcon={<Save size={13} />}
+        >
           Save
-        </button>
+        </LoadingButton>
       </div>
 
       {/* ── Body ── */}
@@ -77,6 +171,94 @@ export default function FurnitureDesignerPage() {
 
         {/* ── Right panel ── */}
         <RightPanel />
+      </div>
+    </div>
+  )
+}
+
+function SaveStatus({
+  saving,
+  saveError,
+  hasUnsavedChanges,
+  lastSavedAt,
+  designId,
+}: {
+  saving: boolean
+  saveError: string
+  hasUnsavedChanges: boolean
+  lastSavedAt: string | null
+  designId: string | null
+}) {
+  if (saving) {
+    return <span className="chip chip-accent shrink-0">Saving...</span>
+  }
+  if (saveError) {
+    return <span className="chip chip-bad shrink-0" title={saveError}>Save failed</span>
+  }
+  if (hasUnsavedChanges) {
+    return <span className="chip chip-warn shrink-0">Unsaved changes</span>
+  }
+  if (designId) {
+    return <span className="chip chip-ok shrink-0">{lastSavedAt ? `Saved ${formatSavedAt(lastSavedAt)}` : 'Saved'}</span>
+  }
+  return <span className="chip shrink-0">Not saved yet</span>
+}
+
+function formatSavedAt(value: string): string {
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return ''
+
+  const diffMs = Date.now() - date.getTime()
+  const diffMinutes = Math.max(0, Math.floor(diffMs / 60000))
+  if (diffMinutes < 1) return 'just now'
+  if (diffMinutes < 60) return `${diffMinutes} min ago`
+
+  const diffHours = Math.floor(diffMinutes / 60)
+  if (diffHours < 24) return `${diffHours} hr ago`
+  return date.toLocaleDateString('en-IN', { day: 'numeric', month: 'short' })
+}
+
+function DesignerLoadingState({ onBack }: { onBack: () => void }) {
+  return (
+    <div className="flex flex-col h-[calc(100vh-56px)]" style={{ background: 'var(--bg)' }}>
+      <div
+        className="h-12 px-4 flex items-center gap-3 shrink-0"
+        style={{ borderBottom: '1px solid var(--line)', background: 'var(--bg-elev)' }}
+      >
+        <button onClick={onBack} className="btn btn-ghost btn-sm btn-icon" title="Back to designs">
+          <ArrowLeft size={15} />
+        </button>
+        <div style={{ width: 1, height: 20, background: 'var(--line)' }} />
+        <div className="skeleton h-4 w-48" />
+      </div>
+      <div className="flex flex-1 min-h-0">
+        <div className="w-13 shrink-0" style={{ borderRight: '1px solid var(--line)', background: 'var(--bg-elev)' }} />
+        <div className="flex-1 p-8">
+          <div className="skeleton h-full w-full rounded-xl" />
+        </div>
+        <div className="w-64 shrink-0 p-4 space-y-4" style={{ borderLeft: '1px solid var(--line)', background: 'var(--bg-elev)' }}>
+          <div className="skeleton h-48 w-full rounded-lg" />
+          <div className="skeleton h-24 w-full rounded-lg" />
+          <div className="skeleton h-32 w-full rounded-lg" />
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function DesignerErrorState({ message, onBack }: { message: string; onBack: () => void }) {
+  return (
+    <div className="flex h-[calc(100vh-56px)] items-center justify-center px-6" style={{ background: 'var(--bg)' }}>
+      <div className="card max-w-md px-6 py-6 text-center">
+        <div className="text-[16px] font-semibold mb-2" style={{ color: 'var(--ink)' }}>
+          Could not open design
+        </div>
+        <p className="text-[13px] leading-relaxed mb-5" style={{ color: 'var(--ink-3)' }}>
+          {message}
+        </p>
+        <button onClick={onBack} className="btn btn-primary">
+          Back to designs
+        </button>
       </div>
     </div>
   )

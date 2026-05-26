@@ -59,6 +59,7 @@ func main() {
 	handlers.RegisterProductRoutes(v1)
 	handlers.RegisterInventoryRoutes(v1)
 	handlers.RegisterQuotationRoutes(v1)
+	handlers.RegisterFurnitureDesignRoutes(v1)
 	handlers.RegisterExportRoutes(v1)
 
 	port := os.Getenv("PORT")
