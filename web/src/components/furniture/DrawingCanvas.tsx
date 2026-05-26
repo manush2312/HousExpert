@@ -1,13 +1,13 @@
 import { useRef, useState, useEffect, useMemo, useCallback } from 'react'
 import { Stage, Layer, Rect, Line, Text, Group } from 'react-konva'
 import type { KonvaEventObject } from 'konva/lib/Node'
-import { DRAWER_BOX_HEIGHT_ALLOWANCE, useFurnitureStore } from '../../stores/furnitureStore'
+import { DRAWER_BOX_HEIGHT_ALLOWANCE, OUTER_BOX_SELECTION_ID, useFurnitureStore } from '../../stores/furnitureStore'
+export { OUTER_BOX_SELECTION_ID }
 
 // ── Scale ─────────────────────────────────────────────────────────────────────
 const PX_PER_MM = 1          // model scale: 1 canvas unit = 1mm
 const GRID_MINOR_MM = 50     // minor grid every 50mm
 const GRID_MAJOR_MM = 250    // major grid every 250mm
-export const OUTER_BOX_SELECTION_ID = 'outer-box'
 const DEFAULT_ZOOM = 1
 const MIN_ZOOM = 0.02
 const MAX_ZOOM = 8
