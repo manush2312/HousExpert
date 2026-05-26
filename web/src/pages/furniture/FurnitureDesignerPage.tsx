@@ -3,7 +3,7 @@ import { useNavigate, useParams } from 'react-router-dom'
 import {
   ArrowLeft, Save, Download,
   Square, MousePointer, Hand, Minus, PanelLeft, LayoutGrid, Trash2, RotateCcw, Pencil, Undo2, Redo2,
-  Eye, EyeOff, Ruler, Layers, Box, Maximize2, X,
+  Eye, EyeOff, Ruler, Layers, Box, Maximize2, X, Moon, Sun,
 } from 'lucide-react'
 import {
   DEFAULT_BACK_PANEL_THICKNESS,
@@ -627,6 +627,7 @@ function PreviewCustomizeModal({ onClose }: { onClose: () => void }) {
     explodedAmount,
     showDimensions,
     activeView,
+    backgroundMode,
     selectedMaterialId,
     customColor,
     toggleShowDoors,
@@ -634,6 +635,7 @@ function PreviewCustomizeModal({ onClose }: { onClose: () => void }) {
     setExplodedAmount,
     toggleDimensions,
     setActiveView,
+    setBackgroundMode,
     resetCamera,
     setSelectedMaterialId,
     setCustomColor,
@@ -765,6 +767,22 @@ function PreviewCustomizeModal({ onClose }: { onClose: () => void }) {
                   active={showDimensions}
                   onClick={toggleDimensions}
                 />
+                <div className="grid grid-cols-2 gap-2">
+                  <PreviewControlButton
+                    title="Dark background"
+                    Icon={Moon}
+                    label="Dark"
+                    active={backgroundMode === 'dark'}
+                    onClick={() => setBackgroundMode('dark')}
+                  />
+                  <PreviewControlButton
+                    title="Light background"
+                    Icon={Sun}
+                    label="Light"
+                    active={backgroundMode === 'light'}
+                    onClick={() => setBackgroundMode('light')}
+                  />
+                </div>
               </div>
             </PreviewSection>
 

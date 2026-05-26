@@ -1,6 +1,7 @@
 import { create } from 'zustand'
 
 export type FurniturePreviewView = 'isometric' | 'front' | 'side' | 'top'
+export type FurniturePreviewBackground = 'dark' | 'light'
 export type FurniturePreviewMaterialId =
   | 'design'
   | 'natural_oak'
@@ -25,6 +26,7 @@ interface FurniturePreviewSettings {
   explodedAmount: number
   showDimensions: boolean
   activeView: FurniturePreviewView
+  backgroundMode: FurniturePreviewBackground
   selectedMaterialId: FurniturePreviewMaterialId
   customColor: string
 }
@@ -88,6 +90,7 @@ const DEFAULT_PREVIEW_SETTINGS: FurniturePreviewSettings = {
   explodedAmount: 0.35,
   showDimensions: false,
   activeView: 'isometric',
+  backgroundMode: 'dark',
   selectedMaterialId: 'design',
   customColor: DEFAULT_CUSTOM_PREVIEW_COLOR,
 }
@@ -161,6 +164,8 @@ interface FurniturePreviewState extends FurniturePreviewSettings {
   setShowDimensions: (show: boolean) => void
   toggleDimensions: () => void
   setActiveView: (view: FurniturePreviewView) => void
+  setBackgroundMode: (mode: FurniturePreviewBackground) => void
+  toggleBackgroundMode: () => void
   resetCamera: () => void
   setSelectedMaterialId: (id: FurniturePreviewMaterialId) => void
   setCustomColor: (color: string) => void
@@ -184,6 +189,10 @@ export const useFurniturePreviewStore = create<FurniturePreviewState>((set) => (
   setShowDimensions: (show) => set({ showDimensions: show }),
   toggleDimensions: () => set((state) => ({ showDimensions: !state.showDimensions })),
   setActiveView: (view) => set({ activeView: view }),
+  setBackgroundMode: (mode) => set({ backgroundMode: mode }),
+  toggleBackgroundMode: () => set((state) => ({
+    backgroundMode: state.backgroundMode === 'dark' ? 'light' : 'dark',
+  })),
   resetCamera: () => set((state) => ({
     activeView: 'isometric',
     cameraResetKey: state.cameraResetKey + 1,
