@@ -79,6 +79,21 @@ export interface Section {
   drawers: Drawer[]
 }
 
+export interface FurnitureSnapshot {
+  designName: string
+  furnitureType: FurnitureType
+  outerBox: OuterBox | null
+  material: Material
+  shelves: Shelf[]
+  partitions: Partition[]
+  drawers: Drawer[]
+  customPanels: CustomPanel[]
+  shelfPartitions: ShelfPartition[]
+  sectionConfigs: Record<number, SectionConfig>
+}
+
+export const MAX_FURNITURE_HISTORY = 100
+
 // ── State ─────────────────────────────────────────────────────────────────────
 
 interface FurnitureState {
@@ -88,6 +103,9 @@ interface FurnitureState {
   furnitureType: FurnitureType
   hasUnsavedChanges: boolean
   lastSavedAt: string | null
+  savedSnapshot: FurnitureSnapshot | null
+  past: FurnitureSnapshot[]
+  future: FurnitureSnapshot[]
 
   // Outer box — null until drawn
   outerBox: OuterBox | null
@@ -156,6 +174,12 @@ interface FurnitureState {
 
   // Remove
   removeSelected: () => void
+
+  // History
+  undo: () => void
+  redo: () => void
+  canUndo: () => boolean
+  canRedo: () => boolean
 
   // Reset everything
   reset: () => void
@@ -312,6 +336,84 @@ const DEFAULT_MATERIAL: Material = {
   color: '#c8a96e',
 }
 
+function cloneSectionConfigs(configs: Record<number, SectionConfig>): Record<number, SectionConfig> {
+  return Object.fromEntries(
+    Object.entries(configs).map(([key, cfg]) => [
+      Number(key),
+      { door: cfg.door, hangingRail: cfg.hangingRail },
+    ]),
+  )
+}
+
+function cloneFurnitureSnapshot(snapshot: FurnitureSnapshot): FurnitureSnapshot {
+  return {
+    designName: snapshot.designName,
+    furnitureType: snapshot.furnitureType,
+    outerBox: snapshot.outerBox ? { ...snapshot.outerBox } : null,
+    material: { ...snapshot.material },
+    shelves: snapshot.shelves.map((shelf) => ({ ...shelf })),
+    partitions: snapshot.partitions.map((partition) => ({ ...partition })),
+    drawers: snapshot.drawers.map((drawer) => ({ ...drawer })),
+    customPanels: snapshot.customPanels.map((panel) => ({ ...panel })),
+    shelfPartitions: snapshot.shelfPartitions.map((partition) => ({ ...partition })),
+    sectionConfigs: cloneSectionConfigs(snapshot.sectionConfigs),
+  }
+}
+
+export function captureFurnitureSnapshot(state: FurnitureState): FurnitureSnapshot {
+  return cloneFurnitureSnapshot({
+    designName: state.designName,
+    furnitureType: state.furnitureType,
+    outerBox: state.outerBox,
+    material: state.material,
+    shelves: state.shelves,
+    partitions: state.partitions,
+    drawers: state.drawers,
+    customPanels: state.customPanels,
+    shelfPartitions: state.shelfPartitions,
+    sectionConfigs: state.sectionConfigs,
+  })
+}
+
+function furnitureSnapshotsMatch(a: FurnitureSnapshot | null, b: FurnitureSnapshot | null): boolean {
+  if (!a || !b) return a === b
+  return JSON.stringify(a) === JSON.stringify(b)
+}
+
+export function restoreFurnitureSnapshot(
+  snapshot: FurnitureSnapshot,
+  savedSnapshot: FurnitureSnapshot | null = null,
+): Partial<FurnitureState> {
+  return {
+    ...cloneFurnitureSnapshot(snapshot),
+    mode: snapshot.outerBox ? 'select' : 'draw_box',
+    selectedId: null,
+    hasUnsavedChanges: !furnitureSnapshotsMatch(snapshot, savedSnapshot),
+  }
+}
+
+export function pushFurnitureHistory(state: FurnitureState): Pick<FurnitureState, 'past' | 'future'> {
+  return {
+    past: [...state.past, captureFurnitureSnapshot(state)].slice(-MAX_FURNITURE_HISTORY),
+    future: [],
+  }
+}
+
+export function clearFurnitureFuture(): Pick<FurnitureState, 'future'> {
+  return { future: [] }
+}
+
+export function clearFurnitureHistory(): Pick<FurnitureState, 'past' | 'future'> {
+  return { past: [], future: [] }
+}
+
+function recordFurnitureEdit(state: FurnitureState): Pick<FurnitureState, 'past' | 'future' | 'hasUnsavedChanges'> {
+  return {
+    ...pushFurnitureHistory(state),
+    hasUnsavedChanges: true,
+  }
+}
+
 function serializeFurnitureDesignState(s: FurnitureState): CreateFurnitureDesignPayload {
   return {
     name: s.designName,
@@ -379,59 +481,84 @@ function sectionConfigsFromDesign(design: FurnitureDesign): Record<number, Secti
 }
 
 function storePatchFromDesign(design: FurnitureDesign): Partial<FurnitureState> {
+  const designName = design.name || 'Untitled Design'
+  const furnitureType = design.furniture_type || 'wardrobe'
+  const outerBox = design.outer_box
+    ? {
+        width: design.outer_box.width,
+        height: design.outer_box.height,
+        depth: design.outer_box.depth,
+      }
+    : null
+  const material = {
+    thickness: design.material?.thickness ?? DEFAULT_MATERIAL.thickness,
+    backPanelThickness: design.material?.back_panel_thickness ?? DEFAULT_MATERIAL.backPanelThickness,
+    color: design.material?.color || DEFAULT_MATERIAL.color,
+  }
+  const shelves = (design.shelves ?? []).map((shelf) => ({
+    id: localElementId(shelf.element_id),
+    fromBottom: shelf.from_bottom,
+    sectionIndex: shelf.section_index,
+  }))
+  const partitions = (design.partitions ?? []).map((partition) => ({
+    id: localElementId(partition.element_id),
+    fromLeft: partition.from_left,
+  }))
+  const drawers = (design.drawers ?? []).map((drawer) => ({
+    id: localElementId(drawer.element_id),
+    sectionIndex: drawer.section_index,
+    fromBottom: drawer.from_bottom,
+    height: drawer.height,
+    frontSetback: drawer.front_setback,
+  }))
+  const customPanels = (design.custom_panels ?? []).map((panel) => ({
+    id: localElementId(panel.element_id),
+    name: panel.name,
+    fromLeft: panel.from_left,
+    fromBottom: panel.from_bottom,
+    width: panel.width,
+    height: panel.height,
+    thickness: panel.thickness,
+  }))
+  const shelfPartitions = (design.shelf_partitions ?? []).map((partition) => ({
+    id: localElementId(partition.element_id),
+    sectionIndex: partition.section_index,
+    fromLeft: partition.from_left,
+    fromBottom: partition.from_bottom,
+    toBottom: partition.to_bottom,
+  }))
+  const sectionConfigs = sectionConfigsFromDesign(design)
+  const savedSnapshot = cloneFurnitureSnapshot({
+    designName,
+    furnitureType,
+    outerBox,
+    material,
+    shelves,
+    partitions,
+    drawers,
+    customPanels,
+    shelfPartitions,
+    sectionConfigs,
+  })
+
   return {
     designId: design.design_id,
-    designName: design.name || 'Untitled Design',
-    furnitureType: design.furniture_type || 'wardrobe',
-    outerBox: design.outer_box
-      ? {
-          width: design.outer_box.width,
-          height: design.outer_box.height,
-          depth: design.outer_box.depth,
-        }
-      : null,
-    material: {
-      thickness: design.material?.thickness ?? DEFAULT_MATERIAL.thickness,
-      backPanelThickness: design.material?.back_panel_thickness ?? DEFAULT_MATERIAL.backPanelThickness,
-      color: design.material?.color || DEFAULT_MATERIAL.color,
-    },
-    shelves: (design.shelves ?? []).map((shelf) => ({
-      id: localElementId(shelf.element_id),
-      fromBottom: shelf.from_bottom,
-      sectionIndex: shelf.section_index,
-    })),
-    partitions: (design.partitions ?? []).map((partition) => ({
-      id: localElementId(partition.element_id),
-      fromLeft: partition.from_left,
-    })),
-    drawers: (design.drawers ?? []).map((drawer) => ({
-      id: localElementId(drawer.element_id),
-      sectionIndex: drawer.section_index,
-      fromBottom: drawer.from_bottom,
-      height: drawer.height,
-      frontSetback: drawer.front_setback,
-    })),
-    customPanels: (design.custom_panels ?? []).map((panel) => ({
-      id: localElementId(panel.element_id),
-      name: panel.name,
-      fromLeft: panel.from_left,
-      fromBottom: panel.from_bottom,
-      width: panel.width,
-      height: panel.height,
-      thickness: panel.thickness,
-    })),
-    shelfPartitions: (design.shelf_partitions ?? []).map((partition) => ({
-      id: localElementId(partition.element_id),
-      sectionIndex: partition.section_index,
-      fromLeft: partition.from_left,
-      fromBottom: partition.from_bottom,
-      toBottom: partition.to_bottom,
-    })),
-    sectionConfigs: sectionConfigsFromDesign(design),
-    mode: design.outer_box ? 'select' : 'draw_box',
+    designName,
+    furnitureType,
+    outerBox,
+    material,
+    shelves,
+    partitions,
+    drawers,
+    customPanels,
+    shelfPartitions,
+    sectionConfigs,
+    mode: outerBox ? 'select' : 'draw_box',
     selectedId: null,
     hasUnsavedChanges: false,
     lastSavedAt: design.updated_at ?? new Date().toISOString(),
+    savedSnapshot,
+    ...clearFurnitureHistory(),
   }
 }
 
@@ -443,6 +570,9 @@ export const useFurnitureStore = create<FurnitureState>((set, get) => ({
   furnitureType: 'wardrobe',
   hasUnsavedChanges: false,
   lastSavedAt: null,
+  savedSnapshot: null,
+  past: [],
+  future: [],
   outerBox: null,
   material: DEFAULT_MATERIAL,
   shelves: [],
@@ -485,29 +615,43 @@ export const useFurnitureStore = create<FurnitureState>((set, get) => ({
 
   // ── Actions ───────────────────────────────────────────────────────────────
 
-  setDesignName: (name) => set({ designName: name, hasUnsavedChanges: true }),
-  setFurnitureType: (type) => set({ furnitureType: type, hasUnsavedChanges: true }),
+  setDesignName: (name) => set((s) => (
+    s.designName === name ? {} : { ...recordFurnitureEdit(s), designName: name }
+  )),
+  setFurnitureType: (type) => set((s) => (
+    s.furnitureType === type ? {} : { ...recordFurnitureEdit(s), furnitureType: type }
+  )),
   setMode: (mode) => set({ mode }),
   setSelected: (id) => set({ selectedId: id }),
   serializeDesign: () => serializeFurnitureDesignState(get()),
   loadDesign: (design) => set(storePatchFromDesign(design)),
-  markSaved: (design) => set((s) => design
-    ? storePatchFromDesign(design)
-    : { hasUnsavedChanges: false, lastSavedAt: s.lastSavedAt ?? new Date().toISOString() }),
+  markSaved: (design) => set((s) => ({
+    designId: design?.design_id ?? s.designId,
+    hasUnsavedChanges: false,
+    lastSavedAt: design?.updated_at ?? new Date().toISOString(),
+    savedSnapshot: captureFurnitureSnapshot(s),
+  })),
 
   setOuterBox: (box) => {
-    const { material } = get()
-    const minOuter = minOuterDimension(material.thickness)
-    const minDepth = backPanelThicknessOf(material) + 1
-    set({
-      outerBox: {
+    set((s) => {
+      const minOuter = minOuterDimension(s.material.thickness)
+      const minDepth = backPanelThicknessOf(s.material) + 1
+      const outerBox = {
         width: Math.max(minOuter, snap(box.width)),
         height: Math.max(minOuter, snap(box.height)),
         depth: Math.max(minDepth, snap(box.depth)),
-      },
-      // Switch to select mode once box is drawn
-      mode: 'select',
-      hasUnsavedChanges: true,
+      }
+      const isSameBox = s.outerBox
+        && s.outerBox.width === outerBox.width
+        && s.outerBox.height === outerBox.height
+        && s.outerBox.depth === outerBox.depth
+      if (isSameBox && s.mode === 'select') return {}
+      return {
+        ...recordFurnitureEdit(s),
+        outerBox,
+        // Switch to select mode once box is drawn
+        mode: 'select',
+      }
     })
   },
 
@@ -517,14 +661,16 @@ export const useFurnitureStore = create<FurnitureState>((set, get) => ({
       ...s.outerBox,
       depth: Math.max(backPanelThicknessOf(s.material) + 1, snap(depth)),
     }
+    if (s.outerBox.depth === nextOuterBox.depth) return {}
     return {
+      ...recordFurnitureEdit(s),
       outerBox: nextOuterBox,
       drawers: clampDrawerFrontSetbacks(s.drawers, nextOuterBox, s.material),
-      hasUnsavedChanges: true,
     }
   }),
 
-  clearOuterBox: () => set({
+  clearOuterBox: () => set((s) => ({
+    ...recordFurnitureEdit(s),
     outerBox: null,
     shelves: [],
     partitions: [],
@@ -534,35 +680,52 @@ export const useFurnitureStore = create<FurnitureState>((set, get) => ({
     sectionConfigs: {},
     mode: 'draw_box',
     selectedId: null,
-    hasUnsavedChanges: true,
-  }),
+  })),
 
   setThickness: (mm) => set((s) => {
     const requested = Math.max(1, snap(mm))
-    if (!s.outerBox) return { material: { ...s.material, thickness: requested }, hasUnsavedChanges: true }
+    if (!s.outerBox) {
+      if (s.material.thickness === requested) return {}
+      return {
+        ...recordFurnitureEdit(s),
+        material: { ...s.material, thickness: requested },
+      }
+    }
     const maxThickness = Math.max(1, Math.floor((Math.min(s.outerBox.width, s.outerBox.height) - 1) / 2))
     const material = { ...s.material, thickness: clamp(requested, 1, maxThickness) }
+    if (s.material.thickness === material.thickness) return {}
     return {
+      ...recordFurnitureEdit(s),
       material,
       drawers: clampDrawerFrontSetbacks(s.drawers, s.outerBox, material),
-      hasUnsavedChanges: true,
     }
   }),
   setBackPanelThickness: (mm) => set((s) => {
     const requested = Math.max(1, snap(mm))
-    if (!s.outerBox) return { material: { ...s.material, backPanelThickness: requested }, hasUnsavedChanges: true }
+    if (!s.outerBox) {
+      if (s.material.backPanelThickness === requested) return {}
+      return {
+        ...recordFurnitureEdit(s),
+        material: { ...s.material, backPanelThickness: requested },
+      }
+    }
     const maxBackPanelThickness = Math.max(1, s.outerBox.depth - 1)
     const material = {
       ...s.material,
       backPanelThickness: clamp(requested, 1, maxBackPanelThickness),
     }
+    if (s.material.backPanelThickness === material.backPanelThickness) return {}
     return {
+      ...recordFurnitureEdit(s),
       material,
       drawers: clampDrawerFrontSetbacks(s.drawers, s.outerBox, material),
-      hasUnsavedChanges: true,
     }
   }),
-  setMaterialColor: (color) => set((s) => ({ material: { ...s.material, color }, hasUnsavedChanges: true })),
+  setMaterialColor: (color) => set((s) => (
+    s.material.color === color
+      ? {}
+      : { ...recordFurnitureEdit(s), material: { ...s.material, color } }
+  )),
 
   addShelf: (fromBottom, sectionIndex) => {
     const { outerBox, material } = get()
@@ -571,7 +734,10 @@ export const useFurnitureStore = create<FurnitureState>((set, get) => ({
     const interiorH = outerBox.height - T * 2
     if (interiorH <= 0) return
     const clamped = clamp(snap(fromBottom), T / 2, interiorH - T / 2)
-    set((s) => ({ shelves: [...s.shelves, { id: uid(), fromBottom: clamped, sectionIndex }], hasUnsavedChanges: true }))
+    set((s) => ({
+      ...recordFurnitureEdit(s),
+      shelves: [...s.shelves, { id: uid(), fromBottom: clamped, sectionIndex }],
+    }))
   },
 
   addPartition: (fromLeft) => {
@@ -593,12 +759,12 @@ export const useFurnitureStore = create<FurnitureState>((set, get) => ({
     set((s) => {
       const shiftIdx = (idx: number) => idx > insertionIdx ? idx + 1 : idx
       return {
+        ...recordFurnitureEdit(s),
         partitions:      [...s.partitions, { id: uid(), fromLeft: clamped }],
         shelves:         s.shelves.map((sh) => ({ ...sh, sectionIndex: shiftIdx(sh.sectionIndex) })),
         drawers:         s.drawers.map((d)  => ({ ...d,  sectionIndex: shiftIdx(d.sectionIndex)  })),
         shelfPartitions: s.shelfPartitions.map((sp) => ({ ...sp, sectionIndex: shiftIdx(sp.sectionIndex) })),
         sectionConfigs:  shiftSectionConfigsForInsert(s.sectionConfigs, insertionIdx),
-        hasUnsavedChanges: true,
       }
     })
   },
@@ -612,8 +778,8 @@ export const useFurnitureStore = create<FurnitureState>((set, get) => ({
     const snappedH = clamp(snap(height), minH, interiorH)
     const snapped = clamp(snap(fromBottom), 0, interiorH - snappedH)
     set((s) => ({
+      ...recordFurnitureEdit(s),
       drawers: [...s.drawers, { id: uid(), sectionIndex, fromBottom: snapped, height: snappedH, frontSetback: 0 }],
-      hasUnsavedChanges: true,
     }))
   },
 
@@ -625,8 +791,8 @@ export const useFurnitureStore = create<FurnitureState>((set, get) => ({
     if (interiorH <= 0) return
     const clamped = clamp(snap(fromBottom), T / 2, interiorH - T / 2)
     set((s) => ({
+      ...recordFurnitureEdit(s),
       shelves: s.shelves.map((sh) => sh.id === id ? { ...sh, fromBottom: clamped } : sh),
-      hasUnsavedChanges: true,
     }))
   },
 
@@ -639,8 +805,8 @@ export const useFurnitureStore = create<FurnitureState>((set, get) => ({
     if (!bounds) return
     const clamped = clamp(snap(fromLeft), bounds.min, bounds.max)
     set((s) => ({
+      ...recordFurnitureEdit(s),
       partitions: s.partitions.map((p) => p.id === id ? { ...p, fromLeft: clamped } : p),
-      hasUnsavedChanges: true,
     }))
   },
 
@@ -652,8 +818,8 @@ export const useFurnitureStore = create<FurnitureState>((set, get) => ({
     const interiorH = outerBox.height - material.thickness * 2
     const snapped = clamp(snap(fromBottom), 0, Math.max(0, interiorH - drawer.height))
     set((s) => ({
+      ...recordFurnitureEdit(s),
       drawers: s.drawers.map((d) => d.id === id ? { ...d, fromBottom: snapped } : d),
-      hasUnsavedChanges: true,
     }))
   },
 
@@ -668,8 +834,8 @@ export const useFurnitureStore = create<FurnitureState>((set, get) => ({
       maxDrawerFrontSetback(outerBox, material.thickness, backPanelThicknessOf(material)),
     )
     set((s) => ({
+      ...recordFurnitureEdit(s),
       drawers: s.drawers.map((d) => d.id === id ? { ...d, frontSetback: clamped } : d),
-      hasUnsavedChanges: true,
     }))
   },
 
@@ -682,6 +848,7 @@ export const useFurnitureStore = create<FurnitureState>((set, get) => ({
     if (!bounds) return
     const clamped = clamp(snap(fromLeft), bounds.min, bounds.max)
     set((s) => ({
+      ...recordFurnitureEdit(s),
       shelfPartitions: [...s.shelfPartitions, {
         id: uid(),
         sectionIndex,
@@ -689,7 +856,6 @@ export const useFurnitureStore = create<FurnitureState>((set, get) => ({
         fromBottom: snap(fromBottom),
         toBottom: snap(toBottom),
       }],
-      hasUnsavedChanges: true,
     }))
   },
 
@@ -704,10 +870,10 @@ export const useFurnitureStore = create<FurnitureState>((set, get) => ({
     if (!bounds) return
     const clamped = clamp(snap(fromLeft), bounds.min, bounds.max)
     set((s) => ({
+      ...recordFurnitureEdit(s),
       shelfPartitions: s.shelfPartitions.map((sp) =>
         sp.id === id ? { ...sp, fromLeft: clamped } : sp,
       ),
-      hasUnsavedChanges: true,
     }))
   },
 
@@ -716,8 +882,8 @@ export const useFurnitureStore = create<FurnitureState>((set, get) => ({
     if (!outerBox) return
     const clamped = clampCustomPanel(panel, outerBox, material.thickness)
     set((s) => ({
+      ...recordFurnitureEdit(s),
       customPanels: [...s.customPanels, { ...clamped, id: uid() }],
-      hasUnsavedChanges: true,
     }))
   },
 
@@ -728,24 +894,24 @@ export const useFurnitureStore = create<FurnitureState>((set, get) => ({
     if (!panel) return
     const clamped = clampCustomPanel({ ...panel, fromLeft, fromBottom }, outerBox, material.thickness)
     set((s) => ({
+      ...recordFurnitureEdit(s),
       customPanels: s.customPanels.map((p) =>
         p.id === id ? { ...p, fromLeft: clamped.fromLeft, fromBottom: clamped.fromBottom } : p,
       ),
-      hasUnsavedChanges: true,
     }))
   },
 
   renameCustomPanel: (id, name) => set((s) => ({
+    ...recordFurnitureEdit(s),
     customPanels: s.customPanels.map((p) => p.id === id ? { ...p, name } : p),
-    hasUnsavedChanges: true,
   })),
 
   setSectionConfig: (index, patch) => set((s) => ({
+    ...recordFurnitureEdit(s),
     sectionConfigs: {
       ...s.sectionConfigs,
       [index]: { ...(s.sectionConfigs[index] ?? DEFAULT_SECTION_CONFIG), ...patch },
     },
-    hasUnsavedChanges: true,
   })),
 
   removeSelected: () => {
@@ -760,6 +926,7 @@ export const useFurnitureStore = create<FurnitureState>((set, get) => ({
       const removeIdx = sorted.findIndex((p) => p.id === selectedId)
       // All elements in sections > removeIdx merge down by 1
       set((s) => ({
+        ...recordFurnitureEdit(s),
         partitions:      s.partitions.filter((p) => p.id !== selectedId),
         shelves:         s.shelves.map((sh) =>
           sh.sectionIndex > removeIdx ? { ...sh, sectionIndex: sh.sectionIndex - 1 } : sh,
@@ -773,20 +940,44 @@ export const useFurnitureStore = create<FurnitureState>((set, get) => ({
         customPanels:    s.customPanels,
         sectionConfigs:  shiftSectionConfigsForRemove(s.sectionConfigs, removeIdx),
         selectedId:      null,
-        hasUnsavedChanges: true,
       }))
     } else {
       set((s) => ({
+        ...recordFurnitureEdit(s),
         shelves:         s.shelves.filter((sh) => sh.id !== selectedId),
         partitions:      s.partitions.filter((p)  => p.id  !== selectedId),
         drawers:         s.drawers.filter((d)  => d.id  !== selectedId),
         customPanels:    s.customPanels.filter((cp) => cp.id !== selectedId),
         shelfPartitions: s.shelfPartitions.filter((sp) => sp.id !== selectedId),
         selectedId: null,
-        hasUnsavedChanges: true,
       }))
     }
   },
+
+  undo: () => set((s) => {
+    const previous = s.past.at(-1)
+    if (!previous) return {}
+
+    return {
+      ...restoreFurnitureSnapshot(previous, s.savedSnapshot),
+      past: s.past.slice(0, -1),
+      future: [captureFurnitureSnapshot(s), ...s.future].slice(0, MAX_FURNITURE_HISTORY),
+    }
+  }),
+
+  redo: () => set((s) => {
+    const next = s.future[0]
+    if (!next) return {}
+
+    return {
+      ...restoreFurnitureSnapshot(next, s.savedSnapshot),
+      past: [...s.past, captureFurnitureSnapshot(s)].slice(-MAX_FURNITURE_HISTORY),
+      future: s.future.slice(1),
+    }
+  }),
+
+  canUndo: () => get().past.length > 0,
+  canRedo: () => get().future.length > 0,
 
   reset: () => set({
     designId: null,
@@ -794,6 +985,8 @@ export const useFurnitureStore = create<FurnitureState>((set, get) => ({
     furnitureType: 'wardrobe',
     hasUnsavedChanges: false,
     lastSavedAt: null,
+    savedSnapshot: null,
+    ...clearFurnitureHistory(),
     outerBox: null,
     material: DEFAULT_MATERIAL,
     shelves: [],

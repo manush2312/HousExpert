@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 import {
   ArrowLeft, Save, Download,
-  Square, MousePointer, Hand, Minus, PanelLeft, LayoutGrid, Trash2, RotateCcw, Pencil,
+  Square, MousePointer, Hand, Minus, PanelLeft, LayoutGrid, Trash2, RotateCcw, Pencil, Undo2, Redo2,
 } from 'lucide-react'
 import {
   DEFAULT_BACK_PANEL_THICKNESS,
@@ -24,6 +24,15 @@ import { exportCutListPdf } from '../../utils/exportCutListPdf'
 
 // ── Page ──────────────────────────────────────────────────────────────────────
 
+function isEditableKeyboardTarget(target: EventTarget | null) {
+  if (!(target instanceof HTMLElement)) return false
+  const tagName = target.tagName.toLowerCase()
+  return target.isContentEditable
+    || tagName === 'input'
+    || tagName === 'textarea'
+    || tagName === 'select'
+}
+
 export default function FurnitureDesignerPage() {
   const navigate = useNavigate()
   const { id } = useParams<{ id: string }>()
@@ -37,6 +46,10 @@ export default function FurnitureDesignerPage() {
     loadDesign,
     markSaved,
     serializeDesign,
+    undo,
+    redo,
+    canUndo,
+    canRedo,
   } = useFurnitureStore()
   const [loadingDesign, setLoadingDesign] = useState(Boolean(id))
   const [loadError, setLoadError] = useState('')
@@ -75,6 +88,31 @@ export default function FurnitureDesignerPage() {
     }
   }, [id, loadDesign, reset])
 
+  useEffect(() => {
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.defaultPrevented || isEditableKeyboardTarget(event.target)) return
+      if (!(event.metaKey || event.ctrlKey) || event.altKey) return
+
+      const key = event.key.toLowerCase()
+      const wantsUndo = key === 'z' && !event.shiftKey
+      const wantsRedo = (key === 'z' && event.shiftKey) || key === 'y'
+
+      if (wantsUndo && canUndo()) {
+        event.preventDefault()
+        undo()
+        return
+      }
+
+      if (wantsRedo && canRedo()) {
+        event.preventDefault()
+        redo()
+      }
+    }
+
+    window.addEventListener('keydown', handleKeyDown)
+    return () => window.removeEventListener('keydown', handleKeyDown)
+  }, [canRedo, canUndo, redo, undo])
+
   if (loadingDesign) {
     return <DesignerLoadingState onBack={() => navigate('/furniture')} />
   }
@@ -103,6 +141,9 @@ export default function FurnitureDesignerPage() {
       setSaving(false)
     }
   }
+
+  const undoAvailable = canUndo()
+  const redoAvailable = canRedo()
 
   return (
     <div className="flex flex-col h-[calc(100vh-56px)]" style={{ background: 'var(--bg)' }}>
@@ -137,6 +178,29 @@ export default function FurnitureDesignerPage() {
         />
 
         <div className="flex-1" />
+
+        <div className="flex items-center gap-1">
+          <button
+            onClick={undo}
+            disabled={!undoAvailable}
+            className="btn btn-ghost btn-sm btn-icon"
+            title="Undo (Ctrl/Cmd+Z)"
+            aria-label="Undo"
+          >
+            <Undo2 size={14} />
+          </button>
+          <button
+            onClick={redo}
+            disabled={!redoAvailable}
+            className="btn btn-ghost btn-sm btn-icon"
+            title="Redo (Ctrl/Cmd+Shift+Z)"
+            aria-label="Redo"
+          >
+            <Redo2 size={14} />
+          </button>
+        </div>
+
+        <div style={{ width: 1, height: 20, background: 'var(--line)' }} />
 
         <button
           onClick={() => { if (confirm('Reset the entire drawing?')) reset() }}
