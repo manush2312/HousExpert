@@ -1,6 +1,7 @@
 import { Suspense, useEffect, useMemo, useRef, type RefObject } from 'react'
 import { Canvas, useThree } from '@react-three/fiber'
-import { OrbitControls, GizmoHelper, GizmoViewport, Html, Line } from '@react-three/drei'
+import { OrbitControls, GizmoHelper, GizmoViewport, Html, Line, useTexture } from '@react-three/drei'
+import * as THREE from 'three'
 import type { OrbitControls as OrbitControlsImpl } from 'three-stdlib'
 import {
   DEFAULT_BACK_PANEL_THICKNESS,
@@ -8,11 +9,16 @@ import {
   useFurnitureStore,
 } from '../../stores/furnitureStore'
 import {
-  getFurniturePreviewMaterial,
+  getCustomFurnitureMaterialForAssignment,
+  getFurniturePreviewAssignmentForArea,
+  getFurniturePreviewMaterialForAssignment,
   useFurniturePreviewStore,
   type FurniturePreviewBackground,
+  type FurniturePreviewMaterial,
+  type FurniturePreviewMaterialArea,
   type FurniturePreviewView,
 } from '../../stores/furniturePreviewStore'
+import type { CustomFurnitureMaterial, FurnitureMaterialFinish, FurnitureMaterialGrainDirection } from '../../types/furnitureMaterials'
 
 // ── Unit conversion ───────────────────────────────────────────────────────────
 // 1 Three.js unit = 1000 mm (= 1 metre)
@@ -20,6 +26,10 @@ function u(mm: number) { return mm / 1000 }
 
 type ExplodeOffset = [number, number, number]
 type Point3 = [number, number, number]
+type FurniturePreviewSurface = {
+  previewMaterial: FurniturePreviewMaterial
+  customMaterial: CustomFurnitureMaterial | null
+}
 
 const NO_EXPLODE_OFFSET: ExplodeOffset = [0, 0, 0]
 
@@ -31,6 +41,16 @@ const CANVAS_BACKGROUND: Record<FurniturePreviewBackground, string> = {
 const GRID_COLORS: Record<FurniturePreviewBackground, [string, string]> = {
   dark: ['#333333', '#222222'],
   light: ['#cbd5e1', '#e2e8f0'],
+}
+
+const FINISH_RENDER_SETTINGS: Record<FurnitureMaterialFinish, { roughness: number; metalness: number }> = {
+  matte: { roughness: 0.86, metalness: 0.02 },
+  satin: { roughness: 0.58, metalness: 0.03 },
+  glossy: { roughness: 0.28, metalness: 0.04 },
+  laminate: { roughness: 0.48, metalness: 0.03 },
+  veneer: { roughness: 0.66, metalness: 0.02 },
+  acrylic: { roughness: 0.2, metalness: 0.04 },
+  membrane: { roughness: 0.72, metalness: 0.02 },
 }
 
 interface DimensionTheme {
@@ -105,6 +125,38 @@ function getCameraUp(view: FurniturePreviewView): [number, number, number] {
   return view === 'top' ? [0, 0, -1] : [0, 1, 0]
 }
 
+function getPanelTextureRotation(
+  grainDirection: FurnitureMaterialGrainDirection,
+  panelWidth: number,
+  panelHeight: number,
+) {
+  if (grainDirection === 'horizontal') return Math.PI / 2
+  if (grainDirection === 'vertical' || grainDirection === 'none') return 0
+  return panelWidth > panelHeight ? Math.PI / 2 : 0
+}
+
+function getMaterialFinishSettings(material: CustomFurnitureMaterial | null) {
+  return material ? FINISH_RENDER_SETTINGS[material.finish] : { roughness: 0.65, metalness: 0.04 }
+}
+
+function getTextureRepeat(textureRepeatX: number, textureRepeatY: number, textureScale: number) {
+  const scale = Math.max(0.01, textureScale)
+
+  return [
+    Math.max(0.01, textureRepeatX * scale),
+    Math.max(0.01, textureRepeatY * scale),
+  ] as const
+}
+
+function getSurfaceColor(
+  surface: FurniturePreviewSurface,
+  designColor: string,
+  key: 'color' | 'secondaryColor' | 'backPanelColor' | 'drawerColor' = 'color',
+) {
+  if (surface.previewMaterial.id === 'design' && key === 'color') return designColor
+  return surface.previewMaterial[key]
+}
+
 // ── Camera view controller ───────────────────────────────────────────────────
 // Runs inside the Canvas so it has access to useThree()
 
@@ -147,20 +199,94 @@ interface PanelProps {
   color: string
   opacity?: number
   explode?: ExplodeOffset
+  surfaceMaterial?: CustomFurnitureMaterial | null
 }
 
-function Panel({ posX, posY, posZ, w, h, d, color, opacity = 1, explode }: PanelProps) {
+function Panel({ posX, posY, posZ, w, h, d, color, opacity = 1, explode, surfaceMaterial = null }: PanelProps) {
+  const finishSettings = getMaterialFinishSettings(surfaceMaterial)
+
   return (
     <mesh position={getOffsetPosition(posX, posY, posZ, explode)} castShadow receiveShadow>
       <boxGeometry args={[u(w), u(h), u(d)]} />
-      <meshStandardMaterial
-        color={color}
-        roughness={0.65}
-        metalness={0.04}
-        transparent={opacity < 1}
-        opacity={opacity}
-      />
+      {surfaceMaterial?.texture ? (
+        <TexturedPanelMaterial
+          color={color}
+          opacity={opacity}
+          panelWidth={w}
+          panelHeight={h}
+          material={surfaceMaterial}
+          textureSrc={surfaceMaterial.texture.src}
+        />
+      ) : (
+        <meshStandardMaterial
+          color={color}
+          roughness={finishSettings.roughness}
+          metalness={finishSettings.metalness}
+          transparent={opacity < 1}
+          opacity={opacity}
+        />
+      )}
     </mesh>
+  )
+}
+
+function TexturedPanelMaterial({
+  color,
+  opacity,
+  panelWidth,
+  panelHeight,
+  material,
+  textureSrc,
+}: {
+  color: string
+  opacity: number
+  panelWidth: number
+  panelHeight: number
+  material: CustomFurnitureMaterial
+  textureSrc: string
+}) {
+  const loadedTexture = useTexture(textureSrc) as THREE.Texture
+  const grainDirection = material.grainDirection
+  const textureRepeatX = material.textureRepeat.x
+  const textureRepeatY = material.textureRepeat.y
+  const textureScale = material.textureScale
+  const texture = useMemo(() => {
+    const configuredTexture = loadedTexture.clone()
+    const [repeatX, repeatY] = getTextureRepeat(textureRepeatX, textureRepeatY, textureScale)
+
+    configuredTexture.colorSpace = THREE.SRGBColorSpace
+    configuredTexture.wrapS = THREE.RepeatWrapping
+    configuredTexture.wrapT = THREE.RepeatWrapping
+    configuredTexture.center.set(0.5, 0.5)
+    configuredTexture.rotation = getPanelTextureRotation(grainDirection, panelWidth, panelHeight)
+    configuredTexture.repeat.set(repeatX, repeatY)
+    configuredTexture.needsUpdate = true
+
+    return configuredTexture
+  }, [
+    grainDirection,
+    loadedTexture,
+    panelHeight,
+    panelWidth,
+    textureRepeatX,
+    textureRepeatY,
+    textureScale,
+  ])
+  const finishSettings = getMaterialFinishSettings(material)
+
+  useEffect(() => {
+    return () => texture.dispose()
+  }, [texture])
+
+  return (
+    <meshStandardMaterial
+      color={color}
+      map={texture}
+      roughness={finishSettings.roughness}
+      metalness={finishSettings.metalness}
+      transparent={opacity < 1}
+      opacity={opacity}
+    />
   )
 }
 
@@ -278,8 +404,8 @@ function FurnitureModel() {
   const showDimensions = useFurniturePreviewStore((state) => state.showDimensions)
   const explodedView = useFurniturePreviewStore((state) => state.explodedView)
   const explodedAmount = useFurniturePreviewStore((state) => state.explodedAmount)
-  const selectedMaterialId = useFurniturePreviewStore((state) => state.selectedMaterialId)
-  const customColor = useFurniturePreviewStore((state) => state.customColor)
+  const customMaterials = useFurniturePreviewStore((state) => state.customMaterials)
+  const materialAssignments = useFurniturePreviewStore((state) => state.materialAssignments)
   const backgroundMode = useFurniturePreviewStore((state) => state.backgroundMode)
 
   // useMemo must be called before any conditional return (Rules of Hooks)
@@ -287,17 +413,28 @@ function FurnitureModel() {
     () => [...partitions].sort((a, b) => a.fromLeft - b.fromLeft),
     [partitions],
   )
-
   if (!outerBox) return null
 
   const { width: W, height: H, depth: D } = outerBox
   const T   = material.thickness
   const B   = material.backPanelThickness ?? DEFAULT_BACK_PANEL_THICKNESS
-  const previewMaterial = getFurniturePreviewMaterial(selectedMaterialId, customColor)
-  const col = selectedMaterialId === 'design' ? material.color : previewMaterial.color
-  const dark = previewMaterial.secondaryColor
-  const back = previewMaterial.backPanelColor
-  const drawerColor = previewMaterial.drawerColor
+  const createSurface = (area: FurniturePreviewMaterialArea): FurniturePreviewSurface => {
+    const assignment = getFurniturePreviewAssignmentForArea({ materialAssignments }, area)
+
+    return {
+      previewMaterial: getFurniturePreviewMaterialForAssignment(assignment, customMaterials),
+      customMaterial: getCustomFurnitureMaterialForAssignment(assignment, customMaterials),
+    }
+  }
+  const carcassSurface = createSurface('carcass')
+  const doorSurface = createSurface('doors')
+  const drawerSurface = createSurface('drawers')
+  const backSurface = createSurface('back')
+  const col = getSurfaceColor(carcassSurface, material.color)
+  const dark = getSurfaceColor(carcassSurface, material.color, 'secondaryColor')
+  const back = getSurfaceColor(backSurface, material.color, 'backPanelColor')
+  const drawerColor = getSurfaceColor(drawerSurface, material.color, 'drawerColor')
+  const doorColor = getSurfaceColor(doorSurface, material.color)
   const explodeDistance = explodedView
     ? Math.max(80, Math.min(260, Math.max(W, H, D) * 0.1)) * explodedAmount
     : 0
@@ -326,23 +463,28 @@ function FurnitureModel() {
 
       {/* Left side */}
       <Panel posX={-W / 2 + T / 2} posY={H / 2} posZ={0}
-             w={T} h={H} d={D} color={col} explode={explode(-1, 0, 0)} />
+             w={T} h={H} d={D} color={col} explode={explode(-1, 0, 0)}
+             surfaceMaterial={carcassSurface.customMaterial} />
 
       {/* Right side */}
       <Panel posX={W / 2 - T / 2} posY={H / 2} posZ={0}
-             w={T} h={H} d={D} color={col} explode={explode(1, 0, 0)} />
+             w={T} h={H} d={D} color={col} explode={explode(1, 0, 0)}
+             surfaceMaterial={carcassSurface.customMaterial} />
 
       {/* Top panel */}
       <Panel posX={0} posY={H - T / 2} posZ={0}
-             w={interiorW} h={T} d={D} color={dark} explode={explode(0, 0.9, 0)} />
+             w={interiorW} h={T} d={D} color={dark} explode={explode(0, 0.9, 0)}
+             surfaceMaterial={carcassSurface.customMaterial} />
 
       {/* Bottom panel */}
       <Panel posX={0} posY={T / 2} posZ={0}
-             w={interiorW} h={T} d={D} color={dark} explode={explode(0, -0.55, 0)} />
+             w={interiorW} h={T} d={D} color={dark} explode={explode(0, -0.55, 0)}
+             surfaceMaterial={carcassSurface.customMaterial} />
 
       {/* Back panel */}
       <Panel posX={0} posY={H / 2} posZ={-D / 2 + B / 2}
-             w={W} h={H} d={B} color={back} explode={explode(0, 0, -1)} />
+             w={W} h={H} d={B} color={back} explode={explode(0, 0, -1)}
+             surfaceMaterial={backSurface.customMaterial} />
 
       {/* ── Vertical partitions ── */}
       {sortedPartitions.map((p) => {
@@ -355,6 +497,7 @@ function FurnitureModel() {
             w={T} h={interiorH} d={interiorD}
             color={col}
             explode={explode(sideBias(panelCentX), 0, 0.24)}
+            surfaceMaterial={carcassSurface.customMaterial}
           />
         )
       })}
@@ -374,6 +517,7 @@ function FurnitureModel() {
             w={T} h={panelH} d={interiorD}
             color={col}
             explode={explode(sideBias(panelCentX), 0, 0.3)}
+            surfaceMaterial={carcassSurface.customMaterial}
           />
         )
       })}
@@ -395,6 +539,7 @@ function FurnitureModel() {
             w={shelfW} h={T} d={interiorD}
             color={dark}
             explode={explode(sideBias(shelfCentX), shelf.fromBottom > interiorH / 2 ? 0.18 : -0.08, 0.42)}
+            surfaceMaterial={carcassSurface.customMaterial}
           />
         )
       })}
@@ -423,6 +568,7 @@ function FurnitureModel() {
               w={drawerW} h={drawer.height - 2} d={drawerD}
               color={drawerColor}
               explode={explode(sideBias(drawerCenterX), 0, 0.72)}
+              surfaceMaterial={drawerSurface.customMaterial}
             />
             {/* Drawer front face */}
             <Panel
@@ -430,8 +576,9 @@ function FurnitureModel() {
               posY={drawerCenterY}
               posZ={drawerFrontZ}
               w={drawerW} h={drawer.height - 2} d={T}
-              color={col}
+              color={drawerColor}
               explode={explode(sideBias(drawerCenterX), 0, 1)}
+              surfaceMaterial={drawerSurface.customMaterial}
             />
           </group>
         )
@@ -454,8 +601,9 @@ function FurnitureModel() {
                 posY={doorCenterY}
                 posZ={doorFaceZ}
                 w={section.width - 2} h={doorH} d={T}
-                color={col} opacity={0.82}
+                color={doorColor} opacity={0.82}
                 explode={explode(sideBias(section.centerX), 0, 1.12)}
+                surfaceMaterial={doorSurface.customMaterial}
               />
             )}
             {showDoors && cfg.door === 'double' && (() => {
@@ -466,15 +614,17 @@ function FurnitureModel() {
                     posX={section.centerX - halfW / 2 - 1}
                     posY={doorCenterY} posZ={doorFaceZ}
                     w={halfW} h={doorH} d={T}
-                    color={col} opacity={0.82}
+                    color={doorColor} opacity={0.82}
                     explode={explode(sideBias(section.centerX) - 0.22, 0, 1.12)}
+                    surfaceMaterial={doorSurface.customMaterial}
                   />
                   <Panel
                     posX={section.centerX + halfW / 2 + 1}
                     posY={doorCenterY} posZ={doorFaceZ}
                     w={halfW} h={doorH} d={T}
-                    color={col} opacity={0.82}
+                    color={doorColor} opacity={0.82}
                     explode={explode(sideBias(section.centerX) + 0.22, 0, 1.12)}
+                    surfaceMaterial={doorSurface.customMaterial}
                   />
                 </>
               )

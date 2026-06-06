@@ -36,6 +36,7 @@ type CreateFurnitureDesignInput struct {
 	CustomPanels    []models.FurnitureCustomPanel            `json:"custom_panels"`
 	ShelfPartitions []models.FurnitureShelfPartition         `json:"shelf_partitions"`
 	SectionConfigs  map[string]models.FurnitureSectionConfig `json:"section_configs"`
+	PreviewSettings *models.FurniturePreviewSettings         `json:"preview_settings"`
 }
 
 type UpdateFurnitureDesignInput struct {
@@ -49,6 +50,7 @@ type UpdateFurnitureDesignInput struct {
 	CustomPanels    []models.FurnitureCustomPanel            `json:"custom_panels"`
 	ShelfPartitions []models.FurnitureShelfPartition         `json:"shelf_partitions"`
 	SectionConfigs  map[string]models.FurnitureSectionConfig `json:"section_configs"`
+	PreviewSettings *models.FurniturePreviewSettings         `json:"preview_settings"`
 }
 
 type FurnitureDesignListFilter struct {
@@ -209,6 +211,7 @@ func CreateFurnitureDesign(input CreateFurnitureDesignInput) (*models.FurnitureD
 		CustomPanels:    customPanels,
 		ShelfPartitions: shelfPartitions,
 		SectionConfigs:  normalizeFurnitureSectionConfigs(input.SectionConfigs),
+		PreviewSettings: input.PreviewSettings,
 		CreatedAt:       now,
 		UpdatedAt:       now,
 	}
@@ -320,6 +323,9 @@ func UpdateFurnitureDesign(designID string, input UpdateFurnitureDesignInput) (*
 	}
 	if input.SectionConfigs != nil {
 		set["section_configs"] = normalizeFurnitureSectionConfigs(input.SectionConfigs)
+	}
+	if input.PreviewSettings != nil {
+		set["preview_settings"] = input.PreviewSettings
 	}
 
 	opts := options.FindOneAndUpdate().SetReturnDocument(options.After)

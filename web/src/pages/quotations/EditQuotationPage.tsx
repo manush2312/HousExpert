@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
-import { Plus, Trash2, GripVertical, FolderPlus, Save } from 'lucide-react'
+import { Plus, Trash2, GripVertical, FolderPlus, Save, Copy } from 'lucide-react'
 import LoadingButton from '../../components/LoadingButton'
 import SearchableSelect from '../../components/SearchableSelect'
 import SizeTextInput from '../../components/SizeTextInput'
@@ -155,6 +155,25 @@ export default function EditQuotationPage() {
   const removeSection = (sId: string) =>
     setSections((prev) => prev.filter((s) => s._id !== sId))
 
+  const duplicateSection = (sId: string) =>
+    setSections((prev) => {
+      const idx = prev.findIndex((s) => s._id === sId)
+      if (idx === -1) return prev
+      const src = prev[idx]
+      const baseName = src.room_name.replace(/\(\d+\)$/, '').trim()
+      const names = new Set(prev.map((s) => s.room_name))
+      let n = 1
+      while (names.has(`${baseName}(${n})`)) n++
+      const copy: DraftSection = {
+        _id: uid(),
+        room_name: `${baseName}(${n})`,
+        items: src.items.map((item) => ({ ...item, _id: uid() })),
+      }
+      const next = [...prev]
+      next.splice(idx + 1, 0, copy)
+      return next
+    })
+
   const updateItem = (sId: string, iId: string, patch: Partial<DraftItem>) =>
     setSections((prev) => prev.map((s) =>
       s._id !== sId ? s : { ...s, items: s.items.map((i) => i._id !== iId ? i : { ...i, ...patch }) }
@@ -275,6 +294,7 @@ export default function EditQuotationPage() {
               products={products}
               onRoomNameChange={(v) => updateSection(sec._id, { room_name: v })}
               onRemoveSection={() => removeSection(sec._id)}
+              onDuplicateSection={() => duplicateSection(sec._id)}
               onAddItem={() => addItem(sec._id)}
               onUpdateItem={(iId, patch) => updateItem(sec._id, iId, patch)}
               onRemoveItem={(iId) => removeItem(sec._id, iId)}
@@ -405,6 +425,7 @@ interface SectionBlockProps {
   products: Product[]
   onRoomNameChange: (v: string) => void
   onRemoveSection: () => void
+  onDuplicateSection: () => void
   onAddItem: () => void
   onUpdateItem: (iId: string, patch: Partial<DraftItem>) => void
   onRemoveItem: (iId: string) => void
@@ -412,7 +433,7 @@ interface SectionBlockProps {
   canRemove: boolean
 }
 
-function SectionBlock({ section, products, onRoomNameChange, onRemoveSection, onAddItem, onUpdateItem, onRemoveItem, onApplyProduct, canRemove }: SectionBlockProps) {
+function SectionBlock({ section, products, onRoomNameChange, onRemoveSection, onDuplicateSection, onAddItem, onUpdateItem, onRemoveItem, onApplyProduct, canRemove }: SectionBlockProps) {
   const sectionTotal = section.items.reduce((s, i) => s + calcRowAmount(i), 0)
 
   return (
@@ -427,6 +448,9 @@ function SectionBlock({ section, products, onRoomNameChange, onRemoveSection, on
           onChange={(e) => onRoomNameChange(e.target.value)}
         />
         <span className="numeral text-[12px]" style={{ color: 'var(--ink-3)' }}>{fmtINR(sectionTotal)}</span>
+        <button type="button" onClick={onDuplicateSection} className="btn btn-ghost btn-sm btn-icon" title="Duplicate section" style={{ color: 'var(--ink-3)' }}>
+          <Copy size={12} />
+        </button>
         {canRemove && (
           <button type="button" onClick={onRemoveSection} className="btn btn-ghost btn-sm btn-icon" style={{ color: 'var(--bad)' }}>
             <Trash2 size={12} />
