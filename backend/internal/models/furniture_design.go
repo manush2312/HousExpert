@@ -40,6 +40,64 @@ type FurnitureMaterial struct {
 	Color              string  `bson:"color" json:"color"`
 }
 
+// FurnitureMaterialTextureRepeat stores texture tiling controls for 3D preview materials.
+type FurnitureMaterialTextureRepeat struct {
+	X float64 `bson:"x" json:"x"`
+	Y float64 `bson:"y" json:"y"`
+}
+
+// FurnitureMaterialTextureImage stores an uploaded or remote texture preview image.
+type FurnitureMaterialTextureImage struct {
+	ID        string  `bson:"id" json:"id"`
+	Name      string  `bson:"name" json:"name"`
+	Source    string  `bson:"source" json:"source"`
+	Src       string  `bson:"src" json:"src"`
+	MimeType  string  `bson:"mime_type,omitempty" json:"mime_type,omitempty"`
+	FileName  string  `bson:"file_name,omitempty" json:"file_name,omitempty"`
+	SizeBytes int64   `bson:"size_bytes,omitempty" json:"size_bytes,omitempty"`
+	Width     float64 `bson:"width,omitempty" json:"width,omitempty"`
+	Height    float64 `bson:"height,omitempty" json:"height,omitempty"`
+}
+
+// FurnitureCustomMaterial stores user-defined 3D preview material data.
+type FurnitureCustomMaterial struct {
+	ID             string                         `bson:"id" json:"id"`
+	Name           string                         `bson:"name" json:"name"`
+	BaseColor      string                         `bson:"base_color" json:"base_color"`
+	Finish         string                         `bson:"finish" json:"finish"`
+	GrainDirection string                         `bson:"grain_direction" json:"grain_direction"`
+	Texture        *FurnitureMaterialTextureImage `bson:"texture" json:"texture"`
+	TextureScale   float64                        `bson:"texture_scale" json:"texture_scale"`
+	TextureRepeat  FurnitureMaterialTextureRepeat `bson:"texture_repeat" json:"texture_repeat"`
+	CreatedAt      string                         `bson:"created_at" json:"created_at"`
+	UpdatedAt      string                         `bson:"updated_at" json:"updated_at"`
+}
+
+// FurniturePreviewMaterialAssignment stores the material applied to one 3D preview area.
+type FurniturePreviewMaterialAssignment struct {
+	MaterialSource           string  `bson:"material_source" json:"material_source"`
+	SelectedMaterialID       string  `bson:"selected_material_id" json:"selected_material_id"`
+	SelectedCustomMaterialID *string `bson:"selected_custom_material_id" json:"selected_custom_material_id"`
+	CustomColor              string  `bson:"custom_color" json:"custom_color"`
+}
+
+// FurniturePreviewSettings stores non-structural 3D preview state with a design.
+type FurniturePreviewSettings struct {
+	ShowDoors                bool                                          `bson:"show_doors" json:"show_doors"`
+	ExplodedView             bool                                          `bson:"exploded_view" json:"exploded_view"`
+	ExplodedAmount           float64                                       `bson:"exploded_amount" json:"exploded_amount"`
+	ShowDimensions           bool                                          `bson:"show_dimensions" json:"show_dimensions"`
+	ActiveView               string                                        `bson:"active_view" json:"active_view"`
+	BackgroundMode           string                                        `bson:"background_mode" json:"background_mode"`
+	MaterialSource           string                                        `bson:"material_source" json:"material_source"`
+	SelectedMaterialID       string                                        `bson:"selected_material_id" json:"selected_material_id"`
+	SelectedCustomMaterialID *string                                       `bson:"selected_custom_material_id" json:"selected_custom_material_id"`
+	CustomColor              string                                        `bson:"custom_color" json:"custom_color"`
+	CustomMaterials          []FurnitureCustomMaterial                     `bson:"custom_materials" json:"custom_materials"`
+	MaterialApplyTarget      string                                        `bson:"material_apply_target,omitempty" json:"material_apply_target,omitempty"`
+	MaterialAssignments      map[string]FurniturePreviewMaterialAssignment `bson:"material_assignments,omitempty" json:"material_assignments,omitempty"`
+}
+
 // FurnitureShelf is a horizontal shelf placed inside one section.
 type FurnitureShelf struct {
 	ElementID    string  `bson:"element_id" json:"element_id"`
@@ -102,6 +160,7 @@ type FurnitureDesign struct {
 	CustomPanels    []FurnitureCustomPanel            `bson:"custom_panels" json:"custom_panels"`
 	ShelfPartitions []FurnitureShelfPartition         `bson:"shelf_partitions" json:"shelf_partitions"`
 	SectionConfigs  map[string]FurnitureSectionConfig `bson:"section_configs" json:"section_configs"`
+	PreviewSettings *FurniturePreviewSettings         `bson:"preview_settings,omitempty" json:"preview_settings,omitempty"`
 	CreatedAt       time.Time                         `bson:"created_at" json:"created_at"`
 	UpdatedAt       time.Time                         `bson:"updated_at" json:"updated_at"`
 }

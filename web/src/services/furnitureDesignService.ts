@@ -1,4 +1,10 @@
 import api from './api'
+import type {
+  FurnitureMaterialFinish,
+  FurnitureMaterialGrainDirection,
+  FurnitureMaterialTextureMimeType,
+  FurnitureMaterialTextureSource,
+} from '../types/furnitureMaterials'
 
 export type FurnitureType = 'wardrobe' | 'cabinet' | 'tv_unit' | 'bookshelf' | 'kitchen_base'
 export type FurnitureDoorType = 'none' | 'single' | 'double'
@@ -13,6 +19,73 @@ export interface FurnitureMaterial {
   thickness: number
   back_panel_thickness: number
   color: string
+}
+
+export type FurnitureDesignPreviewView = 'isometric' | 'front' | 'side' | 'top'
+export type FurnitureDesignPreviewBackground = 'dark' | 'light'
+export type FurnitureDesignPreviewMaterialSource = 'preset' | 'custom_material'
+export type FurnitureDesignPreviewMaterialArea = 'carcass' | 'doors' | 'drawers' | 'back'
+export type FurnitureDesignPreviewMaterialTarget = 'all' | FurnitureDesignPreviewMaterialArea
+export type FurnitureDesignPreviewMaterialId =
+  | 'design'
+  | 'natural_oak'
+  | 'walnut'
+  | 'teak'
+  | 'ivory'
+  | 'charcoal'
+  | 'custom'
+
+export interface FurnitureDesignMaterialTextureRepeat {
+  x: number
+  y: number
+}
+
+export interface FurnitureDesignMaterialTextureImage {
+  id: string
+  name: string
+  source: FurnitureMaterialTextureSource
+  src: string
+  mime_type?: FurnitureMaterialTextureMimeType
+  file_name?: string
+  size_bytes?: number
+  width?: number
+  height?: number
+}
+
+export interface FurnitureDesignCustomMaterial {
+  id: string
+  name: string
+  base_color: string
+  finish: FurnitureMaterialFinish
+  grain_direction: FurnitureMaterialGrainDirection
+  texture: FurnitureDesignMaterialTextureImage | null
+  texture_scale: number
+  texture_repeat: FurnitureDesignMaterialTextureRepeat
+  created_at: string
+  updated_at: string
+}
+
+export interface FurnitureDesignPreviewSettings {
+  show_doors: boolean
+  exploded_view: boolean
+  exploded_amount: number
+  show_dimensions: boolean
+  active_view: FurnitureDesignPreviewView
+  background_mode: FurnitureDesignPreviewBackground
+  material_source: FurnitureDesignPreviewMaterialSource
+  selected_material_id: FurnitureDesignPreviewMaterialId
+  selected_custom_material_id: string | null
+  custom_color: string
+  custom_materials: FurnitureDesignCustomMaterial[]
+  material_apply_target?: FurnitureDesignPreviewMaterialTarget
+  material_assignments?: Record<FurnitureDesignPreviewMaterialArea, FurnitureDesignPreviewMaterialAssignment>
+}
+
+export interface FurnitureDesignPreviewMaterialAssignment {
+  material_source: FurnitureDesignPreviewMaterialSource
+  selected_material_id: FurnitureDesignPreviewMaterialId
+  selected_custom_material_id: string | null
+  custom_color: string
 }
 
 export interface FurnitureShelf {
@@ -70,6 +143,7 @@ export interface FurnitureDesign {
   custom_panels: FurnitureCustomPanel[]
   shelf_partitions: FurnitureShelfPartition[]
   section_configs: Record<string, FurnitureSectionConfig>
+  preview_settings?: FurnitureDesignPreviewSettings | null
   created_at: string
   updated_at: string
 }
@@ -92,6 +166,7 @@ export interface CreateFurnitureDesignPayload {
   custom_panels?: FurnitureCustomPanel[]
   shelf_partitions?: FurnitureShelfPartition[]
   section_configs?: Record<string, FurnitureSectionConfig>
+  preview_settings?: FurnitureDesignPreviewSettings | null
 }
 
 export interface UpdateFurnitureDesignPayload {
@@ -105,6 +180,7 @@ export interface UpdateFurnitureDesignPayload {
   custom_panels?: FurnitureCustomPanel[]
   shelf_partitions?: FurnitureShelfPartition[]
   section_configs?: Record<string, FurnitureSectionConfig>
+  preview_settings?: FurnitureDesignPreviewSettings | null
 }
 
 export const listFurnitureDesigns = (params?: {
