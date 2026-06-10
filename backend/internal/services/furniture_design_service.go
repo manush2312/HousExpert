@@ -35,6 +35,7 @@ type CreateFurnitureDesignInput struct {
 	Drawers         []models.FurnitureDrawer                 `json:"drawers"`
 	CustomPanels    []models.FurnitureCustomPanel            `json:"custom_panels"`
 	ShelfPartitions []models.FurnitureShelfPartition         `json:"shelf_partitions"`
+	FreehandPaths   []models.FurnitureFreehandPath           `json:"freehand_paths"`
 	SectionConfigs  map[string]models.FurnitureSectionConfig `json:"section_configs"`
 	PreviewSettings *models.FurniturePreviewSettings         `json:"preview_settings"`
 }
@@ -49,6 +50,7 @@ type UpdateFurnitureDesignInput struct {
 	Drawers         []models.FurnitureDrawer                 `json:"drawers"`
 	CustomPanels    []models.FurnitureCustomPanel            `json:"custom_panels"`
 	ShelfPartitions []models.FurnitureShelfPartition         `json:"shelf_partitions"`
+	FreehandPaths   []models.FurnitureFreehandPath           `json:"freehand_paths"`
 	SectionConfigs  map[string]models.FurnitureSectionConfig `json:"section_configs"`
 	PreviewSettings *models.FurniturePreviewSettings         `json:"preview_settings"`
 }
@@ -150,12 +152,14 @@ func normalizeFurnitureElements(
 	drawers []models.FurnitureDrawer,
 	customPanels []models.FurnitureCustomPanel,
 	shelfPartitions []models.FurnitureShelfPartition,
+	freehandPaths []models.FurnitureFreehandPath,
 ) (
 	[]models.FurnitureShelf,
 	[]models.FurniturePartition,
 	[]models.FurnitureDrawer,
 	[]models.FurnitureCustomPanel,
 	[]models.FurnitureShelfPartition,
+	[]models.FurnitureFreehandPath,
 ) {
 	if shelves == nil {
 		shelves = []models.FurnitureShelf{}
@@ -172,7 +176,10 @@ func normalizeFurnitureElements(
 	if shelfPartitions == nil {
 		shelfPartitions = []models.FurnitureShelfPartition{}
 	}
-	return shelves, partitions, drawers, customPanels, shelfPartitions
+	if freehandPaths == nil {
+		freehandPaths = []models.FurnitureFreehandPath{}
+	}
+	return shelves, partitions, drawers, customPanels, shelfPartitions, freehandPaths
 }
 
 // ── Service functions ─────────────────────────────────────────────────────────
@@ -190,12 +197,13 @@ func CreateFurnitureDesign(input CreateFurnitureDesignInput) (*models.FurnitureD
 	if err != nil {
 		return nil, err
 	}
-	shelves, partitions, drawers, customPanels, shelfPartitions := normalizeFurnitureElements(
+	shelves, partitions, drawers, customPanels, shelfPartitions, freehandPaths := normalizeFurnitureElements(
 		input.Shelves,
 		input.Partitions,
 		input.Drawers,
 		input.CustomPanels,
 		input.ShelfPartitions,
+		input.FreehandPaths,
 	)
 
 	now := time.Now()
@@ -210,6 +218,7 @@ func CreateFurnitureDesign(input CreateFurnitureDesignInput) (*models.FurnitureD
 		Drawers:         drawers,
 		CustomPanels:    customPanels,
 		ShelfPartitions: shelfPartitions,
+		FreehandPaths:   freehandPaths,
 		SectionConfigs:  normalizeFurnitureSectionConfigs(input.SectionConfigs),
 		PreviewSettings: input.PreviewSettings,
 		CreatedAt:       now,
@@ -320,6 +329,9 @@ func UpdateFurnitureDesign(designID string, input UpdateFurnitureDesignInput) (*
 	}
 	if input.ShelfPartitions != nil {
 		set["shelf_partitions"] = input.ShelfPartitions
+	}
+	if input.FreehandPaths != nil {
+		set["freehand_paths"] = input.FreehandPaths
 	}
 	if input.SectionConfigs != nil {
 		set["section_configs"] = normalizeFurnitureSectionConfigs(input.SectionConfigs)

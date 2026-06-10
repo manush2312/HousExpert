@@ -26,6 +26,19 @@ export type FurnitureDesignPreviewBackground = 'dark' | 'light'
 export type FurnitureDesignPreviewMaterialSource = 'preset' | 'custom_material'
 export type FurnitureDesignPreviewMaterialArea = 'carcass' | 'doors' | 'drawers' | 'back'
 export type FurnitureDesignPreviewMaterialTarget = 'all' | FurnitureDesignPreviewMaterialArea
+export type FurnitureDesignMeasurementHorizontalReference =
+  | 'interior_left'
+  | 'exterior_left'
+  | 'section_start'
+  | 'interior_right'
+  | 'exterior_right'
+export type FurnitureDesignMeasurementVerticalReference =
+  | 'interior_bottom'
+  | 'exterior_bottom'
+  | 'interior_top'
+  | 'exterior_top'
+export type FurnitureDesignMeasurementDepthReference = 'front' | 'back'
+export type FurnitureDesignMeasurementPanelReference = 'centerline' | 'near_face' | 'far_face'
 export type FurnitureDesignPreviewMaterialId =
   | 'design'
   | 'natural_oak'
@@ -71,6 +84,10 @@ export interface FurnitureDesignPreviewSettings {
   exploded_amount: number
   show_dimensions: boolean
   active_view: FurnitureDesignPreviewView
+  measurement_horizontal_reference?: FurnitureDesignMeasurementHorizontalReference
+  measurement_vertical_reference?: FurnitureDesignMeasurementVerticalReference
+  measurement_depth_reference?: FurnitureDesignMeasurementDepthReference
+  measurement_panel_reference?: FurnitureDesignMeasurementPanelReference
   background_mode: FurnitureDesignPreviewBackground
   material_source: FurnitureDesignPreviewMaterialSource
   selected_material_id: FurnitureDesignPreviewMaterialId
@@ -125,6 +142,13 @@ export interface FurnitureCustomPanel {
   thickness: number
 }
 
+export interface FurnitureFreehandPath {
+  element_id: string
+  points: number[]
+  stroke: string
+  stroke_width: number
+}
+
 export interface FurnitureSectionConfig {
   door: FurnitureDoorType
   hanging_rail: boolean
@@ -142,6 +166,7 @@ export interface FurnitureDesign {
   drawers: FurnitureDrawer[]
   custom_panels: FurnitureCustomPanel[]
   shelf_partitions: FurnitureShelfPartition[]
+  freehand_paths: FurnitureFreehandPath[]
   section_configs: Record<string, FurnitureSectionConfig>
   preview_settings?: FurnitureDesignPreviewSettings | null
   created_at: string
@@ -165,6 +190,7 @@ export interface CreateFurnitureDesignPayload {
   drawers?: FurnitureDrawer[]
   custom_panels?: FurnitureCustomPanel[]
   shelf_partitions?: FurnitureShelfPartition[]
+  freehand_paths?: FurnitureFreehandPath[]
   section_configs?: Record<string, FurnitureSectionConfig>
   preview_settings?: FurnitureDesignPreviewSettings | null
 }
@@ -179,6 +205,7 @@ export interface UpdateFurnitureDesignPayload {
   drawers?: FurnitureDrawer[]
   custom_panels?: FurnitureCustomPanel[]
   shelf_partitions?: FurnitureShelfPartition[]
+  freehand_paths?: FurnitureFreehandPath[]
   section_configs?: Record<string, FurnitureSectionConfig>
   preview_settings?: FurnitureDesignPreviewSettings | null
 }
