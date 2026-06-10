@@ -3,17 +3,23 @@ import { useNavigate, useParams } from 'react-router-dom'
 import {
   ArrowLeft, Save, Download,
   Square, MousePointer, Hand, Minus, PanelLeft, LayoutGrid, Trash2, RotateCcw, Pencil, Undo2, Redo2,
-  Eye, EyeOff, Ruler, Layers, Box, Maximize2, X, Moon, Sun, Plus, Check, ImagePlus, Copy, Upload,
+  Eye, EyeOff, Ruler, Layers, Box, Maximize2, X, Moon, Sun, Plus, Check, ImagePlus, Copy, Upload, PenLine,
 } from 'lucide-react'
 import {
   DEFAULT_BACK_PANEL_THICKNESS,
+  DEFAULT_PENCIL_STROKE,
   DEFAULT_SECTION_CONFIG,
+  PENCIL_STROKE_WIDTH_RANGE,
   useFurnitureStore,
   type DrawingMode,
   type DoorType,
   type SelectedFurnitureItem,
 } from '../../stores/furnitureStore'
 import {
+  FURNITURE_MEASUREMENT_DEPTH_REFERENCES,
+  FURNITURE_MEASUREMENT_HORIZONTAL_REFERENCES,
+  FURNITURE_MEASUREMENT_PANEL_REFERENCES,
+  FURNITURE_MEASUREMENT_VERTICAL_REFERENCES,
   FURNITURE_PREVIEW_MATERIAL_TARGETS,
   FURNITURE_PREVIEW_MATERIALS,
   getFurniturePreviewMaterial,
@@ -52,6 +58,26 @@ import {
 } from '../../services/furnitureDesignService'
 import { calculateCutList } from '../../utils/cutListCalculator'
 import { exportCutListPdf } from '../../utils/exportCutListPdf'
+import {
+  DEPTH_REFERENCE_LABELS,
+  HORIZONTAL_REFERENCE_LABELS,
+  PANEL_REFERENCE_LABELS,
+  VERTICAL_REFERENCE_LABELS,
+  depthMeasurementLabel,
+  depthOffsetFromDisplay,
+  displayDepthOffset,
+  displayHorizontalPanelPosition,
+  displayVerticalBoxOffset,
+  displayVerticalPanelPosition,
+  getSectionForIndex,
+  horizontalMeasurementExtent,
+  horizontalMeasurementLabel,
+  horizontalPanelCenterFromDisplay,
+  verticalBoxOffsetFromDisplay,
+  verticalMeasurementExtent,
+  verticalMeasurementLabel,
+  verticalPanelCenterFromDisplay,
+} from '../../utils/furnitureMeasurements'
 
 // ── Page ──────────────────────────────────────────────────────────────────────
 
@@ -72,6 +98,7 @@ export default function FurnitureDesignerPage() {
     designName,
     hasUnsavedChanges,
     lastSavedAt,
+    outerBox,
     setDesignName,
     reset,
     loadDesign,
@@ -81,6 +108,8 @@ export default function FurnitureDesignerPage() {
     redo,
     canUndo,
     canRedo,
+    selectedId,
+    removeSelected,
   } = useFurnitureStore()
   const loadPreviewSettings = useFurniturePreviewStore((state) => state.loadPreviewSettings)
   const serializePreviewSettings = useFurniturePreviewStore((state) => state.serializePreviewSettings)
@@ -127,9 +156,18 @@ export default function FurnitureDesignerPage() {
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
       if (event.defaultPrevented || isEditableKeyboardTarget(event.target)) return
-      if (!(event.metaKey || event.ctrlKey) || event.altKey) return
 
       const key = event.key.toLowerCase()
+      if (!event.metaKey && !event.ctrlKey && (key === 'delete' || key === 'backspace')) {
+        if (selectedId && selectedId !== OUTER_BOX_SELECTION_ID) {
+          event.preventDefault()
+          removeSelected()
+        }
+        return
+      }
+
+      if (!(event.metaKey || event.ctrlKey) || event.altKey) return
+
       const wantsUndo = key === 'z' && !event.shiftKey
       const wantsRedo = (key === 'z' && event.shiftKey) || key === 'y'
 
@@ -147,7 +185,7 @@ export default function FurnitureDesignerPage() {
 
     window.addEventListener('keydown', handleKeyDown)
     return () => window.removeEventListener('keydown', handleKeyDown)
-  }, [canRedo, canUndo, redo, undo])
+  }, [canRedo, canUndo, redo, removeSelected, selectedId, undo])
 
   if (loadingDesign) {
     return <DesignerLoadingState onBack={() => navigate('/furniture')} />
@@ -268,6 +306,8 @@ export default function FurnitureDesignerPage() {
           Save
         </LoadingButton>
       </div>
+
+      {outerBox && <MeasurementReferenceBar />}
 
       {/* ── Body ── */}
       <div className="flex flex-1 min-h-0">
@@ -417,6 +457,8 @@ const MODE_BUTTONS: ModeBtn[] = [
   { mode: 'add_partition',    Icon: PanelLeft,    label: 'Add Partition',  shortcut: 'P' },
   { mode: 'add_drawer',       Icon: LayoutGrid,   label: 'Add Drawer',     shortcut: 'D' },
   { mode: 'add_custom_panel', Icon: Pencil,       label: 'Custom Panel',   shortcut: 'C' },
+  { mode: 'fill_gap',         Icon: Plus,         label: 'Fill Gap',       shortcut: 'G' },
+  { mode: 'pencil',           Icon: PenLine,      label: 'Pencil',         shortcut: 'N' },
 ]
 
 function ModeToolbar() {
@@ -1916,10 +1958,11 @@ function PreviewCustomizeModal({ onClose }: { onClose: () => void }) {
 // ── Right panel ───────────────────────────────────────────────────────────────
 
 function RightPanel() {
-  const { outerBox, setDepth, setThickness, setBackPanelThickness, material, getSelectedItem } = useFurnitureStore()
+  const { outerBox, mode, setDepth, setThickness, setBackPanelThickness, material, getSelectedItem } = useFurnitureStore()
   const [previewCustomizerOpen, setPreviewCustomizerOpen] = useState(false)
   const selectedItem = getSelectedItem()
   const showSelectedInspector = Boolean(outerBox && selectedItem)
+  const showPencilToolSettings = Boolean(outerBox && mode === 'pencil' && selectedItem?.type !== 'freehand_path')
   const backPanelThickness = material.backPanelThickness ?? DEFAULT_BACK_PANEL_THICKNESS
   const maxBackPanelThickness = outerBox ? Math.max(1, outerBox.depth - 1) : undefined
 
@@ -1973,6 +2016,10 @@ function RightPanel() {
           </>
         )}
 
+        {showPencilToolSettings && <PencilToolSettings />}
+
+        <EqualSpacingTool />
+
         {/* Structural presets */}
         <PanelPresets />
 
@@ -1983,6 +2030,348 @@ function RightPanel() {
         <CutList />
       </div>
     </div>
+  )
+}
+
+function MeasurementReferenceBar() {
+  const {
+    measurementHorizontalReference,
+    measurementVerticalReference,
+    measurementDepthReference,
+    measurementPanelReference,
+    setMeasurementHorizontalReference,
+    setMeasurementVerticalReference,
+    setMeasurementDepthReference,
+    setMeasurementPanelReference,
+  } = useFurniturePreviewStore()
+
+  return (
+    <div
+      className="h-12 px-4 flex items-center gap-3 shrink-0 overflow-x-auto"
+      style={{ borderBottom: '1px solid var(--line)', background: 'var(--bg)' }}
+    >
+      <div className="flex items-center gap-1.5 shrink-0 text-[11px] font-semibold uppercase" style={{ color: 'var(--ink-4)' }}>
+        <Ruler size={13} />
+        Reference
+      </div>
+      <MeasurementSegment
+        label="Horizontal"
+        value={measurementHorizontalReference}
+        options={FURNITURE_MEASUREMENT_HORIZONTAL_REFERENCES}
+        labels={HORIZONTAL_REFERENCE_LABELS}
+        onChange={setMeasurementHorizontalReference}
+      />
+      <MeasurementSegment
+        label="Vertical"
+        value={measurementVerticalReference}
+        options={FURNITURE_MEASUREMENT_VERTICAL_REFERENCES}
+        labels={VERTICAL_REFERENCE_LABELS}
+        onChange={setMeasurementVerticalReference}
+      />
+      <MeasurementSegment
+        label="Depth"
+        value={measurementDepthReference}
+        options={FURNITURE_MEASUREMENT_DEPTH_REFERENCES}
+        labels={DEPTH_REFERENCE_LABELS}
+        onChange={setMeasurementDepthReference}
+      />
+      <MeasurementSegment
+        label="Panel point"
+        value={measurementPanelReference}
+        options={FURNITURE_MEASUREMENT_PANEL_REFERENCES}
+        labels={PANEL_REFERENCE_LABELS}
+        onChange={setMeasurementPanelReference}
+      />
+    </div>
+  )
+}
+
+function MeasurementSegment<T extends string>({
+  label,
+  value,
+  options,
+  labels,
+  onChange,
+}: {
+  label: string
+  value: T
+  options: readonly T[]
+  labels: Record<T, string>
+  onChange: (value: T) => void
+}) {
+  return (
+    <div className="flex items-center gap-1.5 shrink-0">
+      <div className="text-[11px] font-medium whitespace-nowrap" style={{ color: 'var(--ink-4)' }}>
+        {label}
+      </div>
+      <div className="flex items-center gap-1">
+        {options.map((option) => {
+          const active = value === option
+
+          return (
+            <button
+              key={option}
+              type="button"
+              onClick={() => onChange(option)}
+              className="h-7 rounded-md px-2 text-[10.5px] font-medium transition-all whitespace-nowrap"
+              title={labels[option]}
+              style={{
+                background: active ? 'rgba(37,99,235,0.12)' : 'var(--bg)',
+                border: active ? '1px solid rgba(37,99,235,0.45)' : '1px solid var(--line)',
+                color: active ? 'var(--accent)' : 'var(--ink-3)',
+              }}
+            >
+              {labels[option]}
+            </button>
+          )
+        })}
+      </div>
+    </div>
+  )
+}
+
+function PencilToolSettings() {
+  const {
+    pencilStroke,
+    pencilStrokeWidth,
+    pencilSnapEnabled,
+    setPencilStroke,
+    setPencilStrokeWidth,
+    setPencilSnapEnabled,
+  } = useFurnitureStore()
+
+  return (
+    <div>
+      <label className="eyebrow mb-2 block">Pencil</label>
+      <div
+        className="rounded-md p-3 space-y-2.5"
+        style={{ background: 'var(--bg-sunken)', border: '1px solid var(--line)' }}
+      >
+        <ColorSettingRow
+          label="Colour"
+          value={pencilStroke}
+          fallback={DEFAULT_PENCIL_STROKE}
+          onChange={setPencilStroke}
+        />
+        <SettingRow
+          label="Thickness"
+          value={pencilStrokeWidth}
+          min={PENCIL_STROKE_WIDTH_RANGE.min}
+          max={PENCIL_STROKE_WIDTH_RANGE.max}
+          onChange={setPencilStrokeWidth}
+        />
+        <label className="flex items-center justify-between gap-2 text-[12px]" style={{ color: 'var(--ink-3)' }}>
+          <span>Snap</span>
+          <input
+            type="checkbox"
+            checked={pencilSnapEnabled}
+            onChange={(event) => setPencilSnapEnabled(event.target.checked)}
+            style={{ accentColor: 'var(--accent)' }}
+          />
+        </label>
+      </div>
+    </div>
+  )
+}
+
+type EqualSpacingMode = 'shelves' | 'partitions'
+type EqualSpacingRangeMode = 'full' | 'custom'
+
+function EqualSpacingTool() {
+  const {
+    outerBox,
+    material,
+    partitions,
+    setMode: setDrawingMode,
+    addEqualShelves,
+    addEqualPartitions,
+  } = useFurnitureStore()
+  const [mode, setMode] = useState<EqualSpacingMode>('shelves')
+  const [count, setCount] = useState(2)
+  const [sectionIndex, setSectionIndex] = useState(0)
+  const [rangeMode, setRangeMode] = useState<EqualSpacingRangeMode>('full')
+  const [startMargin, setStartMargin] = useState(0)
+  const [endMargin, setEndMargin] = useState(0)
+  const [rangeStart, setRangeStart] = useState(0)
+  const [rangeEnd, setRangeEnd] = useState(0)
+
+  if (!outerBox) return null
+
+  const sectionCount = partitions.length + 1
+  const safeSectionIndex = Math.min(sectionIndex, sectionCount - 1)
+  const interiorWidth = Math.max(1, outerBox.width - material.thickness * 2)
+  const interiorHeight = Math.max(1, outerBox.height - material.thickness * 2)
+  const section = getSectionForIndex(partitions, interiorWidth, safeSectionIndex)
+  const sectionClearStart = (section?.fromLeft ?? 0) + (safeSectionIndex === 0 ? 0 : material.thickness / 2)
+  const sectionClearEnd = (section?.toLeft ?? interiorWidth) - (safeSectionIndex === partitions.length ? 0 : material.thickness / 2)
+  const targetSize = mode === 'shelves'
+    ? interiorHeight
+    : Math.max(1, sectionClearEnd - sectionClearStart)
+  const safeRangeStart = Math.max(0, Math.min(rangeStart, targetSize))
+  const requestedRangeEnd = rangeEnd > 0 ? rangeEnd : targetSize
+  const safeRangeEnd = Math.max(safeRangeStart, Math.min(requestedRangeEnd, targetSize))
+  const safeStartMargin = rangeMode === 'custom'
+    ? safeRangeStart
+    : Math.max(0, Math.min(startMargin, targetSize))
+  const safeEndMargin = rangeMode === 'custom'
+    ? Math.max(0, targetSize - safeRangeEnd)
+    : Math.max(0, Math.min(endMargin, Math.max(0, targetSize - safeStartMargin)))
+  const availableSpace = Math.max(0, targetSize - safeStartMargin - safeEndMargin)
+  const safeCount = Math.max(1, Math.min(50, Math.round(count)))
+  const requiredSpace = safeCount * material.thickness
+  const canAdd = availableSpace >= requiredSpace
+  const openingSize = canAdd
+    ? Math.round((availableSpace - requiredSpace) / (safeCount + 1))
+    : 0
+  const itemLabel = mode === 'shelves' ? 'shelves' : 'partitions'
+  const rangeStartLabel = mode === 'shelves' ? 'From bottom' : 'From section left'
+  const rangeEndLabel = mode === 'shelves' ? 'To bottom' : 'To section left'
+
+  const handleAdd = () => {
+    if (!canAdd) return
+    if (mode === 'shelves') {
+      addEqualShelves(safeCount, safeSectionIndex, safeStartMargin, safeEndMargin)
+    } else {
+      addEqualPartitions(safeCount, safeSectionIndex, safeStartMargin, safeEndMargin)
+    }
+  }
+
+  return (
+    <div>
+      <label className="eyebrow mb-2 block">Equal Spacing</label>
+      <div
+        className="rounded-md p-3 space-y-2.5"
+        style={{ background: 'var(--bg-sunken)', border: '1px solid var(--line)' }}
+      >
+        <div className="grid grid-cols-2 gap-1.5">
+          <EqualSpacingModeButton
+            label="Shelves"
+            active={mode === 'shelves'}
+            onClick={() => setMode('shelves')}
+          />
+          <EqualSpacingModeButton
+            label="Partitions"
+            active={mode === 'partitions'}
+            onClick={() => setMode('partitions')}
+          />
+        </div>
+        <button
+          type="button"
+          onClick={() => setDrawingMode('fill_gap')}
+          className="btn btn-ghost btn-sm w-full flex items-center justify-center gap-1.5"
+          title="Click an opening on the drawing, then enter how many items to add."
+        >
+          <Plus size={13} />
+          Pick gap on drawing
+        </button>
+        <div className="grid grid-cols-2 gap-1.5">
+          <EqualSpacingModeButton
+            label="Full section"
+            active={rangeMode === 'full'}
+            onClick={() => setRangeMode('full')}
+          />
+          <EqualSpacingModeButton
+            label="Custom range"
+            active={rangeMode === 'custom'}
+            onClick={() => setRangeMode('custom')}
+          />
+        </div>
+
+        <SettingRow
+          label="Count"
+          value={safeCount}
+          min={1}
+          max={20}
+          suffix=""
+          onChange={setCount}
+        />
+        <SettingRow
+          label="Section"
+          value={safeSectionIndex + 1}
+          min={1}
+          max={sectionCount}
+          suffix=""
+          onChange={(v) => setSectionIndex(v - 1)}
+        />
+        {rangeMode === 'full' ? (
+          <>
+            <SettingRow
+              label={mode === 'shelves' ? 'Bottom margin' : 'Left margin'}
+              value={safeStartMargin}
+              min={0}
+              max={targetSize}
+              onChange={setStartMargin}
+            />
+            <SettingRow
+              label={mode === 'shelves' ? 'Top margin' : 'Right margin'}
+              value={safeEndMargin}
+              min={0}
+              max={targetSize}
+              onChange={setEndMargin}
+            />
+          </>
+        ) : (
+          <>
+            <SettingRow
+              label={rangeStartLabel}
+              value={safeRangeStart}
+              min={0}
+              max={targetSize}
+              onChange={setRangeStart}
+            />
+            <SettingRow
+              label={rangeEndLabel}
+              value={safeRangeEnd}
+              min={0}
+              max={targetSize}
+              onChange={setRangeEnd}
+            />
+          </>
+        )}
+
+        <div className="text-[11px]" style={{ color: canAdd ? 'var(--ink-4)' : '#ef4444' }}>
+          {canAdd
+            ? `${openingSize}mm clear opening between ${itemLabel} in ${availableSpace}mm.`
+            : `Need at least ${requiredSpace}mm clear space for ${safeCount} ${itemLabel}.`}
+        </div>
+
+        <button
+          type="button"
+          onClick={handleAdd}
+          disabled={!canAdd}
+          className="btn btn-primary btn-sm w-full flex items-center justify-center gap-1.5"
+          style={{ opacity: canAdd ? 1 : 0.45, cursor: canAdd ? 'pointer' : 'not-allowed' }}
+        >
+          <Plus size={13} />
+          Add {safeCount} {itemLabel}
+        </button>
+      </div>
+    </div>
+  )
+}
+
+function EqualSpacingModeButton({
+  label,
+  active,
+  onClick,
+}: {
+  label: string
+  active: boolean
+  onClick: () => void
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className="h-8 rounded-md px-2 text-[11.5px] font-medium transition-all"
+      style={{
+        background: active ? 'rgba(37,99,235,0.12)' : 'var(--bg)',
+        border: active ? '1px solid rgba(37,99,235,0.45)' : '1px solid var(--line)',
+        color: active ? 'var(--accent)' : 'var(--ink-3)',
+      }}
+    >
+      {label}
+    </button>
   )
 }
 
@@ -2092,6 +2481,68 @@ function SettingRow({
   )
 }
 
+function ColorSettingRow({
+  label,
+  value,
+  fallback = '#2563eb',
+  disabled,
+  onChange,
+}: {
+  label: string
+  value: string
+  fallback?: string
+  disabled?: boolean
+  onChange: (value: string) => void
+}) {
+  const safeValue = /^#[0-9a-f]{6}$/i.test(value) ? value : fallback
+
+  const commit = (raw: string) => {
+    const next = raw.trim()
+    if (/^#[0-9a-f]{6}$/i.test(next)) onChange(next)
+  }
+
+  return (
+    <div>
+      <div className="flex items-center gap-2 mb-0.5">
+        <span className="text-[12px] flex-1" style={{ color: 'var(--ink-3)' }}>{label}</span>
+        <div className="flex items-center gap-1">
+          <input
+            type="color"
+            value={safeValue}
+            disabled={disabled}
+            onChange={(event) => onChange(event.target.value)}
+            className="w-8 h-7 rounded-md"
+            style={{
+              border: '1px solid var(--line)',
+              background: 'var(--bg-sunken)',
+              padding: 2,
+              cursor: disabled ? 'not-allowed' : 'pointer',
+            }}
+            aria-label={label}
+          />
+          <input
+            type="text"
+            key={safeValue}
+            defaultValue={safeValue.toUpperCase()}
+            disabled={disabled}
+            onBlur={(event) => commit(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === 'Enter') event.currentTarget.blur()
+            }}
+            className="w-20 h-7 px-2 rounded-md text-[11.5px]"
+            style={{
+              background: disabled ? 'transparent' : 'var(--bg-sunken)',
+              border: '1px solid var(--line)',
+              color: disabled ? 'var(--ink-4)' : 'var(--ink)',
+              fontFamily: 'inherit',
+            }}
+          />
+        </div>
+      </div>
+    </div>
+  )
+}
+
 function TextSettingRow({
   label,
   value,
@@ -2136,11 +2587,21 @@ function TextSettingRow({
   )
 }
 
+function InspectorSubhead({ children }: { children: React.ReactNode }) {
+  return (
+    <div className="pt-1 text-[10.5px] font-semibold uppercase" style={{ color: 'var(--ink-4)' }}>
+      {children}
+    </div>
+  )
+}
+
 function SelectedItemInspector() {
   const {
     outerBox,
     material,
+    shelves,
     partitions,
+    drawers,
     getSelectedItem,
     updateOuterBox,
     updateShelf,
@@ -2148,18 +2609,40 @@ function SelectedItemInspector() {
     updateDrawer,
     updateShelfPartition,
     updateCustomPanel,
+    updateFreehandPath,
+    convertFreehandPathToCustomPanel,
     removeSelected,
   } = useFurnitureStore()
+  const {
+    measurementHorizontalReference,
+    measurementVerticalReference,
+    measurementDepthReference,
+    measurementPanelReference,
+  } = useFurniturePreviewStore()
 
   const selectedItem = getSelectedItem()
   if (!selectedItem || !outerBox) return null
 
   const sectionCount = partitions.length + 1
+  const interiorWidth = Math.max(1, outerBox.width - material.thickness * 2)
   const interiorHeight = Math.max(1, outerBox.height - material.thickness * 2)
   const backPanelThickness = material.backPanelThickness ?? DEFAULT_BACK_PANEL_THICKNESS
   const interiorDepth = Math.max(1, outerBox.depth - backPanelThickness)
   const maxDrawerSetback = Math.max(0, Math.floor(interiorDepth - material.thickness - 16 - 1))
   const title = selectedItemTitle(selectedItem.type)
+  const measurementContext = {
+    outerWidth: outerBox.width,
+    outerHeight: outerBox.height,
+    interiorWidth,
+    interiorHeight,
+    thickness: material.thickness,
+  }
+  const measurementSettings = {
+    horizontalReference: measurementHorizontalReference,
+    verticalReference: measurementVerticalReference,
+    depthReference: measurementDepthReference,
+    panelReference: measurementPanelReference,
+  }
 
   return (
     <div>
@@ -2195,96 +2678,329 @@ function SelectedItemInspector() {
         )}
 
         {selectedItem.type === 'shelf' && (
-          <>
-            <SettingRow
-              label="From bottom"
-              value={selectedItem.item.fromBottom}
-              max={interiorHeight}
-              onChange={(v) => updateShelf(selectedItem.id, { fromBottom: v })}
-            />
-            <SettingRow
-              label="Section"
-              value={selectedItem.item.sectionIndex + 1}
-              min={1}
-              max={sectionCount}
-              suffix=""
-              onChange={(v) => updateShelf(selectedItem.id, { sectionIndex: v - 1 })}
-            />
-          </>
+          (() => {
+            const sectionShelves = shelves
+              .filter((shelf) => shelf.sectionIndex === selectedItem.item.sectionIndex)
+              .sort((a, b) => a.fromBottom - b.fromBottom)
+            const shelfIndex = sectionShelves.findIndex((shelf) => shelf.id === selectedItem.id)
+            const lowerShelf = sectionShelves[shelfIndex - 1]
+            const upperShelf = sectionShelves[shelfIndex + 1]
+            const lowerFace = lowerShelf ? lowerShelf.fromBottom + material.thickness / 2 : 0
+            const upperFace = upperShelf ? upperShelf.fromBottom - material.thickness / 2 : interiorHeight
+            const openingBelow = Math.max(0, Math.round(selectedItem.item.fromBottom - material.thickness / 2 - lowerFace))
+            const openingAbove = Math.max(0, Math.round(upperFace - selectedItem.item.fromBottom - material.thickness / 2))
+            const availableOpening = Math.max(0, Math.round(upperFace - lowerFace - material.thickness))
+
+            return (
+              <>
+                <InspectorSubhead>Position</InspectorSubhead>
+                <SettingRow
+                  label="From bottom"
+                  value={displayVerticalPanelPosition(
+                    selectedItem.item.fromBottom,
+                    { verticalReference: 'interior_bottom', panelReference: measurementPanelReference },
+                    measurementContext,
+                  )}
+                  min={0}
+                  max={interiorHeight}
+                  onChange={(v) => updateShelf(selectedItem.id, {
+                    fromBottom: verticalPanelCenterFromDisplay(
+                      v,
+                      { verticalReference: 'interior_bottom', panelReference: measurementPanelReference },
+                      measurementContext,
+                    ),
+                  })}
+                />
+                <SettingRow
+                  label="From top"
+                  value={displayVerticalPanelPosition(
+                    selectedItem.item.fromBottom,
+                    { verticalReference: 'interior_top', panelReference: measurementPanelReference },
+                    measurementContext,
+                  )}
+                  min={0}
+                  max={interiorHeight}
+                  onChange={(v) => updateShelf(selectedItem.id, {
+                    fromBottom: verticalPanelCenterFromDisplay(
+                      v,
+                      { verticalReference: 'interior_top', panelReference: measurementPanelReference },
+                      measurementContext,
+                    ),
+                  })}
+                />
+                <SettingRow
+                  label="Section"
+                  value={selectedItem.item.sectionIndex + 1}
+                  min={1}
+                  max={sectionCount}
+                  suffix=""
+                  onChange={(v) => updateShelf(selectedItem.id, { sectionIndex: v - 1 })}
+                />
+
+                <InspectorSubhead>Openings</InspectorSubhead>
+                <SettingRow
+                  label="Opening below"
+                  value={openingBelow}
+                  min={0}
+                  max={availableOpening}
+                  onChange={(v) => updateShelf(selectedItem.id, {
+                    fromBottom: lowerFace + v + material.thickness / 2,
+                  })}
+                />
+                <SettingRow
+                  label="Opening above"
+                  value={openingAbove}
+                  min={0}
+                  max={availableOpening}
+                  onChange={(v) => updateShelf(selectedItem.id, {
+                    fromBottom: upperFace - v - material.thickness / 2,
+                  })}
+                />
+              </>
+            )
+          })()
         )}
 
         {selectedItem.type === 'partition' && (
-          <SettingRow
-            label="From left"
-            value={selectedItem.item.fromLeft}
-            onChange={(v) => updatePartition(selectedItem.id, { fromLeft: v })}
-          />
+          (() => {
+            const sortedPartitions = [...partitions].sort((a, b) => a.fromLeft - b.fromLeft)
+            const partitionIndex = sortedPartitions.findIndex((partition) => partition.id === selectedItem.id)
+            const previousPartition = sortedPartitions[partitionIndex - 1]
+            const nextPartition = sortedPartitions[partitionIndex + 1]
+            const leftBoundaryFace = previousPartition ? previousPartition.fromLeft + material.thickness / 2 : 0
+            const rightBoundaryFace = nextPartition ? nextPartition.fromLeft - material.thickness / 2 : interiorWidth
+            const leftSectionWidth = Math.max(
+              0,
+              Math.round(selectedItem.item.fromLeft - material.thickness / 2 - leftBoundaryFace),
+            )
+            const rightSectionWidth = Math.max(
+              0,
+              Math.round(rightBoundaryFace - selectedItem.item.fromLeft - material.thickness / 2),
+            )
+            const availableSectionWidth = Math.max(0, Math.round(rightBoundaryFace - leftBoundaryFace - material.thickness))
+
+            return (
+              <>
+                <InspectorSubhead>Position</InspectorSubhead>
+                <SettingRow
+                  label="From left"
+                  value={displayHorizontalPanelPosition(
+                    selectedItem.item.fromLeft,
+                    { horizontalReference: 'interior_left', panelReference: measurementPanelReference },
+                    measurementContext,
+                  )}
+                  min={0}
+                  max={interiorWidth}
+                  onChange={(v) => updatePartition(selectedItem.id, {
+                    fromLeft: horizontalPanelCenterFromDisplay(
+                      v,
+                      { horizontalReference: 'interior_left', panelReference: measurementPanelReference },
+                      measurementContext,
+                    ),
+                  })}
+                />
+                <SettingRow
+                  label="From right"
+                  value={displayHorizontalPanelPosition(
+                    selectedItem.item.fromLeft,
+                    { horizontalReference: 'interior_right', panelReference: measurementPanelReference },
+                    measurementContext,
+                  )}
+                  min={0}
+                  max={interiorWidth}
+                  onChange={(v) => updatePartition(selectedItem.id, {
+                    fromLeft: horizontalPanelCenterFromDisplay(
+                      v,
+                      { horizontalReference: 'interior_right', panelReference: measurementPanelReference },
+                      measurementContext,
+                    ),
+                  })}
+                />
+
+                <InspectorSubhead>Section Widths</InspectorSubhead>
+                <SettingRow
+                  label="Left width"
+                  value={leftSectionWidth}
+                  min={0}
+                  max={availableSectionWidth}
+                  onChange={(v) => updatePartition(selectedItem.id, {
+                    fromLeft: leftBoundaryFace + v + material.thickness / 2,
+                  })}
+                />
+                <SettingRow
+                  label="Right width"
+                  value={rightSectionWidth}
+                  min={0}
+                  max={availableSectionWidth}
+                  onChange={(v) => updatePartition(selectedItem.id, {
+                    fromLeft: rightBoundaryFace - v - material.thickness / 2,
+                  })}
+                />
+              </>
+            )
+          })()
         )}
 
         {selectedItem.type === 'shelf_partition' && (
-          <>
-            <SettingRow
-              label="Section"
-              value={selectedItem.item.sectionIndex + 1}
-              min={1}
-              max={sectionCount}
-              suffix=""
-              onChange={(v) => updateShelfPartition(selectedItem.id, { sectionIndex: v - 1 })}
-            />
-            <SettingRow
-              label="From left"
-              value={selectedItem.item.fromLeft}
-              onChange={(v) => updateShelfPartition(selectedItem.id, { fromLeft: v })}
-            />
-            <SettingRow
-              label="From bottom"
-              value={selectedItem.item.fromBottom}
-              min={0}
-              max={interiorHeight}
-              onChange={(v) => updateShelfPartition(selectedItem.id, { fromBottom: v })}
-            />
-            <SettingRow
-              label="To bottom"
-              value={selectedItem.item.toBottom}
-              min={1}
-              max={interiorHeight}
-              onChange={(v) => updateShelfPartition(selectedItem.id, { toBottom: v })}
-            />
-          </>
+          (() => {
+            const section = getSectionForIndex(partitions, interiorWidth, selectedItem.item.sectionIndex)
+            const spanHeight = selectedItem.item.toBottom - selectedItem.item.fromBottom
+
+            return (
+              <>
+                <SettingRow
+                  label="Section"
+                  value={selectedItem.item.sectionIndex + 1}
+                  min={1}
+                  max={sectionCount}
+                  suffix=""
+                  onChange={(v) => updateShelfPartition(selectedItem.id, { sectionIndex: v - 1 })}
+                />
+                <SettingRow
+                  label={horizontalMeasurementLabel(measurementHorizontalReference)}
+                  value={displayHorizontalPanelPosition(
+                    selectedItem.item.fromLeft,
+                    measurementSettings,
+                    measurementContext,
+                    section?.fromLeft ?? 0,
+                  )}
+                  min={0}
+                  max={horizontalMeasurementExtent(measurementHorizontalReference, measurementContext, section)}
+                  onChange={(v) => updateShelfPartition(selectedItem.id, {
+                    fromLeft: horizontalPanelCenterFromDisplay(
+                      v,
+                      measurementSettings,
+                      measurementContext,
+                      section?.fromLeft ?? 0,
+                    ),
+                  })}
+                />
+                <SettingRow
+                  label={verticalMeasurementLabel(measurementVerticalReference)}
+                  value={displayVerticalBoxOffset(
+                    selectedItem.item.fromBottom,
+                    spanHeight,
+                    measurementVerticalReference,
+                    measurementContext,
+                  )}
+                  min={0}
+                  max={verticalMeasurementExtent(measurementVerticalReference, measurementContext)}
+                  onChange={(v) => {
+                    const fromBottom = verticalBoxOffsetFromDisplay(
+                      v,
+                      spanHeight,
+                      measurementVerticalReference,
+                      measurementContext,
+                    )
+                    updateShelfPartition(selectedItem.id, {
+                      fromBottom,
+                      toBottom: fromBottom + spanHeight,
+                    })
+                  }}
+                />
+                <SettingRow
+                  label="Height"
+                  value={spanHeight}
+                  min={1}
+                  max={interiorHeight}
+                  onChange={(v) => updateShelfPartition(selectedItem.id, {
+                    toBottom: selectedItem.item.fromBottom + v,
+                  })}
+                />
+              </>
+            )
+          })()
         )}
 
         {selectedItem.type === 'drawer' && (
-          <>
-            <SettingRow
-              label="Section"
-              value={selectedItem.item.sectionIndex + 1}
-              min={1}
-              max={sectionCount}
-              suffix=""
-              onChange={(v) => updateDrawer(selectedItem.id, { sectionIndex: v - 1 })}
-            />
-            <SettingRow
-              label="From bottom"
-              value={selectedItem.item.fromBottom}
-              min={0}
-              max={interiorHeight}
-              onChange={(v) => updateDrawer(selectedItem.id, { fromBottom: v })}
-            />
-            <SettingRow
-              label="Height"
-              value={selectedItem.item.height}
-              max={interiorHeight}
-              onChange={(v) => updateDrawer(selectedItem.id, { height: v })}
-            />
-            <SettingRow
-              label="Face setback"
-              value={Math.min(selectedItem.item.frontSetback ?? 0, maxDrawerSetback)}
-              min={0}
-              max={maxDrawerSetback}
-              onChange={(v) => updateDrawer(selectedItem.id, { frontSetback: v })}
-              hint={`Drawer box depth becomes ${Math.max(1, Math.round(interiorDepth - Math.min(selectedItem.item.frontSetback ?? 0, maxDrawerSetback) - material.thickness - 16))}mm.`}
-            />
-          </>
+          (() => {
+            const sectionDrawers = drawers
+              .filter((drawer) => drawer.sectionIndex === selectedItem.item.sectionIndex)
+              .sort((a, b) => a.fromBottom - b.fromBottom)
+            const drawerIndex = sectionDrawers.findIndex((drawer) => drawer.id === selectedItem.id)
+            const lowerDrawer = sectionDrawers[drawerIndex - 1]
+            const upperDrawer = sectionDrawers[drawerIndex + 1]
+            const lowerBoundary = lowerDrawer ? lowerDrawer.fromBottom + lowerDrawer.height : 0
+            const upperBoundary = upperDrawer ? upperDrawer.fromBottom : interiorHeight
+            const gapBelow = Math.max(0, Math.round(selectedItem.item.fromBottom - lowerBoundary))
+            const gapAbove = Math.max(
+              0,
+              Math.round(upperBoundary - selectedItem.item.fromBottom - selectedItem.item.height),
+            )
+            const availableGap = Math.max(0, Math.round(upperBoundary - lowerBoundary - selectedItem.item.height))
+
+            return (
+              <>
+                <InspectorSubhead>Position</InspectorSubhead>
+                <SettingRow
+                  label="Section"
+                  value={selectedItem.item.sectionIndex + 1}
+                  min={1}
+                  max={sectionCount}
+                  suffix=""
+                  onChange={(v) => updateDrawer(selectedItem.id, { sectionIndex: v - 1 })}
+                />
+                <SettingRow
+                  label="From bottom"
+                  value={selectedItem.item.fromBottom}
+                  min={0}
+                  max={interiorHeight}
+                  onChange={(v) => updateDrawer(selectedItem.id, { fromBottom: v })}
+                />
+                <SettingRow
+                  label="From top"
+                  value={Math.max(0, Math.round(interiorHeight - selectedItem.item.fromBottom - selectedItem.item.height))}
+                  min={0}
+                  max={interiorHeight}
+                  onChange={(v) => updateDrawer(selectedItem.id, {
+                    fromBottom: interiorHeight - selectedItem.item.height - v,
+                  })}
+                />
+                <SettingRow
+                  label="Drawer height"
+                  value={selectedItem.item.height}
+                  max={interiorHeight}
+                  onChange={(v) => updateDrawer(selectedItem.id, { height: v })}
+                />
+
+                <InspectorSubhead>Gaps</InspectorSubhead>
+                <SettingRow
+                  label="Gap below"
+                  value={gapBelow}
+                  min={0}
+                  max={availableGap}
+                  onChange={(v) => updateDrawer(selectedItem.id, {
+                    fromBottom: lowerBoundary + v,
+                  })}
+                />
+                <SettingRow
+                  label="Gap above"
+                  value={gapAbove}
+                  min={0}
+                  max={availableGap}
+                  onChange={(v) => updateDrawer(selectedItem.id, {
+                    fromBottom: upperBoundary - selectedItem.item.height - v,
+                  })}
+                />
+
+                <InspectorSubhead>Depth</InspectorSubhead>
+                <SettingRow
+                  label={depthMeasurementLabel(measurementDepthReference)}
+                  value={displayDepthOffset(
+                    Math.min(selectedItem.item.frontSetback ?? 0, maxDrawerSetback),
+                    maxDrawerSetback,
+                    measurementDepthReference,
+                  )}
+                  min={0}
+                  max={maxDrawerSetback}
+                  onChange={(v) => updateDrawer(selectedItem.id, {
+                    frontSetback: depthOffsetFromDisplay(v, maxDrawerSetback, measurementDepthReference),
+                  })}
+                  hint={`Drawer box depth becomes ${Math.max(1, Math.round(interiorDepth - Math.min(selectedItem.item.frontSetback ?? 0, maxDrawerSetback) - material.thickness - 16))}mm.`}
+                />
+              </>
+            )
+          })()
         )}
 
         {selectedItem.type === 'custom_panel' && (
@@ -2295,18 +3011,58 @@ function SelectedItemInspector() {
               fallback="Custom Panel"
               onCommit={(value) => updateCustomPanel(selectedItem.id, { name: value })}
             />
+            <InspectorSubhead>Anchors</InspectorSubhead>
             <SettingRow
-              label="From left"
+              label="Left"
               value={selectedItem.item.fromLeft}
               min={0}
+              max={Math.max(0, interiorWidth - selectedItem.item.width)}
               onChange={(v) => updateCustomPanel(selectedItem.id, { fromLeft: v })}
             />
             <SettingRow
-              label="From bottom"
+              label="Right"
+              value={Math.max(0, Math.round(interiorWidth - selectedItem.item.fromLeft - selectedItem.item.width))}
+              min={0}
+              max={Math.max(0, interiorWidth - selectedItem.item.width)}
+              onChange={(v) => updateCustomPanel(selectedItem.id, {
+                fromLeft: interiorWidth - selectedItem.item.width - v,
+              })}
+            />
+            <SettingRow
+              label="Bottom"
               value={selectedItem.item.fromBottom}
               min={0}
+              max={Math.max(0, interiorHeight - selectedItem.item.height)}
               onChange={(v) => updateCustomPanel(selectedItem.id, { fromBottom: v })}
             />
+            <SettingRow
+              label="Top"
+              value={Math.max(0, Math.round(interiorHeight - selectedItem.item.fromBottom - selectedItem.item.height))}
+              min={0}
+              max={Math.max(0, interiorHeight - selectedItem.item.height)}
+              onChange={(v) => updateCustomPanel(selectedItem.id, {
+                fromBottom: interiorHeight - selectedItem.item.height - v,
+              })}
+            />
+            <SettingRow
+              label="Center X"
+              value={Math.round(selectedItem.item.fromLeft + selectedItem.item.width / 2)}
+              min={Math.round(selectedItem.item.width / 2)}
+              max={Math.round(interiorWidth - selectedItem.item.width / 2)}
+              onChange={(v) => updateCustomPanel(selectedItem.id, {
+                fromLeft: v - selectedItem.item.width / 2,
+              })}
+            />
+            <SettingRow
+              label="Center Y"
+              value={Math.round(selectedItem.item.fromBottom + selectedItem.item.height / 2)}
+              min={Math.round(selectedItem.item.height / 2)}
+              max={Math.round(interiorHeight - selectedItem.item.height / 2)}
+              onChange={(v) => updateCustomPanel(selectedItem.id, {
+                fromBottom: v - selectedItem.item.height / 2,
+              })}
+            />
+            <InspectorSubhead>Size</InspectorSubhead>
             <SettingRow
               label="Width"
               value={selectedItem.item.width}
@@ -2322,6 +3078,34 @@ function SelectedItemInspector() {
               value={selectedItem.item.thickness}
               onChange={(v) => updateCustomPanel(selectedItem.id, { thickness: v })}
             />
+          </>
+        )}
+
+        {selectedItem.type === 'freehand_path' && (
+          <>
+            <InspectorSubhead>Style</InspectorSubhead>
+            <ColorSettingRow
+              label="Colour"
+              value={selectedItem.item.stroke}
+              fallback={DEFAULT_PENCIL_STROKE}
+              onChange={(value) => updateFreehandPath(selectedItem.id, { stroke: value })}
+            />
+            <SettingRow
+              label="Thickness"
+              value={selectedItem.item.strokeWidth}
+              min={PENCIL_STROKE_WIDTH_RANGE.min}
+              max={PENCIL_STROKE_WIDTH_RANGE.max}
+              onChange={(value) => updateFreehandPath(selectedItem.id, { strokeWidth: value })}
+            />
+            <button
+              type="button"
+              onClick={() => convertFreehandPathToCustomPanel(selectedItem.id)}
+              className="btn btn-primary btn-sm w-full flex items-center justify-center gap-1.5"
+              title="Create a custom panel from this sketch"
+            >
+              <Box size={13} />
+              Convert to Panel
+            </button>
           </>
         )}
 
@@ -2359,6 +3143,8 @@ function selectedItemTitle(type: SelectedFurnitureItem['type']) {
       return 'Drawer'
     case 'custom_panel':
       return 'Custom Panel'
+    case 'freehand_path':
+      return 'Pencil Sketch'
   }
 }
 

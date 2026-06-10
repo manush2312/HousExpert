@@ -4,6 +4,7 @@
 # Project temp/output
 /tmp/
 /deploy.sh
+/.gocache/
 
 # Backend local files
 /backend/.env

@@ -4,10 +4,14 @@ import type {
   FurnitureDesign,
   FurnitureType,
 } from '../services/furnitureDesignService'
+import {
+  FURNITURE_BOX_FRAME_PADDING,
+  furnitureCanvasPxToMm,
+} from '../utils/furnitureCanvasGeometry'
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
-export type DrawingMode = 'draw_box' | 'select' | 'pan' | 'add_shelf' | 'add_partition' | 'add_drawer' | 'add_custom_panel'
+export type DrawingMode = 'draw_box' | 'select' | 'pan' | 'add_shelf' | 'add_partition' | 'add_drawer' | 'add_custom_panel' | 'fill_gap' | 'pencil'
 export type DoorType = 'none' | 'single' | 'double'
 
 export interface SectionConfig {
@@ -69,6 +73,13 @@ export interface CustomPanel {
   thickness: number   // mm
 }
 
+export interface FreehandPath {
+  id: string
+  points: number[]
+  stroke: string
+  strokeWidth: number
+}
+
 // A section is the space between two partitions (or wall-to-partition).
 // Derived — not stored, computed from partitions + outerBox.
 export interface Section {
@@ -89,6 +100,7 @@ export interface FurnitureSnapshot {
   drawers: Drawer[]
   customPanels: CustomPanel[]
   shelfPartitions: ShelfPartition[]
+  freehandPaths: FreehandPath[]
   sectionConfigs: Record<number, SectionConfig>
 }
 
@@ -102,12 +114,14 @@ export type SelectedFurnitureItem =
   | { type: 'shelf_partition'; id: string; item: ShelfPartition }
   | { type: 'drawer'; id: string; item: Drawer }
   | { type: 'custom_panel'; id: string; item: CustomPanel }
+  | { type: 'freehand_path'; id: string; item: FreehandPath }
 
 export type ShelfUpdate = Partial<Pick<Shelf, 'fromBottom' | 'sectionIndex'>>
 export type PartitionUpdate = Partial<Pick<Partition, 'fromLeft'>>
 export type DrawerUpdate = Partial<Pick<Drawer, 'sectionIndex' | 'fromBottom' | 'height' | 'frontSetback'>>
 export type ShelfPartitionUpdate = Partial<Pick<ShelfPartition, 'sectionIndex' | 'fromLeft' | 'fromBottom' | 'toBottom'>>
 export type CustomPanelUpdate = Partial<Omit<CustomPanel, 'id'>>
+export type FreehandPathUpdate = Partial<Pick<FreehandPath, 'points' | 'stroke' | 'strokeWidth'>>
 
 // ── State ─────────────────────────────────────────────────────────────────────
 
@@ -134,6 +148,7 @@ interface FurnitureState {
   drawers: Drawer[]
   customPanels: CustomPanel[]
   shelfPartitions: ShelfPartition[]
+  freehandPaths: FreehandPath[]
 
   // Per-section configuration (keyed by section index)
   sectionConfigs: Record<number, SectionConfig>
@@ -141,6 +156,9 @@ interface FurnitureState {
   // UI state
   mode: DrawingMode
   selectedId: string | null
+  pencilStroke: string
+  pencilStrokeWidth: number
+  pencilSnapEnabled: boolean
 
   // ── Derived getters ──────────────────────────────────────────────────────
 
@@ -171,8 +189,22 @@ interface FurnitureState {
   // Add elements
   addShelf: (fromBottom: number, sectionIndex: number) => void
   addPartition: (fromLeft: number) => void
+  addEqualShelves: (count: number, sectionIndex: number, bottomMargin?: number, topMargin?: number) => void
+  addEqualPartitions: (count: number, sectionIndex: number, leftMargin?: number, rightMargin?: number) => void
+  addEqualShelfPartitions: (
+    count: number,
+    sectionIndex: number,
+    fromBottom: number,
+    toBottom: number,
+    fromLeft: number,
+    toLeft: number,
+  ) => void
   addDrawer: (sectionIndex: number, fromBottom: number, height: number) => void
   addShelfPartition: (sectionIndex: number, fromLeft: number, fromBottom: number, toBottom: number) => void
+  addFreehandPath: (path: Omit<FreehandPath, 'id'>) => void
+  setPencilStroke: (stroke: string) => void
+  setPencilStrokeWidth: (strokeWidth: number) => void
+  setPencilSnapEnabled: (enabled: boolean) => void
 
   // Exact item edits
   updateShelf: (id: string, patch: ShelfUpdate) => void
@@ -180,15 +212,18 @@ interface FurnitureState {
   updateDrawer: (id: string, patch: DrawerUpdate) => void
   updateShelfPartition: (id: string, patch: ShelfPartitionUpdate) => void
   updateCustomPanel: (id: string, patch: CustomPanelUpdate) => void
+  updateFreehandPath: (id: string, patch: FreehandPathUpdate) => void
 
   // Move elements (drag)
   moveShelf: (id: string, fromBottom: number) => void
   movePartition: (id: string, fromLeft: number) => void
   moveDrawer: (id: string, fromBottom: number) => void
   moveShelfPartition: (id: string, fromLeft: number) => void
+  moveFreehandPath: (id: string, deltaX: number, deltaY: number) => void
 
   // Custom panels
   addCustomPanel: (panel: Omit<CustomPanel, 'id'>) => void
+  convertFreehandPathToCustomPanel: (id: string) => void
   moveCustomPanel: (id: string, fromLeft: number, fromBottom: number) => void
   renameCustomPanel: (id: string, name: string) => void
 
@@ -228,6 +263,9 @@ function localElementId(elementId: string | undefined) {
 export const DEFAULT_BACK_PANEL_THICKNESS = 6
 export const DRAWER_BOX_HEIGHT_ALLOWANCE = 6
 const DRAWER_DEPTH_CLEARANCE = 16
+export const DEFAULT_PENCIL_STROKE = '#2563eb'
+export const DEFAULT_PENCIL_STROKE_WIDTH = 2
+export const PENCIL_STROKE_WIDTH_RANGE = { min: 1, max: 16 }
 
 function snap(value: number, step = 1): number {
   const safeValue = Number.isFinite(value) ? value : 0
@@ -358,6 +396,19 @@ function shiftSectionConfigsForInsert(
   )
 }
 
+function shiftSectionConfigsForBulkInsert(
+  configs: Record<number, SectionConfig>,
+  insertionIdx: number,
+  count: number,
+): Record<number, SectionConfig> {
+  return Object.fromEntries(
+    Object.entries(configs).map(([key, value]) => {
+      const idx = Number(key)
+      return [idx > insertionIdx ? idx + count : idx, value]
+    }),
+  )
+}
+
 function shiftSectionConfigsForRemove(
   configs: Record<number, SectionConfig>,
   removeIdx: number,
@@ -374,6 +425,17 @@ function shiftSectionConfigsForRemove(
   return next
 }
 
+function evenlySpacedCenters(start: number, end: number, itemThickness: number, count: number) {
+  const safeCount = clamp(snap(count), 1, 50)
+  const available = end - start
+  if (available < itemThickness * safeCount) return []
+
+  const opening = (available - itemThickness * safeCount) / (safeCount + 1)
+  return Array.from({ length: safeCount }, (_, index) => (
+    snap(start + opening + itemThickness / 2 + index * (opening + itemThickness))
+  ))
+}
+
 function clampCustomPanel(panel: Omit<CustomPanel, 'id'>, outerBox: OuterBox, thickness: number) {
   const interiorW = Math.max(1, outerBox.width - thickness * 2)
   const interiorH = Math.max(1, outerBox.height - thickness * 2)
@@ -388,6 +450,88 @@ function clampCustomPanel(panel: Omit<CustomPanel, 'id'>, outerBox: OuterBox, th
     height,
     thickness: Math.max(1, snap(panel.thickness)),
   }
+}
+
+function freehandPathCanvasBounds(points: number[]) {
+  const xs = points.filter((_, index) => index % 2 === 0)
+  const ys = points.filter((_, index) => index % 2 === 1)
+  if (!xs.length || !ys.length) return null
+
+  return {
+    left: Math.min(...xs),
+    right: Math.max(...xs),
+    top: Math.min(...ys),
+    bottom: Math.max(...ys),
+  }
+}
+
+function customPanelFromFreehandPath(
+  path: FreehandPath,
+  outerBox: OuterBox,
+  thickness: number,
+): Omit<CustomPanel, 'id'> | null {
+  const bounds = freehandPathCanvasBounds(path.points)
+  if (!bounds) return null
+
+  const interiorLeft = FURNITURE_BOX_FRAME_PADDING.left + thickness
+  const interiorTop = FURNITURE_BOX_FRAME_PADDING.top + thickness
+  const interiorRight = FURNITURE_BOX_FRAME_PADDING.left + outerBox.width - thickness
+  const interiorBottom = FURNITURE_BOX_FRAME_PADDING.top + outerBox.height - thickness
+
+  if (
+    bounds.right < interiorLeft
+    || bounds.left > interiorRight
+    || bounds.bottom < interiorTop
+    || bounds.top > interiorBottom
+  ) {
+    return null
+  }
+
+  const left = clamp(bounds.left, interiorLeft, interiorRight)
+  const right = clamp(bounds.right, interiorLeft, interiorRight)
+  const top = clamp(bounds.top, interiorTop, interiorBottom)
+  const bottom = clamp(bounds.bottom, interiorTop, interiorBottom)
+  const rawWidth = Math.max(1, furnitureCanvasPxToMm(right - left))
+  const rawHeight = Math.max(1, furnitureCanvasPxToMm(bottom - top))
+  const centerLeft = furnitureCanvasPxToMm((left + right) / 2 - interiorLeft)
+  const centerBottom = furnitureCanvasPxToMm(interiorBottom - (top + bottom) / 2)
+  const isHorizontal = rawWidth >= rawHeight * 1.75
+  const isVertical = rawHeight >= rawWidth * 1.75
+
+  if (isHorizontal) {
+    const width = Math.max(thickness, rawWidth)
+    const height = thickness
+    return clampCustomPanel({
+      name: 'Sketch Panel',
+      fromLeft: centerLeft - width / 2,
+      fromBottom: centerBottom - height / 2,
+      width,
+      height,
+      thickness,
+    }, outerBox, thickness)
+  }
+
+  if (isVertical) {
+    const width = thickness
+    const height = Math.max(thickness, rawHeight)
+    return clampCustomPanel({
+      name: 'Sketch Panel',
+      fromLeft: centerLeft - width / 2,
+      fromBottom: centerBottom - height / 2,
+      width,
+      height,
+      thickness,
+    }, outerBox, thickness)
+  }
+
+  return clampCustomPanel({
+    name: 'Sketch Panel',
+    fromLeft: furnitureCanvasPxToMm(left - interiorLeft),
+    fromBottom: furnitureCanvasPxToMm(interiorBottom - bottom),
+    width: Math.max(thickness, rawWidth),
+    height: Math.max(thickness, rawHeight),
+    thickness,
+  }, outerBox, thickness)
 }
 
 function clampPartitionsForLayout(partitions: Partition[], outerBox: OuterBox, thickness: number): Partition[] {
@@ -526,6 +670,7 @@ function cloneFurnitureSnapshot(snapshot: FurnitureSnapshot): FurnitureSnapshot 
     drawers: snapshot.drawers.map((drawer) => ({ ...drawer })),
     customPanels: snapshot.customPanels.map((panel) => ({ ...panel })),
     shelfPartitions: snapshot.shelfPartitions.map((partition) => ({ ...partition })),
+    freehandPaths: snapshot.freehandPaths.map((path) => ({ ...path, points: [...path.points] })),
     sectionConfigs: cloneSectionConfigs(snapshot.sectionConfigs),
   }
 }
@@ -541,6 +686,7 @@ export function captureFurnitureSnapshot(state: FurnitureState): FurnitureSnapsh
     drawers: state.drawers,
     customPanels: state.customPanels,
     shelfPartitions: state.shelfPartitions,
+    freehandPaths: state.freehandPaths,
     sectionConfigs: state.sectionConfigs,
   })
 }
@@ -558,6 +704,7 @@ function snapshotHasSelectedItem(snapshot: FurnitureSnapshot, selectedId: string
     || snapshot.shelfPartitions.some((item) => item.id === selectedId)
     || snapshot.drawers.some((item) => item.id === selectedId)
     || snapshot.customPanels.some((item) => item.id === selectedId)
+    || snapshot.freehandPaths.some((item) => item.id === selectedId)
 }
 
 export function restoreFurnitureSnapshot(
@@ -622,6 +769,9 @@ function resolveSelectedFurnitureItem(state: FurnitureState): SelectedFurnitureI
   const customPanel = state.customPanels.find((item) => item.id === selectedId)
   if (customPanel) return { type: 'custom_panel', id: customPanel.id, item: customPanel }
 
+  const freehandPath = state.freehandPaths.find((item) => item.id === selectedId)
+  if (freehandPath) return { type: 'freehand_path', id: freehandPath.id, item: freehandPath }
+
   return null
 }
 
@@ -666,6 +816,12 @@ function serializeFurnitureDesignState(s: FurnitureState): CreateFurnitureDesign
       from_left: partition.fromLeft,
       from_bottom: partition.fromBottom,
       to_bottom: partition.toBottom,
+    })),
+    freehand_paths: s.freehandPaths.map((path) => ({
+      element_id: path.id,
+      points: path.points,
+      stroke: path.stroke,
+      stroke_width: path.strokeWidth,
     })),
     section_configs: Object.fromEntries(
       Object.entries(s.sectionConfigs).map(([key, cfg]) => [
@@ -738,6 +894,12 @@ function storePatchFromDesign(design: FurnitureDesign): Partial<FurnitureState> 
     fromBottom: partition.from_bottom,
     toBottom: partition.to_bottom,
   }))
+  const freehandPaths = (design.freehand_paths ?? []).map((path) => ({
+    id: localElementId(path.element_id),
+    points: [...(path.points ?? [])],
+    stroke: path.stroke || '#2563eb',
+    strokeWidth: path.stroke_width || 2,
+  }))
   const sectionConfigs = sectionConfigsFromDesign(design)
   const savedSnapshot = cloneFurnitureSnapshot({
     designName,
@@ -749,6 +911,7 @@ function storePatchFromDesign(design: FurnitureDesign): Partial<FurnitureState> 
     drawers,
     customPanels,
     shelfPartitions,
+    freehandPaths,
     sectionConfigs,
   })
 
@@ -763,6 +926,7 @@ function storePatchFromDesign(design: FurnitureDesign): Partial<FurnitureState> 
     drawers,
     customPanels,
     shelfPartitions,
+    freehandPaths,
     sectionConfigs,
     mode: outerBox ? 'select' : 'draw_box',
     selectedId: null,
@@ -791,9 +955,13 @@ export const useFurnitureStore = create<FurnitureState>((set, get) => ({
   drawers: [],
   customPanels: [],
   shelfPartitions: [],
+  freehandPaths: [],
   sectionConfigs: {},
   mode: 'draw_box',
   selectedId: null,
+  pencilStroke: DEFAULT_PENCIL_STROKE,
+  pencilStrokeWidth: DEFAULT_PENCIL_STROKE_WIDTH,
+  pencilSnapEnabled: true,
 
   // ── Derived ───────────────────────────────────────────────────────────────
 
@@ -836,6 +1004,15 @@ export const useFurnitureStore = create<FurnitureState>((set, get) => ({
   )),
   setMode: (mode) => set({ mode }),
   setSelected: (id) => set({ selectedId: id }),
+  setPencilStroke: (stroke) => set({ pencilStroke: stroke || DEFAULT_PENCIL_STROKE }),
+  setPencilStrokeWidth: (strokeWidth) => set({
+    pencilStrokeWidth: clamp(
+      snap(strokeWidth),
+      PENCIL_STROKE_WIDTH_RANGE.min,
+      PENCIL_STROKE_WIDTH_RANGE.max,
+    ),
+  }),
+  setPencilSnapEnabled: (enabled) => set({ pencilSnapEnabled: enabled }),
   serializeDesign: () => serializeFurnitureDesignState(get()),
   loadDesign: (design) => set(storePatchFromDesign(design)),
   markSaved: (design) => set((s) => ({
@@ -876,6 +1053,7 @@ export const useFurnitureStore = create<FurnitureState>((set, get) => ({
       drawers: s.drawers,
       customPanels: s.customPanels,
       shelfPartitions: s.shelfPartitions,
+      freehandPaths: s.freehandPaths,
       sectionConfigs: s.sectionConfigs,
     }, {
       outerBox: layout.outerBox,
@@ -884,6 +1062,7 @@ export const useFurnitureStore = create<FurnitureState>((set, get) => ({
       drawers: layout.drawers,
       customPanels: layout.customPanels,
       shelfPartitions: layout.shelfPartitions,
+      freehandPaths: s.freehandPaths,
       sectionConfigs: layout.sectionConfigs,
     })) return {}
     return {
@@ -910,6 +1089,7 @@ export const useFurnitureStore = create<FurnitureState>((set, get) => ({
     drawers: [],
     customPanels: [],
     shelfPartitions: [],
+    freehandPaths: [],
     sectionConfigs: {},
     mode: 'draw_box',
     selectedId: null,
@@ -1004,6 +1184,125 @@ export const useFurnitureStore = create<FurnitureState>((set, get) => ({
         sectionConfigs:  shiftSectionConfigsForInsert(s.sectionConfigs, insertionIdx),
       }
     })
+  },
+
+  addEqualShelves: (count, sectionIndex, bottomMargin = 0, topMargin = 0) => {
+    const { outerBox, material, partitions } = get()
+    if (!outerBox) return
+
+    const T = material.thickness
+    const interiorH = outerBox.height - T * 2
+    if (interiorH <= 0) return
+
+    const safeSectionIndex = clampSectionIndex(sectionIndex, 0, partitions)
+    const bottom = clamp(snap(bottomMargin), 0, interiorH)
+    const top = clamp(snap(topMargin), 0, Math.max(0, interiorH - bottom))
+    const centers = evenlySpacedCenters(bottom, interiorH - top, T, count)
+    if (centers.length === 0) return
+
+    set((s) => ({
+      ...recordFurnitureEdit(s),
+      shelves: [
+        ...s.shelves,
+        ...centers.map((fromBottom) => ({
+          id: uid(),
+          fromBottom,
+          sectionIndex: safeSectionIndex,
+        })),
+      ],
+    }))
+  },
+
+  addEqualPartitions: (count, sectionIndex, leftMargin = 0, rightMargin = 0) => {
+    const { outerBox, material, partitions } = get()
+    if (!outerBox) return
+
+    const T = material.thickness
+    const interiorW = outerBox.width - T * 2
+    if (interiorW <= T) return
+
+    const safeCount = clamp(snap(count), 1, 50)
+    const sorted = [...partitions].sort((a, b) => a.fromLeft - b.fromLeft)
+    const safeSectionIndex = clamp(snap(sectionIndex), 0, sorted.length)
+    const sectionStart = safeSectionIndex === 0 ? 0 : sorted[safeSectionIndex - 1]?.fromLeft
+    const sectionEnd = safeSectionIndex === sorted.length ? interiorW : sorted[safeSectionIndex]?.fromLeft
+    if (sectionStart === undefined || sectionEnd === undefined) return
+
+    const sectionClearStart = sectionStart + (safeSectionIndex === 0 ? 0 : T / 2)
+    const sectionClearEnd = sectionEnd - (safeSectionIndex === sorted.length ? 0 : T / 2)
+    const maxMarginSpace = Math.max(0, sectionClearEnd - sectionClearStart)
+    const left = clamp(snap(leftMargin), 0, maxMarginSpace)
+    const right = clamp(snap(rightMargin), 0, Math.max(0, maxMarginSpace - left))
+    const centers = evenlySpacedCenters(sectionClearStart + left, sectionClearEnd - right, T, safeCount)
+    if (centers.length === 0) return
+
+    set((s) => {
+      const shiftIdx = (idx: number) => idx > safeSectionIndex ? idx + centers.length : idx
+
+      return {
+        ...recordFurnitureEdit(s),
+        partitions: [
+          ...s.partitions,
+          ...centers.map((fromLeft) => ({ id: uid(), fromLeft })),
+        ],
+        shelves: s.shelves.map((shelf) => ({
+          ...shelf,
+          sectionIndex: shiftIdx(shelf.sectionIndex),
+        })),
+        drawers: s.drawers.map((drawer) => ({
+          ...drawer,
+          sectionIndex: shiftIdx(drawer.sectionIndex),
+        })),
+        shelfPartitions: s.shelfPartitions.map((partition) => ({
+          ...partition,
+          sectionIndex: shiftIdx(partition.sectionIndex),
+        })),
+        sectionConfigs: shiftSectionConfigsForBulkInsert(
+          s.sectionConfigs,
+          safeSectionIndex,
+          centers.length,
+        ),
+      }
+    })
+  },
+
+  addEqualShelfPartitions: (count, sectionIndex, fromBottom, toBottom, fromLeft, toLeft) => {
+    const { outerBox, material, partitions } = get()
+    if (!outerBox) return
+
+    const T = material.thickness
+    const interiorW = outerBox.width - T * 2
+    const interiorH = outerBox.height - T * 2
+    if (interiorW <= 0 || interiorH <= 0) return
+
+    const sorted = [...partitions].sort((a, b) => a.fromLeft - b.fromLeft)
+    const safeSectionIndex = clampSectionIndex(sectionIndex, 0, sorted)
+    const sectionStart = safeSectionIndex === 0 ? 0 : sorted[safeSectionIndex - 1]?.fromLeft
+    const sectionEnd = safeSectionIndex === sorted.length ? interiorW : sorted[safeSectionIndex]?.fromLeft
+    if (sectionStart === undefined || sectionEnd === undefined) return
+
+    const sectionClearStart = sectionStart + (safeSectionIndex === 0 ? 0 : T / 2)
+    const sectionClearEnd = sectionEnd - (safeSectionIndex === sorted.length ? 0 : T / 2)
+    const left = clamp(snap(Math.min(fromLeft, toLeft)), sectionClearStart, sectionClearEnd)
+    const right = clamp(snap(Math.max(fromLeft, toLeft)), left, sectionClearEnd)
+    const lower = clamp(snap(Math.min(fromBottom, toBottom)), 0, Math.max(0, interiorH - 1))
+    const upper = clamp(snap(Math.max(fromBottom, toBottom)), lower + 1, interiorH)
+    const centers = evenlySpacedCenters(left, right, T, count)
+    if (centers.length === 0) return
+
+    set((s) => ({
+      ...recordFurnitureEdit(s),
+      shelfPartitions: [
+        ...s.shelfPartitions,
+        ...centers.map((center) => ({
+          id: uid(),
+          sectionIndex: safeSectionIndex,
+          fromLeft: center,
+          fromBottom: lower,
+          toBottom: upper,
+        })),
+      ],
+    }))
   },
 
   addDrawer: (sectionIndex, fromBottom, height) => {
@@ -1257,6 +1556,89 @@ export const useFurnitureStore = create<FurnitureState>((set, get) => ({
     }))
   },
 
+  convertFreehandPathToCustomPanel: (id) => {
+    const { outerBox, material, freehandPaths } = get()
+    if (!outerBox) return
+
+    const path = freehandPaths.find((item) => item.id === id)
+    if (!path) return
+
+    const panel = customPanelFromFreehandPath(path, outerBox, material.thickness)
+    if (!panel) return
+
+    const panelId = uid()
+    set((s) => ({
+      ...recordFurnitureEdit(s),
+      customPanels: [...s.customPanels, { ...panel, id: panelId }],
+      freehandPaths: s.freehandPaths.filter((item) => item.id !== id),
+      selectedId: panelId,
+      mode: 'select',
+    }))
+  },
+
+  addFreehandPath: (path) => {
+    if (path.points.length < 4) return
+    set((s) => ({
+      ...recordFurnitureEdit(s),
+      freehandPaths: [...s.freehandPaths, {
+        id: uid(),
+        points: [...path.points],
+        stroke: path.stroke || DEFAULT_PENCIL_STROKE,
+        strokeWidth: clamp(
+          snap(path.strokeWidth),
+          PENCIL_STROKE_WIDTH_RANGE.min,
+          PENCIL_STROKE_WIDTH_RANGE.max,
+        ),
+      }],
+    }))
+  },
+
+  updateFreehandPath: (id, patch) => set((s) => {
+    const current = s.freehandPaths.find((path) => path.id === id)
+    if (!current) return {}
+
+    const next: FreehandPath = {
+      ...current,
+      points: patch.points ? [...patch.points] : current.points,
+      stroke: patch.stroke ?? current.stroke,
+      strokeWidth: patch.strokeWidth == null
+        ? current.strokeWidth
+        : clamp(
+          snap(patch.strokeWidth),
+          PENCIL_STROKE_WIDTH_RANGE.min,
+          PENCIL_STROKE_WIDTH_RANGE.max,
+        ),
+    }
+
+    if (valuesMatch(current, next)) return {}
+
+    return {
+      ...recordFurnitureEdit(s),
+      freehandPaths: s.freehandPaths.map((path) => path.id === id ? next : path),
+    }
+  }),
+
+  moveFreehandPath: (id, deltaX, deltaY) => set((s) => {
+    const dx = Number.isFinite(deltaX) ? deltaX : 0
+    const dy = Number.isFinite(deltaY) ? deltaY : 0
+    if (Math.abs(dx) < 0.01 && Math.abs(dy) < 0.01) return {}
+
+    const current = s.freehandPaths.find((path) => path.id === id)
+    if (!current) return {}
+
+    return {
+      ...recordFurnitureEdit(s),
+      freehandPaths: s.freehandPaths.map((path) => (
+        path.id === id
+          ? {
+            ...path,
+            points: path.points.map((point, index) => snap(point + (index % 2 === 0 ? dx : dy))),
+          }
+          : path
+      )),
+    }
+  }),
+
   moveCustomPanel: (id, fromLeft, fromBottom) => {
     const { outerBox, material, customPanels } = get()
     if (!outerBox) return
@@ -1319,6 +1701,7 @@ export const useFurnitureStore = create<FurnitureState>((set, get) => ({
         drawers:         s.drawers.filter((d)  => d.id  !== selectedId),
         customPanels:    s.customPanels.filter((cp) => cp.id !== selectedId),
         shelfPartitions: s.shelfPartitions.filter((sp) => sp.id !== selectedId),
+        freehandPaths:   s.freehandPaths.filter((path) => path.id !== selectedId),
         selectedId: null,
       }))
     }
@@ -1364,8 +1747,12 @@ export const useFurnitureStore = create<FurnitureState>((set, get) => ({
     drawers: [],
     customPanels: [],
     shelfPartitions: [],
+    freehandPaths: [],
     sectionConfigs: {},
     mode: 'draw_box',
     selectedId: null,
+    pencilStroke: DEFAULT_PENCIL_STROKE,
+    pencilStrokeWidth: DEFAULT_PENCIL_STROKE_WIDTH,
+    pencilSnapEnabled: true,
   }),
 }))

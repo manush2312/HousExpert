@@ -88,6 +88,10 @@ type FurniturePreviewSettings struct {
 	ExplodedAmount           float64                                       `bson:"exploded_amount" json:"exploded_amount"`
 	ShowDimensions           bool                                          `bson:"show_dimensions" json:"show_dimensions"`
 	ActiveView               string                                        `bson:"active_view" json:"active_view"`
+	MeasurementHorizontalRef string                                        `bson:"measurement_horizontal_reference,omitempty" json:"measurement_horizontal_reference,omitempty"`
+	MeasurementVerticalRef   string                                        `bson:"measurement_vertical_reference,omitempty" json:"measurement_vertical_reference,omitempty"`
+	MeasurementDepthRef      string                                        `bson:"measurement_depth_reference,omitempty" json:"measurement_depth_reference,omitempty"`
+	MeasurementPanelRef      string                                        `bson:"measurement_panel_reference,omitempty" json:"measurement_panel_reference,omitempty"`
 	BackgroundMode           string                                        `bson:"background_mode" json:"background_mode"`
 	MaterialSource           string                                        `bson:"material_source" json:"material_source"`
 	SelectedMaterialID       string                                        `bson:"selected_material_id" json:"selected_material_id"`
@@ -129,6 +133,14 @@ type FurnitureDrawer struct {
 	FrontSetback float64 `bson:"front_setback" json:"front_setback"`
 }
 
+// FurnitureFreehandPath stores freehand pencil annotations on the 2D drawing.
+type FurnitureFreehandPath struct {
+	ElementID   string    `bson:"element_id" json:"element_id"`
+	Points      []float64 `bson:"points" json:"points"`
+	Stroke      string    `bson:"stroke" json:"stroke"`
+	StrokeWidth float64   `bson:"stroke_width" json:"stroke_width"`
+}
+
 // FurnitureCustomPanel stores free-form panels such as toe kicks, cornices or rails.
 type FurnitureCustomPanel struct {
 	ElementID  string  `bson:"element_id" json:"element_id"`
@@ -159,6 +171,7 @@ type FurnitureDesign struct {
 	Drawers         []FurnitureDrawer                 `bson:"drawers" json:"drawers"`
 	CustomPanels    []FurnitureCustomPanel            `bson:"custom_panels" json:"custom_panels"`
 	ShelfPartitions []FurnitureShelfPartition         `bson:"shelf_partitions" json:"shelf_partitions"`
+	FreehandPaths   []FurnitureFreehandPath           `bson:"freehand_paths" json:"freehand_paths"`
 	SectionConfigs  map[string]FurnitureSectionConfig `bson:"section_configs" json:"section_configs"`
 	PreviewSettings *FurniturePreviewSettings         `bson:"preview_settings,omitempty" json:"preview_settings,omitempty"`
 	CreatedAt       time.Time                         `bson:"created_at" json:"created_at"`

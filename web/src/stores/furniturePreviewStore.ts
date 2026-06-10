@@ -17,6 +17,19 @@ export type FurniturePreviewBackground = 'dark' | 'light'
 export type FurniturePreviewMaterialSource = 'preset' | 'custom_material'
 export type FurniturePreviewMaterialArea = 'carcass' | 'doors' | 'drawers' | 'back'
 export type FurniturePreviewMaterialTarget = 'all' | FurniturePreviewMaterialArea
+export type FurnitureMeasurementHorizontalReference =
+  | 'interior_left'
+  | 'exterior_left'
+  | 'section_start'
+  | 'interior_right'
+  | 'exterior_right'
+export type FurnitureMeasurementVerticalReference =
+  | 'interior_bottom'
+  | 'exterior_bottom'
+  | 'interior_top'
+  | 'exterior_top'
+export type FurnitureMeasurementDepthReference = 'front' | 'back'
+export type FurnitureMeasurementPanelReference = 'centerline' | 'near_face' | 'far_face'
 export type FurniturePreviewMaterialId =
   | 'design'
   | 'natural_oak'
@@ -31,6 +44,25 @@ const FURNITURE_PREVIEW_BACKGROUNDS: FurniturePreviewBackground[] = ['dark', 'li
 const FURNITURE_PREVIEW_MATERIAL_SOURCES: FurniturePreviewMaterialSource[] = ['preset', 'custom_material']
 export const FURNITURE_PREVIEW_MATERIAL_AREAS: FurniturePreviewMaterialArea[] = ['carcass', 'doors', 'drawers', 'back']
 export const FURNITURE_PREVIEW_MATERIAL_TARGETS: FurniturePreviewMaterialTarget[] = ['all', ...FURNITURE_PREVIEW_MATERIAL_AREAS]
+export const FURNITURE_MEASUREMENT_HORIZONTAL_REFERENCES: FurnitureMeasurementHorizontalReference[] = [
+  'interior_left',
+  'exterior_left',
+  'section_start',
+  'interior_right',
+  'exterior_right',
+]
+export const FURNITURE_MEASUREMENT_VERTICAL_REFERENCES: FurnitureMeasurementVerticalReference[] = [
+  'interior_bottom',
+  'exterior_bottom',
+  'interior_top',
+  'exterior_top',
+]
+export const FURNITURE_MEASUREMENT_DEPTH_REFERENCES: FurnitureMeasurementDepthReference[] = ['front', 'back']
+export const FURNITURE_MEASUREMENT_PANEL_REFERENCES: FurnitureMeasurementPanelReference[] = [
+  'centerline',
+  'near_face',
+  'far_face',
+]
 const FURNITURE_PREVIEW_MATERIAL_IDS: FurniturePreviewMaterialId[] = [
   'design',
   'natural_oak',
@@ -63,6 +95,10 @@ export interface FurniturePreviewSettings {
   explodedAmount: number
   showDimensions: boolean
   activeView: FurniturePreviewView
+  measurementHorizontalReference: FurnitureMeasurementHorizontalReference
+  measurementVerticalReference: FurnitureMeasurementVerticalReference
+  measurementDepthReference: FurnitureMeasurementDepthReference
+  measurementPanelReference: FurnitureMeasurementPanelReference
   backgroundMode: FurniturePreviewBackground
   materialSource: FurniturePreviewMaterialSource
   selectedMaterialId: FurniturePreviewMaterialId
@@ -146,6 +182,10 @@ const DEFAULT_PREVIEW_SETTINGS: FurniturePreviewSettings = {
   explodedAmount: 0.35,
   showDimensions: false,
   activeView: 'isometric',
+  measurementHorizontalReference: 'interior_left',
+  measurementVerticalReference: 'interior_bottom',
+  measurementDepthReference: 'front',
+  measurementPanelReference: 'centerline',
   backgroundMode: 'dark',
   materialSource: 'preset',
   selectedMaterialId: 'design',
@@ -324,6 +364,10 @@ interface FurniturePreviewState extends FurniturePreviewSettings {
   setShowDimensions: (show: boolean) => void
   toggleDimensions: () => void
   setActiveView: (view: FurniturePreviewView) => void
+  setMeasurementHorizontalReference: (reference: FurnitureMeasurementHorizontalReference) => void
+  setMeasurementVerticalReference: (reference: FurnitureMeasurementVerticalReference) => void
+  setMeasurementDepthReference: (reference: FurnitureMeasurementDepthReference) => void
+  setMeasurementPanelReference: (reference: FurnitureMeasurementPanelReference) => void
   setBackgroundMode: (mode: FurniturePreviewBackground) => void
   toggleBackgroundMode: () => void
   resetCamera: () => void
@@ -382,6 +426,22 @@ function isPreviewMaterialArea(value: string | undefined): value is FurniturePre
 
 function isPreviewMaterialTarget(value: string | undefined): value is FurniturePreviewMaterialTarget {
   return FURNITURE_PREVIEW_MATERIAL_TARGETS.includes(value as FurniturePreviewMaterialTarget)
+}
+
+function isMeasurementHorizontalReference(value: string | undefined): value is FurnitureMeasurementHorizontalReference {
+  return FURNITURE_MEASUREMENT_HORIZONTAL_REFERENCES.includes(value as FurnitureMeasurementHorizontalReference)
+}
+
+function isMeasurementVerticalReference(value: string | undefined): value is FurnitureMeasurementVerticalReference {
+  return FURNITURE_MEASUREMENT_VERTICAL_REFERENCES.includes(value as FurnitureMeasurementVerticalReference)
+}
+
+function isMeasurementDepthReference(value: string | undefined): value is FurnitureMeasurementDepthReference {
+  return FURNITURE_MEASUREMENT_DEPTH_REFERENCES.includes(value as FurnitureMeasurementDepthReference)
+}
+
+function isMeasurementPanelReference(value: string | undefined): value is FurnitureMeasurementPanelReference {
+  return FURNITURE_MEASUREMENT_PANEL_REFERENCES.includes(value as FurnitureMeasurementPanelReference)
 }
 
 function copyMaterialAssignments(
@@ -546,6 +606,10 @@ function serializeFurniturePreviewSettings(
     exploded_amount: settings.explodedAmount,
     show_dimensions: settings.showDimensions,
     active_view: settings.activeView,
+    measurement_horizontal_reference: settings.measurementHorizontalReference,
+    measurement_vertical_reference: settings.measurementVerticalReference,
+    measurement_depth_reference: settings.measurementDepthReference,
+    measurement_panel_reference: settings.measurementPanelReference,
     background_mode: settings.backgroundMode,
     material_source: settings.materialSource,
     selected_material_id: settings.selectedMaterialId,
@@ -642,6 +706,18 @@ function normalizeFurniturePreviewSettings(
     activeView: isPreviewView(settings.active_view)
       ? settings.active_view
       : DEFAULT_PREVIEW_SETTINGS.activeView,
+    measurementHorizontalReference: isMeasurementHorizontalReference(settings.measurement_horizontal_reference)
+      ? settings.measurement_horizontal_reference
+      : DEFAULT_PREVIEW_SETTINGS.measurementHorizontalReference,
+    measurementVerticalReference: isMeasurementVerticalReference(settings.measurement_vertical_reference)
+      ? settings.measurement_vertical_reference
+      : DEFAULT_PREVIEW_SETTINGS.measurementVerticalReference,
+    measurementDepthReference: isMeasurementDepthReference(settings.measurement_depth_reference)
+      ? settings.measurement_depth_reference
+      : DEFAULT_PREVIEW_SETTINGS.measurementDepthReference,
+    measurementPanelReference: isMeasurementPanelReference(settings.measurement_panel_reference)
+      ? settings.measurement_panel_reference
+      : DEFAULT_PREVIEW_SETTINGS.measurementPanelReference,
     backgroundMode: isPreviewBackground(settings.background_mode)
       ? settings.background_mode
       : DEFAULT_PREVIEW_SETTINGS.backgroundMode,
@@ -675,6 +751,18 @@ export const useFurniturePreviewStore = create<FurniturePreviewState>((set, get)
   setShowDimensions: (show) => set(markPreviewChanged({ showDimensions: show })),
   toggleDimensions: () => set((state) => markPreviewChanged({ showDimensions: !state.showDimensions })),
   setActiveView: (view) => set(markPreviewChanged({ activeView: view })),
+  setMeasurementHorizontalReference: (reference) => set(markPreviewChanged({
+    measurementHorizontalReference: reference,
+  })),
+  setMeasurementVerticalReference: (reference) => set(markPreviewChanged({
+    measurementVerticalReference: reference,
+  })),
+  setMeasurementDepthReference: (reference) => set(markPreviewChanged({
+    measurementDepthReference: reference,
+  })),
+  setMeasurementPanelReference: (reference) => set(markPreviewChanged({
+    measurementPanelReference: reference,
+  })),
   setBackgroundMode: (mode) => set(markPreviewChanged({ backgroundMode: mode })),
   toggleBackgroundMode: () => set((state) => markPreviewChanged({
     backgroundMode: state.backgroundMode === 'dark' ? 'light' : 'dark',
