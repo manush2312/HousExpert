@@ -260,6 +260,10 @@ export default function ProjectDetailPage() {
     [entries],
   )
   const costBreakdown = useMemo(() => deriveCostBreakdown(entries, project?.spent ?? 0), [entries, project?.spent])
+  const totalLogCost = useMemo(() =>
+    entries.reduce((sum, e) => sum + (extractEntryDetails(e).cost ?? 0), 0),
+    [entries],
+  )
 
   const tabs = useMemo(() => (
     project
@@ -713,11 +717,7 @@ export default function ProjectDetailPage() {
             value={fmtCr(project.budget)}
             sub={<span className="text-[11.5px] numeral" style={{ color: 'var(--ink-4)' }}>{fmtCr(project.spent)} committed</span>}
           />
-          <StatCell
-            label="Units / Floors"
-            value={`${project.units || 0} / ${project.floors || 0}`}
-            sub={<span className="text-[11.5px]" style={{ color: 'var(--ink-4)' }}>{project.bhk_configs.length} BHK types</span>}
-          />
+          <TotalCostStatCell totalCost={totalLogCost} breakdown={costBreakdown} />
           <StatCell
             label="Target handover"
             value={project.target_at ? fmtDateShort(project.target_at) : '—'}
@@ -820,6 +820,61 @@ function StatCell({
         {value}
       </div>
       <div className="mt-2.5">{sub}</div>
+    </div>
+  )
+}
+
+function TotalCostStatCell({ totalCost, breakdown }: { totalCost: number; breakdown: CostSlice[] }) {
+  const [hovered, setHovered] = useState(false)
+
+  return (
+    <div
+      className="card p-3.5 relative cursor-default"
+      onMouseEnter={() => setHovered(true)}
+      onMouseLeave={() => setHovered(false)}
+    >
+      <div className="eyebrow">Total Cost</div>
+      <div className="mt-2 text-[22px] font-semibold numeral leading-none" style={{ color: 'var(--ink)' }}>
+        {fmtCr(totalCost)}
+      </div>
+      <div className="mt-2.5">
+        <span className="text-[11.5px]" style={{ color: 'var(--ink-4)' }}>
+          {breakdown.length > 0 ? `${breakdown.length} log types` : 'no entries yet'}
+        </span>
+      </div>
+
+      {hovered && breakdown.length > 0 && (
+        <div
+          className="absolute top-full left-1/2 -translate-x-1/2 mt-2 z-50 rounded-xl p-4"
+          style={{
+            width: 224,
+            background: 'var(--bg)',
+            border: '1px solid var(--line-2)',
+            boxShadow: '0 8px 24px rgba(0,0,0,0.12)',
+          }}
+        >
+          <div className="flex justify-center mb-3">
+            <div className="relative" style={{ width: 100, height: 100 }}>
+              <Donut data={breakdown} size={100} thickness={12} />
+              <div className="absolute inset-0 flex flex-col items-center justify-center gap-0.5">
+                <div className="text-[10px]" style={{ color: 'var(--ink-4)' }}>total</div>
+                <div className="text-[12px] font-semibold numeral" style={{ color: 'var(--ink)' }}>
+                  {fmtCr(totalCost)}
+                </div>
+              </div>
+            </div>
+          </div>
+          <div className="space-y-1.5">
+            {breakdown.map((slice) => (
+              <div key={slice.label} className="flex items-center gap-2">
+                <div className="h-2 w-2 rounded-full shrink-0" style={{ background: colorVar(slice.color) }} />
+                <span className="text-[11.5px] truncate flex-1" style={{ color: 'var(--ink-2)' }}>{slice.label}</span>
+                <span className="text-[11.5px] numeral shrink-0" style={{ color: 'var(--ink)' }}>{fmtCr(slice.value)}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
     </div>
   )
 }
