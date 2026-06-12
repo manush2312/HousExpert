@@ -125,7 +125,7 @@ export default function ProjectsPage() {
               : `${total} total, ${totals.active} active across ${cityCount} ${cityCount === 1 ? 'city' : 'cities'} - last refreshed ${refreshedLabel}`}
           </p>
         </div>
-        <div className="flex items-center gap-2 shrink-0">
+        <div className="flex w-full flex-col items-stretch gap-2 sm:w-auto sm:flex-row sm:items-center sm:shrink-0">
           <button className="btn btn-outline">
             <Download size={15} />
             Export
@@ -169,7 +169,7 @@ export default function ProjectsPage() {
       )}
 
       <div className="card px-3 py-2.5 mb-3 flex flex-wrap items-center gap-2">
-        <div className="relative min-w-60 flex-1">
+        <div className="relative min-w-0 flex-1 basis-full sm:min-w-60 sm:basis-auto">
           <Search
             size={14}
             className="pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2"
@@ -500,9 +500,9 @@ function ProjectsTable({
 
   return (
     <div className="card overflow-hidden">
-      <div className="overflow-x-auto">
+      <div className="max-h-[70svh] overflow-auto">
         <table className="w-full min-w-230 text-[13px]">
-          <thead>
+          <thead className="sticky top-0 z-10">
             <tr style={{ background: 'var(--bg-sunken)' }}>
               <Th>Project</Th>
               <Th>Location</Th>

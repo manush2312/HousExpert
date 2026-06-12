@@ -89,7 +89,7 @@ export default function QuotationDetailPage() {
 
   if (loading) {
     return (
-      <div className="w-full px-8 py-7 space-y-4">
+      <div className="w-full px-4 py-5 space-y-4 md:px-8 md:py-7">
         <div className="skeleton h-4 w-32" />
         <div className="skeleton h-7 w-64" />
         <div className="skeleton h-40 w-full mt-4" />
@@ -118,9 +118,9 @@ export default function QuotationDetailPage() {
       </div>
 
       {/* Hero */}
-      <div className="flex items-start justify-between gap-6 mb-6">
-        <div>
-          <div className="flex items-center gap-3 mb-1.5">
+      <div className="flex flex-col gap-4 mb-6 sm:flex-row sm:items-start sm:justify-between sm:gap-6">
+        <div className="min-w-0">
+          <div className="flex flex-wrap items-center gap-3 mb-1.5">
             <StatusPill status={quotation.status} />
             <span className="numeral text-[11px]" style={{ color: 'var(--ink-4)' }}>{quotation.quotation_id}</span>
             {quotation.converted_project_id && (
@@ -149,7 +149,7 @@ export default function QuotationDetailPage() {
         </div>
 
         {/* Action buttons */}
-        <div className="flex items-center gap-2 shrink-0 flex-wrap justify-end">
+        <div className="flex flex-col items-stretch gap-2 sm:flex-row sm:flex-wrap sm:justify-end sm:shrink-0">
           <LoadingButton
             onClick={handleExportPDF}
             loading={exportLoading}
@@ -282,10 +282,10 @@ export default function QuotationDetailPage() {
               </div>
 
               {/* Scrollable table */}
-              <div className="overflow-x-auto">
+              <div className="max-h-[60svh] overflow-auto">
                 {/* Column headers */}
                 <div
-                  className="grid px-5 py-2 text-[10.5px] font-semibold uppercase tracking-wider gap-3"
+                  className="sticky top-0 z-10 grid px-5 py-2 text-[10.5px] font-semibold uppercase tracking-wider gap-3"
                   style={{ color: 'var(--ink-4)', background: 'var(--bg-sunken)', borderBottom: '1px solid var(--line-2)', gridTemplateColumns: '24px 2fr 80px 60px 60px 90px 1fr 100px', minWidth: 660 }}
                 >
                   <span>#</span>

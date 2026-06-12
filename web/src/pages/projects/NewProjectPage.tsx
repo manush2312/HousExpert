@@ -63,7 +63,7 @@ export default function NewProjectPage() {
   }
 
   return (
-    <div className="w-full px-8 py-7">
+    <div className="w-full px-4 py-5 md:px-8 md:py-7">
       {/* Breadcrumb */}
       <div className="flex items-center gap-1.5 text-[12px] mb-5" style={{ color: 'var(--ink-3)' }}>
         <button onClick={() => navigate('/projects')} className="hover:underline">Projects</button>
@@ -105,7 +105,7 @@ export default function NewProjectPage() {
               <FormField label="Area / landmark" hint="optional">
                 <input className="input" placeholder="Neighbourhood, landmark" value={form.line2} onChange={(e) => update('line2', e.target.value)} />
               </FormField>
-              <div className="grid grid-cols-3 gap-3">
+              <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
                 <FormField label="City" required>
                   <input className="input" placeholder="Bengaluru" value={form.city} onChange={(e) => update('city', e.target.value)} />
                 </FormField>
@@ -142,7 +142,7 @@ export default function NewProjectPage() {
                   })}
                 </div>
               </FormField>
-              <div className="grid grid-cols-3 gap-3">
+              <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
                 <FormField label="Floors">
                   <input type="number" className="input" placeholder="0" value={form.floors} onChange={(e) => update('floors', e.target.value)} />
                 </FormField>
@@ -161,12 +161,12 @@ export default function NewProjectPage() {
               </p>
             )}
 
-            <div className="flex items-center gap-2 pt-2">
+            <div className="flex flex-col items-stretch gap-2 pt-2 sm:flex-row sm:items-center">
               <LoadingButton type="submit" disabled={!canSubmit} loading={loading} loadingText="Creating..." className="btn btn-accent">
                 Create project
               </LoadingButton>
               <button type="button" onClick={() => navigate('/projects')} className="btn btn-ghost">Cancel</button>
-              <span className="ml-auto text-[11.5px] flex items-center gap-1.5" style={{ color: 'var(--ink-4)' }}>
+              <span className="text-[11.5px] flex items-center gap-1.5 sm:ml-auto" style={{ color: 'var(--ink-4)' }}>
                 <Info size={12} /> You can edit any of this later.
               </span>
             </div>

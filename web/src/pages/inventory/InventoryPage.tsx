@@ -965,7 +965,7 @@ export default function InventoryPage() {
             Track stock, suppliers, locations, and every movement in one place.
           </p>
         </div>
-        <div className="flex flex-wrap gap-2">
+        <div className="flex w-full flex-col gap-2 sm:w-auto sm:flex-row sm:flex-wrap">
           <button onClick={() => openMovement()} className="btn btn-ghost">
             <ArrowUpCircle size={15} />
             Record movement
@@ -1245,9 +1245,9 @@ export default function InventoryPage() {
             </p>
           </div>
         ) : (
-          <div className="overflow-x-auto">
+          <div className="max-h-[70svh] overflow-auto">
             <table className="w-full min-w-[1120px] text-[12.5px]">
-              <thead>
+              <thead className="sticky top-0 z-10">
                 <tr style={{ background: 'var(--bg-sunken)' }}>
                   <th className="px-5 py-3 text-left eyebrow">Item</th>
                   <th className="px-4 py-3 text-left eyebrow">Category</th>
@@ -1348,7 +1348,7 @@ export default function InventoryPage() {
             <div className="px-5 py-4" style={{ borderBottom: '1px solid var(--line)' }}>
               <div className="flex flex-wrap items-center gap-3">
                 <input
-                  className="input flex-1 min-w-[220px]"
+                  className="input min-w-0 flex-1 basis-full sm:min-w-[220px] sm:basis-auto"
                   placeholder="Search by item, SKU, category, supplier, location…"
                   value={query}
                   onChange={(e) => setQuery(e.target.value)}
@@ -1360,7 +1360,7 @@ export default function InventoryPage() {
                   placeholder="All categories"
                   searchPlaceholder="Search category…"
                   emptyMessage="No categories found"
-                  className="w-[180px]"
+                  className="w-full sm:w-[180px]"
                 />
               </div>
             </div>
@@ -1417,7 +1417,7 @@ export default function InventoryPage() {
                     return (
                       <div key={item.item_id} className="group px-5 py-4" style={{ borderBottom: '1px solid var(--line-2)' }}>
                         <div className="flex flex-wrap items-start gap-3">
-                          <div className="flex-1 min-w-[220px]">
+                          <div className="min-w-0 flex-1 basis-full sm:min-w-[220px] sm:basis-auto">
                             <div className="flex flex-wrap items-center gap-2">
                               <span className="text-[14px] font-semibold" style={{ color: 'var(--ink)' }}>{item.name}</span>
                               <span className="text-[10.5px] px-1.5 py-0.5 rounded-full numeral" style={{ background: 'var(--bg-sunken)', color: 'var(--ink-3)' }}>
@@ -1502,7 +1502,7 @@ export default function InventoryPage() {
                             )}
                           </div>
 
-                          <div className="grid grid-cols-2 gap-3 min-w-[240px] md:min-w-[360px]">
+                          <div className="grid w-full min-w-0 grid-cols-2 gap-3 md:w-auto md:min-w-[360px]">
                             <MetricCell label="On hand" value={fmtQty(item.current_stock, item.unit)} />
                             <MetricCell label="Reorder at" value={fmtQty(item.min_stock_level, item.unit)} />
                             <MetricCell label="Avg cost" value={formatCostValue(item.average_unit_cost)} />
@@ -1718,9 +1718,9 @@ export default function InventoryPage() {
                     </div>
                   </div>
                 </div>
-                <div className="overflow-x-auto">
-                          <table className="w-full min-w-[1160px] text-[12.5px]">
-                    <thead>
+                <div className="max-h-[68svh] overflow-auto">
+                  <table className="w-full min-w-[1160px] text-[12.5px]">
+                    <thead className="sticky top-0 z-10">
                       <tr style={{ background: 'white' }}>
                         <th className="px-4 py-2 text-left eyebrow">Item</th>
                         <th className="px-4 py-2 text-left eyebrow">Type</th>
@@ -2039,9 +2039,9 @@ function StockViewChip({
 
 function MetricCell({ label, value }: { label: string; value: string }) {
   return (
-    <div className="rounded-lg px-3 py-2" style={{ background: 'var(--bg-sunken)' }}>
+    <div className="min-w-0">
       <div className="text-[10.5px] uppercase tracking-wider" style={{ color: 'var(--ink-4)' }}>{label}</div>
-      <div className="text-[12.5px] font-semibold mt-1" style={{ color: 'var(--ink)' }}>{value}</div>
+      <div className="text-[12.5px] font-semibold mt-0.5 truncate" style={{ color: 'var(--ink)' }}>{value}</div>
     </div>
   )
 }

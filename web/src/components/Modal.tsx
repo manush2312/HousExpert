@@ -49,14 +49,14 @@ export default function Modal({
   if (!open) return null
 
   return createPortal(
-    <div className={`fixed inset-0 z-[1200] flex items-center justify-center p-4 ${containerClassName}`.trim()}>
+    <div className={`fixed inset-0 z-[1200] flex items-center justify-center p-3 sm:p-4 ${containerClassName}`.trim()}>
       <div
         className={`absolute inset-0 ${overlayClassName}`.trim()}
         style={overlayStyle ?? { background: 'rgba(15, 23, 42, 0.46)' }}
         onClick={closeOnOverlayClick ? onClose : undefined}
       />
       <div
-        className={`relative w-full ${panelClassName}`.trim()}
+        className={`relative w-full max-h-[calc(100svh-24px)] overflow-y-auto sm:max-h-[calc(100svh-32px)] ${panelClassName}`.trim()}
         onClick={(event) => event.stopPropagation()}
       >
         {children}

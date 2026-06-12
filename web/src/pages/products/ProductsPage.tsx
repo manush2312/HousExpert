@@ -55,7 +55,7 @@ export default function ProductsPage() {
             Items your company offers — used as quick-fill in quotations.
           </p>
         </div>
-        <button onClick={() => { setShowAdd(true); setEditingId(null) }} className="btn btn-accent shrink-0">
+        <button onClick={() => { setShowAdd(true); setEditingId(null) }} className="btn btn-accent w-full sm:w-auto sm:shrink-0">
           <Plus size={15} />
           Add product
         </button>
@@ -220,7 +220,7 @@ function AddProductForm({ onSave, onCancel }: { onSave: (name: string, size: str
           </label>
         </div>
 
-        <div className="mt-4 flex flex-wrap items-center justify-end gap-2">
+        <div className="mt-4 flex flex-col items-stretch gap-2 sm:flex-row sm:items-center sm:justify-end">
           <button onClick={onCancel} className="btn btn-ghost">
             Cancel
           </button>
@@ -293,7 +293,7 @@ function EditProductRow({ product, onSave, onCancel }: {
           />
         </label>
 
-        <div className="flex items-center justify-end gap-2">
+        <div className="flex flex-col items-stretch gap-2 sm:flex-row sm:items-center sm:justify-end">
           <button onClick={onCancel} className="btn btn-ghost" title="Cancel">
             Cancel
           </button>

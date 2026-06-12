@@ -70,7 +70,7 @@ export default function QuotationsPage() {
             {loading ? 'Loading…' : `${total} quotation${total !== 1 ? 's' : ''} total`}
           </p>
         </div>
-        <button onClick={() => navigate('/quotations/new')} className="btn btn-accent shrink-0">
+        <button onClick={() => navigate('/quotations/new')} className="btn btn-accent w-full sm:w-auto sm:shrink-0">
           <Plus size={15} />
           New quotation
         </button>
@@ -88,7 +88,7 @@ export default function QuotationsPage() {
 
       {/* Toolbar */}
       <div className="card px-3 py-2.5 mb-4 flex flex-wrap items-center gap-2">
-        <div className="relative flex-1 min-w-55">
+        <div className="relative min-w-0 flex-1 basis-full sm:min-w-55 sm:basis-auto">
           <Search size={13} className="absolute left-2.5 top-1/2 -translate-y-1/2 pointer-events-none" style={{ color: 'var(--ink-4)' }} />
           <input
             value={q}
@@ -99,7 +99,7 @@ export default function QuotationsPage() {
           />
         </div>
 
-        <div className="inline-flex items-center p-0.5 rounded-lg" style={{ background: 'var(--bg-sunken)', border: '1px solid var(--line)' }}>
+        <div className="inline-flex max-w-full items-center overflow-x-auto rounded-lg p-0.5" style={{ background: 'var(--bg-sunken)', border: '1px solid var(--line)' }}>
           {STATUS_OPTIONS.map((s) => (
             <button
               key={s.value}
@@ -155,9 +155,9 @@ export default function QuotationsPage() {
       {/* Table */}
       {!loading && filtered.length > 0 && (
         <div className="card overflow-hidden">
-          <div className="overflow-x-auto">
+          <div className="max-h-[70svh] overflow-auto">
           <table className="w-full min-w-175 text-[13px]">
-            <thead>
+            <thead className="sticky top-0 z-10">
               <tr style={{ background: 'var(--bg-sunken)' }}>
                 {['No.', 'Client', 'Location', 'Items', 'Total', 'Date', 'Status', ''].map((h) => (
                   <th key={h} className="px-4 py-2.5 text-left eyebrow">{h}</th>

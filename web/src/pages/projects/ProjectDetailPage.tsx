@@ -633,7 +633,7 @@ export default function ProjectDetailPage() {
 
   if (pageLoading) {
     return (
-      <div className="w-full px-8 py-7 space-y-4">
+      <div className="w-full px-4 py-5 space-y-4 md:px-8 md:py-7">
         <div className="skeleton h-4 w-32" />
         <div className="skeleton h-7 w-64" />
         <div className="skeleton h-4 w-48 mt-2" />
@@ -645,14 +645,14 @@ export default function ProjectDetailPage() {
 
   return (
     <>
-      <div className="w-full px-8 py-7">
+      <div className="w-full px-4 py-5 md:px-8 md:py-7">
         <div className="mb-5 flex items-center gap-1.5 text-[12px]" style={{ color: 'var(--ink-3)' }}>
           <button onClick={() => navigate('/projects')} className="hover:underline">Projects</button>
           <span style={{ color: 'var(--ink-4)' }}>›</span>
           <span className="font-medium" style={{ color: 'var(--ink)' }}>{project.name}</span>
         </div>
 
-        <div className="mb-7 flex items-start justify-between gap-6">
+        <div className="mb-7 flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between sm:gap-6">
           <div className="min-w-0 flex-1">
             <div className="mb-1.5 flex items-center gap-3">
               <StatusPill status={project.status} />
@@ -665,9 +665,9 @@ export default function ProjectDetailPage() {
             <h1 className="text-[28px] font-semibold tracking-tight numeral" style={{ color: 'var(--ink)' }}>
               {project.name}
             </h1>
-            <div className="mt-2 flex items-center gap-1.5 text-[13px]" style={{ color: 'var(--ink-3)' }}>
-              <MapPin size={13} />
-              <span>
+            <div className="mt-2 flex items-start gap-1.5 text-[13px]" style={{ color: 'var(--ink-3)' }}>
+              <MapPin size={13} className="mt-0.5 shrink-0" />
+              <span className="min-w-0">
                 {project.address.line1}
                 {project.address.line2 ? `, ${project.address.line2}` : ''} · {project.address.city}, {project.address.state} {project.address.pincode}
               </span>
@@ -688,7 +688,7 @@ export default function ProjectDetailPage() {
               </div>
             )}
           </div>
-          <div className="flex items-center gap-2 shrink-0">
+          <div className="flex flex-col items-stretch gap-2 sm:flex-row sm:items-center sm:shrink-0">
             <LoadingButton
               onClick={handleExport}
               loading={exportLoading}
@@ -826,12 +826,19 @@ function StatCell({
 
 function TotalCostStatCell({ totalCost, breakdown }: { totalCost: number; breakdown: CostSlice[] }) {
   const [hovered, setHovered] = useState(false)
+  const hasBreakdown = breakdown.length > 0
 
   return (
     <div
       className="card p-3.5 relative cursor-default"
       onMouseEnter={() => setHovered(true)}
       onMouseLeave={() => setHovered(false)}
+      onClick={() => hasBreakdown && setHovered(true)}
+      onFocus={() => hasBreakdown && setHovered(true)}
+      onBlur={() => setHovered(false)}
+      tabIndex={hasBreakdown ? 0 : undefined}
+      role={hasBreakdown ? 'button' : undefined}
+      aria-expanded={hasBreakdown ? hovered : undefined}
     >
       <div className="eyebrow">Total Cost</div>
       <div className="mt-2 text-[22px] font-semibold numeral leading-none" style={{ color: 'var(--ink)' }}>
@@ -843,11 +850,11 @@ function TotalCostStatCell({ totalCost, breakdown }: { totalCost: number; breakd
         </span>
       </div>
 
-      {hovered && breakdown.length > 0 && (
+      {hovered && hasBreakdown && (
         <div
-          className="absolute top-full left-1/2 -translate-x-1/2 mt-2 z-50 rounded-xl p-4"
+          className="absolute top-full left-0 right-0 mt-2 z-50 rounded-xl p-4 sm:left-1/2 sm:right-auto sm:-translate-x-1/2"
           style={{
-            width: 224,
+            width: 'min(224px, 100%)',
             background: 'var(--bg)',
             border: '1px solid var(--line-2)',
             boxShadow: '0 8px 24px rgba(0,0,0,0.12)',
@@ -889,14 +896,14 @@ function Tabs({
   items: Array<{ value: Tab; label: string; count?: number }>
 }) {
   return (
-    <div className="flex items-center gap-0 border-b" style={{ borderColor: 'var(--line)' }}>
+    <div className="flex items-center gap-0 overflow-x-auto border-b" style={{ borderColor: 'var(--line)' }}>
       {items.map((item) => {
         const active = item.value === value
         return (
           <button
             key={item.value}
             onClick={() => onChange(item.value)}
-            className="relative flex h-10 items-center gap-2 px-3.5 text-[13px] font-medium transition-colors"
+            className="relative flex h-10 shrink-0 items-center gap-2 px-3.5 text-[13px] font-medium transition-colors"
             style={{ color: active ? 'var(--ink)' : 'var(--ink-3)' }}
           >
             {item.label}
@@ -1139,7 +1146,7 @@ function LogsSection({
   return (
     <div className="space-y-3">
       <div className="card flex flex-wrap items-center gap-2 px-3 py-2.5">
-        <div className="relative min-w-[220px] flex-1">
+        <div className="relative min-w-0 flex-1 basis-full sm:min-w-[220px] sm:basis-auto">
           <Search
             size={14}
             className="pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2"
@@ -1153,7 +1160,7 @@ function LogsSection({
             style={{ paddingLeft: 32 }}
           />
         </div>
-        <div style={{ width: 150 }}>
+        <div className="w-full sm:w-[150px]">
           <DatePicker value={dateFilter} onChange={setDateFilter} className="h-8" placeholder="Filter date" />
         </div>
         <SearchableSelect
@@ -1166,7 +1173,7 @@ function LogsSection({
           placeholder="All log types"
           searchPlaceholder="Search log types…"
           className="h-8"
-          style={{ width: 180 }}
+          style={{ width: 'min(100%, 180px)' }}
         />
         {hasFilter && (
           <button onClick={() => { setQ(''); setLogTypeFilter(''); setDateFilter('') }} className="btn btn-ghost btn-sm">
@@ -1219,9 +1226,9 @@ function LogsSection({
         </div>
       ) : (
         <div className="card overflow-hidden">
-          <div className="overflow-x-auto">
+          <div className="max-h-[70svh] overflow-auto">
             <table className="w-full min-w-[920px] text-[13px]">
-              <thead>
+              <thead className="sticky top-0 z-10">
                 <tr style={{ background: 'var(--bg-sunken)' }}>
                   <Th2>Type</Th2>
                   <Th2>Entry</Th2>

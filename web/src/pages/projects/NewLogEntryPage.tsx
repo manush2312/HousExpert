@@ -450,7 +450,7 @@ export default function NewLogEntryPage() {
               </p>
             )}
 
-            <div className="flex items-center gap-2 pt-2">
+            <div className="flex flex-col items-stretch gap-2 pt-2 sm:flex-row sm:items-center">
               <LoadingButton type="submit" disabled={!canSubmit} loading={loading} loadingText="Saving..." className="btn btn-accent">
                 Save entry
               </LoadingButton>
