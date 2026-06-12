@@ -518,10 +518,10 @@ func (p *pdfWriter) drawDataRow(entry models.LogEntry, shade bool) {
 
 	// ── Total cost ─────────────────────────────────────────────────────────────
 	cc := tableCols.cost
-	if entry.TotalCost != nil && *entry.TotalCost > 0 {
+	if cost := extractEntryCost(entry); cost > 0 {
 		p.setFont("B", 8.5)
 		p.setColor(cINK2)
-		p.cell(cc.x, singleY, cc.w-padX, p.rupee+" "+formatNum(*entry.TotalCost), "R")
+		p.cell(cc.x, singleY, cc.w-padX, p.rupee+" "+formatNum(cost), "R")
 	} else {
 		p.setFont("", 8.5)
 		p.setColor(cINK5)
@@ -556,18 +556,25 @@ func (p *pdfWriter) drawDataRow(entry models.LogEntry, shade bool) {
 		p.setColor(cINK5)
 		p.cell(nc.x+padX, singleY, nc.w-padX*2, p.dash, "L")
 	} else {
-		p.setColor(cINK2)
+		p.setColor(cINK)
 		p.cell(nc.x+padX, singleY, nc.w-padX*2, p.truncate(entry.Notes, nc.w-padX*2), "L")
 	}
 
 	// ── Logged by ──────────────────────────────────────────────────────────────
 	lb := tableCols.loggedBy
 	p.setFont("", 7)
-	p.setColor(cINK3)
-	hex := entry.CreatedBy.Hex()
-	createdBy := "#" + hex
-	if len(hex) > 8 {
-		createdBy = "#" + hex[:8]
+	var createdBy string
+	if entry.CreatedBy == primitive.NilObjectID {
+		p.setColor(cINK5)
+		createdBy = p.dash
+	} else {
+		p.setColor(cINK3)
+		hex := entry.CreatedBy.Hex()
+		if len(hex) > 8 {
+			createdBy = "#" + hex[:8]
+		} else {
+			createdBy = "#" + hex
+		}
 	}
 	p.cell(lb.x+padX, singleY, lb.w-padX, createdBy, "L")
 
@@ -638,11 +645,27 @@ func buildPDF(
 	doc.Ln(5.5)
 
 	totalCost := 0.0
+	costByType := make(map[string]float64)
+	var typeOrder []string
 	for _, e := range entries {
-		if e.TotalCost != nil {
-			totalCost += *e.TotalCost
+		cost := extractEntryCost(e)
+		if cost <= 0 {
+			continue
 		}
+		totalCost += cost
+		typeName := e.LogTypeName
+		if typeName == "" {
+			typeName = "Other"
+		}
+		if _, exists := costByType[typeName]; !exists {
+			typeOrder = append(typeOrder, typeName)
+		}
+		costByType[typeName] += cost
 	}
+	sort.Slice(typeOrder, func(i, j int) bool {
+		return costByType[typeOrder[i]] > costByType[typeOrder[j]]
+	})
+
 	summaryRows := [][2]string{{"Total entries", fmt.Sprintf("%d", len(entries))}}
 	if totalCost > 0 {
 		summaryRows = append(summaryRows, [2]string{"Total cost", p.rupee + " " + formatNum(totalCost)})
@@ -655,6 +678,27 @@ func buildPDF(
 		p.setFont("B", 8)
 		p.setColor(cINK)
 		doc.CellFormat(50, 5, row[1], "", 1, "L", false, 0, "")
+	}
+
+	// Cost breakdown by log type
+	if len(typeOrder) > 1 {
+		doc.Ln(4)
+		p.setFont("B", 8.5)
+		p.setColor(cINK)
+		doc.SetX(ml)
+		doc.Cell(80, 5, "Cost by log type")
+		doc.Ln(5.5)
+
+		for _, typeName := range typeOrder {
+			p.setFont("", 8)
+			p.setColor(cINK3)
+			doc.SetX(ml)
+			doc.CellFormat(32, 4.5, typeName+":", "", 0, "L", false, 0, "")
+			p.setFont("B", 8)
+			p.setColor(cINK)
+			pct := costByType[typeName] / totalCost * 100
+			doc.CellFormat(50, 4.5, fmt.Sprintf("%s %s  (%.0f%%)", p.rupee, formatNum(costByType[typeName]), pct), "", 1, "L", false, 0, "")
+		}
 	}
 
 	// ── Page footers ──────────────────────────────────────────────────────────
@@ -682,6 +726,77 @@ func buildPDF(
 		return nil, err
 	}
 	return &buf, nil
+}
+
+// ── Cost extraction ───────────────────────────────────────────────────────────
+//
+// Mirrors the frontend extractEntryDetails / logPricing logic so that labour
+// entries whose cost lives in Fields (not TotalCost) are included correctly.
+
+func extractEntryCost(e models.LogEntry) float64 {
+	if e.TotalCost != nil && *e.TotalCost > 0 {
+		return *e.TotalCost
+	}
+	// Direct-amount field labels (labour / daily-payment style)
+	for _, f := range e.Fields {
+		l := strings.ToLower(strings.TrimSpace(f.Label))
+		if isDirectAmountLabel(l) || isTotalCostLabel(l) {
+			if v := fieldFloat(f.Value); v > 0 {
+				return v
+			}
+		}
+	}
+	// Unit-cost × quantity fallback
+	var unitCost float64
+	for _, f := range e.Fields {
+		l := strings.ToLower(strings.TrimSpace(f.Label))
+		if isUnitCostLabel(l) {
+			if v := fieldFloat(f.Value); v > 0 {
+				unitCost = v
+				break
+			}
+		}
+	}
+	if unitCost > 0 && e.Quantity != nil && *e.Quantity > 0 {
+		return unitCost * (*e.Quantity)
+	}
+	return 0
+}
+
+func isDirectAmountLabel(l string) bool {
+	return strings.Contains(l, "daily cost") || strings.Contains(l, "daily payment") ||
+		strings.Contains(l, "amount paid") || strings.Contains(l, "wage") ||
+		strings.Contains(l, "charges") || l == "payment" || l == "amount"
+}
+
+func isTotalCostLabel(l string) bool {
+	return l == "total" || l == "total cost" || strings.Contains(l, "total cost")
+}
+
+func isUnitCostLabel(l string) bool {
+	return l == "cost" || l == "rate" || l == "price" ||
+		strings.Contains(l, "unit cost") || strings.Contains(l, "cost per") ||
+		strings.Contains(l, "rate") || strings.Contains(l, "price")
+}
+
+func fieldFloat(v interface{}) float64 {
+	switch val := v.(type) {
+	case float64:
+		return val
+	case float32:
+		return float64(val)
+	case int:
+		return float64(val)
+	case int32:
+		return float64(val)
+	case int64:
+		return float64(val)
+	case string:
+		var f float64
+		fmt.Sscanf(strings.TrimSpace(val), "%f", &f)
+		return f
+	}
+	return 0
 }
 
 // ── Text helpers ──────────────────────────────────────────────────────────────
