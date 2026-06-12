@@ -737,6 +737,8 @@ func extractEntryCost(e models.LogEntry) float64 {
 	if e.TotalCost != nil && *e.TotalCost > 0 {
 		return *e.TotalCost
 	}
+	hasQty := e.Quantity != nil && *e.Quantity > 0
+
 	// Direct-amount field labels (labour / daily-payment style)
 	for _, f := range e.Fields {
 		l := strings.ToLower(strings.TrimSpace(f.Label))
@@ -746,19 +748,18 @@ func extractEntryCost(e models.LogEntry) float64 {
 			}
 		}
 	}
-	// Unit-cost × quantity fallback
-	var unitCost float64
+	// Unit-cost fields: multiply by quantity when available,
+	// or treat as a direct amount when there is no quantity (e.g. labour "cost" field).
 	for _, f := range e.Fields {
 		l := strings.ToLower(strings.TrimSpace(f.Label))
 		if isUnitCostLabel(l) {
 			if v := fieldFloat(f.Value); v > 0 {
-				unitCost = v
-				break
+				if hasQty {
+					return v * (*e.Quantity)
+				}
+				return v
 			}
 		}
-	}
-	if unitCost > 0 && e.Quantity != nil && *e.Quantity > 0 {
-		return unitCost * (*e.Quantity)
 	}
 	return 0
 }
