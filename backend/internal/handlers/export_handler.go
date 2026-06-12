@@ -763,10 +763,16 @@ func extractEntryCost(e models.LogEntry) float64 {
 	return 0
 }
 
+// isDirectAmountLabel mirrors the frontend extractEntryDetails regex:
+// /(^cost$|total|amount paid|total cost|value)/ plus labour-specific labels.
 func isDirectAmountLabel(l string) bool {
-	return strings.Contains(l, "daily cost") || strings.Contains(l, "daily payment") ||
-		strings.Contains(l, "amount paid") || strings.Contains(l, "wage") ||
-		strings.Contains(l, "charges") || l == "payment" || l == "amount"
+	return l == "cost" ||
+		strings.Contains(l, "total") ||
+		strings.Contains(l, "amount paid") ||
+		strings.Contains(l, "value") ||
+		strings.Contains(l, "daily cost") || strings.Contains(l, "daily payment") ||
+		strings.Contains(l, "wage") || strings.Contains(l, "charges") ||
+		l == "payment" || l == "amount"
 }
 
 func isTotalCostLabel(l string) bool {
@@ -774,7 +780,7 @@ func isTotalCostLabel(l string) bool {
 }
 
 func isUnitCostLabel(l string) bool {
-	return l == "cost" || l == "rate" || l == "price" ||
+	return l == "rate" || l == "price" ||
 		strings.Contains(l, "unit cost") || strings.Contains(l, "cost per") ||
 		strings.Contains(l, "rate") || strings.Contains(l, "price")
 }
