@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useState, type ReactNode } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { Plus, Trash2, GripVertical, FolderPlus, Save, Copy } from 'lucide-react'
 import { createQuotation, type QuotationSectionInput, type QuotationItemInput } from '../../services/quotationService'
@@ -202,7 +202,7 @@ export default function NewQuotationPage() {
   const totals = computeQuotationTotals(subtotal, discountRate, applyGST, gstRate)
 
   return (
-    <div className="w-full px-8 py-7">
+    <div className="w-full px-4 py-5 md:px-8 md:py-7">
       {/* Breadcrumb */}
       <div className="flex items-center gap-1.5 text-[12px] mb-5" style={{ color: 'var(--ink-3)' }}>
         <button onClick={() => navigate('/quotations')} className="hover:underline">Quotations</button>
@@ -364,13 +364,13 @@ export default function NewQuotationPage() {
         </div>
 
         {/* ── Footer: total + actions ────────────────────────────────────────── */}
-        <div className="mt-6 card p-4 flex items-center justify-between gap-4">
+        <div className="mt-6 card p-4 flex flex-col items-stretch justify-between gap-4 sm:flex-row sm:items-center">
           <div>
             {error && <p className="text-[12.5px] mb-2" style={{ color: 'var(--bad)' }}>{error}</p>}
             <div className="text-[12px]" style={{ color: 'var(--ink-4)' }}>Final total</div>
             <div className="text-[22px] font-semibold numeral" style={{ color: 'var(--ink)' }}>{fmtINR(totals.total)}</div>
           </div>
-          <div className="flex items-center gap-2">
+          <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
             <button type="button" onClick={() => navigate('/quotations')} className="btn btn-ghost">Cancel</button>
             <LoadingButton
               type="submit"
@@ -432,7 +432,7 @@ function SectionBlock({ section, products, onRoomNameChange, onRemoveSection, on
       </div>
 
       {/* Column headers */}
-      <div className="grid items-center px-4 py-1.5 text-[10.5px] font-semibold uppercase tracking-wider gap-2" style={{ color: 'var(--ink-4)', background: 'var(--bg-sunken)', borderBottom: '1px solid var(--line-2)', gridTemplateColumns: '2fr 80px 60px 60px 78px 90px 1fr 90px 32px' }}>
+      <div className="hidden items-center px-4 py-1.5 text-[10.5px] font-semibold uppercase tracking-wider gap-2 md:grid" style={{ color: 'var(--ink-4)', background: 'var(--bg-sunken)', borderBottom: '1px solid var(--line-2)', gridTemplateColumns: '2fr 80px 60px 60px 78px 90px 1fr 90px 32px' }}>
         <span>Product</span>
         <span>Size (inches)</span>
         <span>Sq.Ft</span>
@@ -490,12 +490,118 @@ interface ItemRowProps {
 function ItemRow({ item, rowIndex, products, onChange, onRemove, onApplyProduct, canRemove }: ItemRowProps) {
   const amount = calcRowAmount(item)
 
-  const colStyle = 'gridTemplateColumns: 2fr 80px 60px 60px 78px 90px 1fr 90px 32px'
-  void colStyle
-
   return (
+    <>
+    <div className="border-b px-4 py-3 md:hidden" style={{ borderColor: 'var(--line-2)' }}>
+        <div className="mb-3 flex items-start gap-2">
+          <span className="numeral mt-2 text-[10.5px] shrink-0" style={{ color: 'var(--ink-5)', minWidth: 16 }}>{rowIndex + 1}</span>
+          <div className="min-w-0 flex-1">
+            <SearchableSelect
+              value={item.product_id ?? ''}
+              onChange={(nextValue) => {
+                const product = products.find((entry) => entry.product_id === nextValue)
+                if (!product) {
+                  onChange({ product_id: '', description: '', size: '' })
+                  return
+                }
+                onApplyProduct(product)
+              }}
+              options={products.map((product) => ({
+                value: product.product_id,
+                label: product.name,
+                keywords: product.default_size ? [product.default_size] : [],
+              }))}
+              placeholder="Pick product"
+              searchPlaceholder="Search products…"
+              emptyMessage="No products found"
+              className="h-[38px]"
+            />
+          </div>
+          {canRemove && (
+            <button
+              type="button"
+              onClick={onRemove}
+              className="btn btn-ghost btn-sm btn-icon"
+              style={{ color: 'var(--bad)' }}
+              title="Delete item"
+            >
+              <Trash2 size={12} />
+            </button>
+          )}
+        </div>
+
+        <div className="grid grid-cols-2 gap-2">
+          <MobileField label="Size">
+            <SizeTextInput
+              className="input"
+              style={{ fontSize: 12 }}
+              placeholder="102 X 12"
+              value={item.size}
+              onChange={(nextSize) => onChange({ size: nextSize, sqft: deriveSqftString(nextSize, item.sqft) })}
+            />
+          </MobileField>
+          <MobileField label="Sq.Ft">
+            <input
+              className="input"
+              style={{ fontSize: 12, background: parseSizeInches(item.size) ? 'var(--bg-sunken)' : undefined }}
+              placeholder="-"
+              value={deriveSqftString(item.size, item.sqft)}
+              readOnly
+            />
+          </MobileField>
+          <MobileField label="Qty">
+            <input
+              type="number"
+              className="input"
+              style={{ fontSize: 12 }}
+              min="1"
+              step="1"
+              value={item.qty}
+              onChange={(e) => onChange({ qty: String(Math.max(1, Number(e.target.value) || 1)) })}
+            />
+          </MobileField>
+          <MobileField label="Rate">
+            <input
+              type="number"
+              className="input"
+              style={{ fontSize: 12 }}
+              placeholder="0"
+              min="0"
+              value={item.rate}
+              onChange={(e) => onChange({ rate: e.target.value })}
+            />
+          </MobileField>
+        </div>
+
+        <div className="mt-2 grid gap-2">
+          <label className="flex h-[38px] items-center justify-between rounded-lg border px-3 text-[12px]" style={{ borderColor: 'var(--line-2)', background: item.use_quantity_rate ? 'var(--accent-wash)' : 'var(--bg-elev)', color: 'var(--ink-2)' }}>
+            Qty x rate only
+            <input
+              type="checkbox"
+              aria-label="Use quantity x rate only"
+              checked={item.use_quantity_rate}
+              onChange={(e) => onChange({ use_quantity_rate: e.target.checked })}
+            />
+          </label>
+          <input
+            className="input"
+            style={{ fontSize: 12 }}
+            placeholder="Optional note"
+            value={item.note}
+            onChange={(e) => onChange({ note: e.target.value })}
+          />
+        </div>
+
+        <div className="mt-3 flex items-center justify-between gap-3">
+          <span className="text-[11.5px]" style={{ color: 'var(--ink-4)' }}>Amount</span>
+          <span className="numeral text-[14px] font-semibold" style={{ color: amount > 0 ? 'var(--ink)' : 'var(--ink-5)' }}>
+            {amount > 0 ? fmtINR(amount) : '-'}
+          </span>
+        </div>
+    </div>
+
     <div
-      className="group grid items-center px-4 py-1.5 gap-2 hover-bg transition-colors"
+      className="group hidden items-center px-4 py-1.5 gap-2 hover-bg transition-colors md:grid"
       style={{
         gridTemplateColumns: '2fr 80px 60px 60px 78px 90px 1fr 90px 32px',
         borderBottom: '1px solid var(--line-2)',
@@ -608,5 +714,15 @@ function ItemRow({ item, rowIndex, products, onChange, onRemove, onApplyProduct,
         )}
       </div>
     </div>
+    </>
+  )
+}
+
+function MobileField({ label, children }: { label: string; children: ReactNode }) {
+  return (
+    <label className="space-y-1">
+      <span className="text-[10.5px] font-semibold uppercase tracking-wider" style={{ color: 'var(--ink-4)' }}>{label}</span>
+      {children}
+    </label>
   )
 }

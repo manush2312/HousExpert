@@ -57,7 +57,7 @@ export default function LogTypesPage() {
             Define what gets logged across all your projects. Each log type has its own schema of fields and a set of categories.
           </p>
         </div>
-        <div className="flex items-center gap-2 shrink-0">
+        <div className="flex w-full flex-col items-stretch gap-2 sm:w-auto sm:flex-row sm:items-center sm:shrink-0">
           <button className="btn btn-outline">
             <Download size={15} />
             Import template

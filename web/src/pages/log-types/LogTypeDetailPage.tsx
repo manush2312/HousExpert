@@ -672,7 +672,7 @@ export default function LogTypeDetailPage() {
 
   if (loading) {
     return (
-      <div className="px-8 py-7 space-y-4">
+      <div className="px-4 py-5 space-y-4 md:px-8 md:py-7">
         <div className="skeleton h-4 w-24" />
         <div className="skeleton h-7 w-56" />
         <div className="skeleton h-4 w-40 mt-2" />
@@ -683,17 +683,17 @@ export default function LogTypeDetailPage() {
   if (!logType) return null
 
   return (
-    <div className="w-full px-8 py-7">
+    <div className="w-full px-4 py-5 md:px-8 md:py-7">
       <div className="flex items-center gap-1.5 text-[12px] mb-5" style={{ color: 'var(--ink-3)' }}>
         <button onClick={() => navigate('/log-types')} className="hover:underline">Log Types</button>
         <span style={{ color: 'var(--ink-4)' }}>›</span>
         <span className="font-medium" style={{ color: 'var(--ink)' }}>{logType.name}</span>
       </div>
 
-      <div className="flex items-start justify-between gap-6 mb-8">
-        <div>
+      <div className="flex flex-col gap-4 mb-8 sm:flex-row sm:items-start sm:justify-between sm:gap-6">
+        <div className="min-w-0">
           <h1 className="text-[26px] font-semibold tracking-tight numeral" style={{ color: 'var(--ink)' }}>{logType.name}</h1>
-          <div className="flex items-center gap-2 mt-2">
+          <div className="flex flex-wrap items-center gap-2 mt-2">
             <span className="chip chip-accent">Schema v{logType.current_version}</span>
             <span className="chip">{itemSchema.length} item fields</span>
             <span className="chip">{entrySchema.length} entry fields</span>

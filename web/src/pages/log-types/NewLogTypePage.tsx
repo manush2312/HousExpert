@@ -93,7 +93,7 @@ export default function NewLogTypePage() {
   }
 
   return (
-    <div className="w-full px-8 py-7">
+    <div className="w-full px-4 py-5 md:px-8 md:py-7">
       {/* Breadcrumb */}
       <div className="flex items-center gap-1.5 text-[12px] mb-5" style={{ color: 'var(--ink-3)' }}>
         <button onClick={() => navigate('/log-types')} className="hover:underline">Log Types</button>
@@ -161,7 +161,7 @@ export default function NewLogTypePage() {
             </p>
           )}
 
-          <div className="flex items-center gap-2 pt-2">
+          <div className="flex flex-col items-stretch gap-2 pt-2 sm:flex-row sm:items-center">
             <LoadingButton type="submit" disabled={!name.trim()} loading={loading} loadingText="Creating..." className="btn btn-accent">
               Create log type
             </LoadingButton>

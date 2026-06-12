@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef, useMemo, useCallback } from 'react'
 import { Outlet, useNavigate, useLocation, NavLink } from 'react-router-dom'
 import {
-  Search, Layers, Plus, Sun, Moon, AlignJustify,
+  Search, Layers, Plus, Sun, Moon, AlignJustify, ArrowLeft,
   Building2, ChevronRight, Folder, Package, FileText, Armchair, Boxes,
 } from 'lucide-react'
 import Modal from '../components/Modal'
@@ -67,7 +67,7 @@ export default function AppLayout() {
   }, [])
 
   return (
-    <div className="flex h-screen" style={{ background: 'var(--bg)' }}>
+    <div className="flex h-[100svh]" style={{ background: 'var(--bg)' }}>
       {mobileOpen && (
         <div
           className="fixed inset-0 z-30 lg:hidden"
@@ -84,7 +84,7 @@ export default function AppLayout() {
         projects={projects}
         mobileOpen={mobileOpen}
       />
-      <main className="flex-1 overflow-y-auto min-w-0">
+      <main className="flex-1 overflow-y-auto min-w-0 overscroll-contain">
         <Topbar collapsed={collapsed} onToggleSidebar={handleToggleSidebar} />
         <div className="animate-fade-up">
           <Outlet />
@@ -250,6 +250,15 @@ function Sidebar({ collapsed, theme, onToggleTheme, onOpenPalette, projects, mob
 function Topbar({ onToggleSidebar }: { collapsed: boolean; onToggleSidebar: () => void }) {
   const location = useLocation()
   const navigate = useNavigate()
+  const fallbackBackPath = useMemo(() => getBackFallbackPath(location.pathname), [location.pathname])
+
+  const handleBack = () => {
+    if (window.history.length > 1) {
+      navigate(-1)
+      return
+    }
+    navigate(fallbackBackPath)
+  }
 
   // Build breadcrumb from path
   const crumbs = useMemo(() => {
@@ -282,7 +291,7 @@ function Topbar({ onToggleSidebar }: { collapsed: boolean; onToggleSidebar: () =
 
   return (
     <div
-      className="h-14 px-5 flex items-center gap-3 sticky top-0 z-20 shrink-0"
+      className="h-14 px-3 sm:px-5 flex items-center gap-2 sm:gap-3 sticky top-0 z-20 shrink-0"
       style={{
         background: 'color-mix(in oklab, var(--bg) 88%, transparent)',
         backdropFilter: 'blur(10px)',
@@ -292,22 +301,30 @@ function Topbar({ onToggleSidebar }: { collapsed: boolean; onToggleSidebar: () =
       <button onClick={onToggleSidebar} className="btn btn-ghost btn-sm btn-icon" title="Toggle sidebar">
         <AlignJustify size={14} />
       </button>
+      <button
+        onClick={handleBack}
+        className="btn btn-ghost btn-sm btn-icon"
+        title="Go back"
+        aria-label="Go back"
+      >
+        <ArrowLeft size={14} />
+      </button>
 
       {/* Breadcrumb */}
-      <div className="flex items-center gap-1.5 text-[12px]" style={{ color: 'var(--ink-3)' }}>
+      <div className="flex min-w-0 items-center gap-1.5 text-[12px]" style={{ color: 'var(--ink-3)' }}>
         {crumbs.map((c, i) => (
-          <span key={i} className="flex items-center gap-1.5">
+          <span key={i} className="flex min-w-0 items-center gap-1.5">
             {i > 0 && <ChevronRight size={11} style={{ color: 'var(--ink-4)' }} />}
             {c.to && i < crumbs.length - 1 ? (
               <button
                 onClick={() => navigate(c.to!)}
-                className="hover:underline transition-colors"
+                className="truncate hover:underline transition-colors"
                 style={{ color: 'var(--ink-3)' }}
               >
                 {c.label}
               </button>
             ) : (
-              <span style={{ color: 'var(--ink)', fontWeight: 500 }}>{c.label}</span>
+              <span className="truncate" style={{ color: 'var(--ink)', fontWeight: 500 }}>{c.label}</span>
             )}
           </span>
         ))}
@@ -315,12 +332,42 @@ function Topbar({ onToggleSidebar }: { collapsed: boolean; onToggleSidebar: () =
 
       <div className="flex-1" />
 
-      <div className="flex items-center gap-1.5">
+      <div className="hidden sm:flex items-center gap-1.5">
         <span className="text-[11.5px]" style={{ color: 'var(--ink-4)' }}>All systems operational</span>
         <span className="w-1.5 h-1.5 rounded-full" style={{ background: 'var(--ok)' }} />
       </div>
     </div>
   )
+}
+
+function getBackFallbackPath(pathname: string): string {
+  const parts = pathname.split('/').filter(Boolean)
+  const [section, id, child, action] = parts
+
+  if (section === 'projects') {
+    if (id && child === 'logs' && action === 'new') return `/projects/${id}`
+    if (id) return '/projects'
+    return '/projects'
+  }
+
+  if (section === 'quotations') {
+    if (id && child === 'edit') return `/quotations/${id}`
+    if (id) return '/quotations'
+    return '/projects'
+  }
+
+  if (section === 'log-types') {
+    if (id) return '/log-types'
+    return '/projects'
+  }
+
+  if (section === 'furniture') {
+    if (id) return '/furniture'
+    return '/projects'
+  }
+
+  if (section === 'products' || section === 'inventory') return '/projects'
+  return '/projects'
 }
 
 // ── Command Palette ───────────────────────────────────────────────────────────
