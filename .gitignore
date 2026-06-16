@@ -10,6 +10,10 @@
 /backend/.env
 /backend/tmp/
 
+# Database backups (mongodump output)
+backup-*/
+/backend/scripts/backup-*/
+
 # Web build/deps
 /web/node_modules/
 /web/dist/

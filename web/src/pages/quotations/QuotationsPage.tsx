@@ -1,6 +1,6 @@
 import { useEffect, useState, useMemo } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { Plus, Search, FileText } from 'lucide-react'
+import { Plus, Search, FileText, Upload } from 'lucide-react'
 import { listQuotations, type Quotation, type QuotationStatus } from '../../services/quotationService'
 
 const STATUS_OPTIONS: { value: 'all' | QuotationStatus; label: string }[] = [
@@ -70,10 +70,16 @@ export default function QuotationsPage() {
             {loading ? 'Loading…' : `${total} quotation${total !== 1 ? 's' : ''} total`}
           </p>
         </div>
-        <button onClick={() => navigate('/quotations/new')} className="btn btn-accent w-full sm:w-auto sm:shrink-0">
-          <Plus size={15} />
-          New quotation
-        </button>
+        <div className="flex w-full flex-col items-stretch gap-2 sm:w-auto sm:flex-row sm:items-center sm:shrink-0">
+          <button onClick={() => navigate('/quotations/from-floor-plan')} className="btn btn-outline">
+            <Upload size={15} />
+            Create from floor plan
+          </button>
+          <button onClick={() => navigate('/quotations/new')} className="btn btn-accent">
+            <Plus size={15} />
+            New quotation
+          </button>
+        </div>
       </div>
 
       {/* KPI strip */}
