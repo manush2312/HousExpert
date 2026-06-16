@@ -10,6 +10,7 @@ import LogTypeDetailPage from './pages/log-types/LogTypeDetailPage'
 import ProductsPage from './pages/products/ProductsPage'
 import InventoryPage from './pages/inventory/InventoryPage'
 import QuotationsPage from './pages/quotations/QuotationsPage'
+import FloorPlanQuotationPage from './pages/quotations/FloorPlanQuotationPage'
 import NewQuotationPage from './pages/quotations/NewQuotationPage'
 import QuotationDetailPage from './pages/quotations/QuotationDetailPage'
 import EditQuotationPage from './pages/quotations/EditQuotationPage'
@@ -40,6 +41,7 @@ export default function App() {
 
           {/* Quotations */}
           <Route path="quotations" element={<QuotationsPage />} />
+          <Route path="quotations/from-floor-plan" element={<FloorPlanQuotationPage />} />
           <Route path="quotations/new" element={<NewQuotationPage />} />
           <Route path="quotations/:id/edit" element={<EditQuotationPage />} />
           <Route path="quotations/:id" element={<QuotationDetailPage />} />

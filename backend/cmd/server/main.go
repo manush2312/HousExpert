@@ -13,13 +13,19 @@ import (
 )
 
 func main() {
-	// Load .env file — ENV_FILE overrides the default ".env"
+	// Load .env file — ENV_FILE overrides the default lookup.
 	envFile := os.Getenv("ENV_FILE")
 	if envFile == "" {
 		envFile = ".env"
 	}
 	if err := godotenv.Load(envFile); err != nil {
-		log.Println("No .env file found, using environment variables")
+		if envFile == ".env" {
+			if fallbackErr := godotenv.Load("backend/.env"); fallbackErr != nil {
+				log.Println("No .env file found, using environment variables")
+			}
+		} else {
+			log.Println("No .env file found, using environment variables")
+		}
 	}
 
 	// Connect to MongoDB and create indexes

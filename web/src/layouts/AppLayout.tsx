@@ -284,6 +284,7 @@ function Topbar({ onToggleSidebar }: { collapsed: boolean; onToggleSidebar: () =
     } else if (parts[0] === 'quotations') {
       result.push({ label: 'Quotations', to: '/quotations' })
       if (parts[1] === 'new') result.push({ label: 'New quotation' })
+      else if (parts[1] === 'from-floor-plan') result.push({ label: 'Create from floor plan' })
       else if (parts[1]) result.push({ label: parts[1] })
     }
     return result

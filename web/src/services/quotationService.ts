@@ -49,6 +49,38 @@ export interface QuotationListResult {
   limit: number
 }
 
+export interface FloorPlanAnalysisUploadResult {
+  status: 'upload_validated' | 'analysis_completed'
+  message: string
+  file: {
+    filename: string
+    content_type: string
+    kind: 'image' | 'pdf'
+    size_bytes: number
+  }
+  client: {
+    name: string
+    phone?: string
+    location?: string
+  }
+  analysis_image: {
+    source: 'original_upload' | 'pdf_first_page'
+    page: number
+    converted: boolean
+    converter?: string
+    content_type: string
+    kind: 'image' | 'pdf'
+    size_bytes: number
+    data_url?: string
+  }
+  rooms: Array<{
+    type: string
+    label: string
+    confidence: number
+  }>
+  warnings: string[]
+}
+
 // ── Input types ───────────────────────────────────────────────────────────────
 
 export interface QuotationItemInput {
@@ -99,6 +131,25 @@ export const getQuotation = (quotationId: string) =>
 
 export const createQuotation = (payload: CreateQuotationPayload) =>
   api.post<{ success: boolean; data: Quotation }>('/quotations', payload)
+
+export const analyzeFloorPlanQuotation = (payload: {
+  file: File
+  client_name: string
+  client_phone?: string
+  client_location?: string
+}) => {
+  const formData = new FormData()
+  formData.append('file', payload.file)
+  formData.append('client_name', payload.client_name)
+  if (payload.client_phone) formData.append('client_phone', payload.client_phone)
+  if (payload.client_location) formData.append('client_location', payload.client_location)
+
+  return api.post<{ success: boolean; data: FloorPlanAnalysisUploadResult }>(
+    '/quotations/analyze-floor-plan',
+    formData,
+    { headers: { 'Content-Type': 'multipart/form-data' } },
+  )
+}
 
 export const updateQuotation = (quotationId: string, payload: UpdateQuotationPayload) =>
   api.put<{ success: boolean; data: Quotation }>(`/quotations/${quotationId}`, payload)
