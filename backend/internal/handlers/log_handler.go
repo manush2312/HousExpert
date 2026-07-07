@@ -315,6 +315,8 @@ func listLogEntries(c *gin.Context) {
 		LogTypeID:  c.Query("log_type_id"),
 		CategoryID: c.Query("category_id"),
 		LogDate:    c.Query("log_date"), // "YYYY-MM-DD"
+		Page:       parseIntQuery(c, "page", 1),
+		Limit:      parseIntQuery(c, "limit", 0), // 0 → service default
 	}
 	entries, err := services.ListLogEntries(projectOID, filter)
 	if err != nil {

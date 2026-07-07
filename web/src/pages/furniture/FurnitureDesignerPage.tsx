@@ -57,7 +57,8 @@ import {
   updateFurnitureDesign,
 } from '../../services/furnitureDesignService'
 import { calculateCutList } from '../../utils/cutListCalculator'
-import { exportCutListPdf } from '../../utils/exportCutListPdf'
+// exportCutListPdf is imported dynamically inside the click handler so jsPDF
+// (a large dependency) is only downloaded when the user actually exports.
 import {
   DEPTH_REFERENCE_LABELS,
   HORIZONTAL_REFERENCE_LABELS,
@@ -420,9 +421,10 @@ function DesignerErrorState({ message, onBack }: { message: string; onBack: () =
 function ExportPdfButton() {
   const { designName, outerBox, shelves, partitions, drawers, material, sectionConfigs, shelfPartitions, customPanels } = useFurnitureStore()
 
-  const handleExport = () => {
+  const handleExport = async () => {
     if (!outerBox) return
     const summary = calculateCutList(outerBox, shelves, partitions, drawers, material, sectionConfigs, shelfPartitions, customPanels)
+    const { exportCutListPdf } = await import('../../utils/exportCutListPdf')
     exportCutListPdf(designName, 'Furniture', outerBox, summary)
   }
 

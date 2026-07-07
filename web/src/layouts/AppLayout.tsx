@@ -2,11 +2,29 @@ import { useState, useEffect, useRef, useMemo, useCallback } from 'react'
 import { Outlet, useNavigate, useLocation, NavLink } from 'react-router-dom'
 import {
   Search, Layers, Plus, Sun, Moon, AlignJustify, ArrowLeft,
-  Building2, ChevronRight, Folder, Package, FileText, Armchair, Boxes,
+  Building2, ChevronRight, Folder, Package, FileText, Armchair, Boxes, LogOut, Users,
 } from 'lucide-react'
 import Modal from '../components/Modal'
 import { listProjects, type Project } from '../services/projectService'
 import { listLogTypes, type LogType } from '../services/logService'
+import { getStoredUser, logout, type EmployeeRole } from '../services/authService'
+
+// Human-friendly labels for the RBAC roles.
+const ROLE_LABELS: Record<EmployeeRole, string> = {
+  super_admin: 'Super Admin',
+  admin: 'Admin',
+  manager: 'Manager',
+  sales: 'Sales',
+  designer: 'Designer',
+}
+
+// initialsOf derives up to two uppercase initials from a name (e.g. "Asha Rao" → "AR").
+function initialsOf(name: string): string {
+  const parts = name.trim().split(/\s+/).filter(Boolean)
+  if (parts.length === 0) return '?'
+  if (parts.length === 1) return parts[0].slice(0, 2).toUpperCase()
+  return (parts[0][0] + parts[parts.length - 1][0]).toUpperCase()
+}
 
 // ── Theme hook ────────────────────────────────────────────────────────────────
 
@@ -114,6 +132,13 @@ interface SidebarProps {
 
 function Sidebar({ collapsed, theme, onToggleTheme, onOpenPalette, projects, mobileOpen }: SidebarProps) {
   const location = useLocation()
+  const navigate = useNavigate()
+  const user = getStoredUser()
+
+  const handleLogout = async () => {
+    await logout()
+    navigate('/login', { replace: true })
+  }
 
   const navItems = [
     { to: '/projects', label: 'Projects', Icon: Folder },
@@ -122,6 +147,10 @@ function Sidebar({ collapsed, theme, onToggleTheme, onOpenPalette, projects, mob
     { to: '/inventory', label: 'Inventory', Icon: Boxes },
     { to: '/furniture', label: 'Furniture Designer', Icon: Armchair },
     { to: '/log-types', label: 'Log Types', Icon: Layers },
+    // Team management is only shown to admins.
+    ...(user && (user.role === 'admin' || user.role === 'super_admin')
+      ? [{ to: '/users', label: 'Team', Icon: Users }]
+      : []),
   ]
 
   const pinnedProjects = projects.slice(0, 3)
@@ -225,19 +254,28 @@ function Sidebar({ collapsed, theme, onToggleTheme, onOpenPalette, projects, mob
               className="w-6 h-6 rounded-full flex items-center justify-center text-[10px] font-semibold text-white shrink-0"
               style={{ background: 'linear-gradient(135deg, var(--accent), oklch(0.6 0.2 300))' }}
             >
-              AK
+              {initialsOf(user?.name ?? '?')}
             </div>
             {!collapsed && (
               <div className="flex flex-col leading-tight min-w-0">
-                <span className="text-[12px] font-medium truncate" style={{ color: 'var(--ink)' }}>Arvind Krishnan</span>
-                <span className="text-[10.5px] truncate" style={{ color: 'var(--ink-4)' }}>Site Supervisor</span>
+                <span className="text-[12px] font-medium truncate" style={{ color: 'var(--ink)' }}>
+                  {user?.name ?? 'Unknown user'}
+                </span>
+                <span className="text-[10.5px] truncate" style={{ color: 'var(--ink-4)' }}>
+                  {user ? ROLE_LABELS[user.role] ?? user.role : ''}
+                </span>
               </div>
             )}
           </div>
           {!collapsed && (
-            <button onClick={onToggleTheme} className="btn btn-ghost btn-sm btn-icon" title="Toggle theme">
-              {theme === 'dark' ? <Sun size={13} /> : <Moon size={13} />}
-            </button>
+            <>
+              <button onClick={onToggleTheme} className="btn btn-ghost btn-sm btn-icon" title="Toggle theme">
+                {theme === 'dark' ? <Sun size={13} /> : <Moon size={13} />}
+              </button>
+              <button onClick={handleLogout} className="btn btn-ghost btn-sm btn-icon" title="Sign out">
+                <LogOut size={13} />
+              </button>
+            </>
           )}
         </div>
       </div>

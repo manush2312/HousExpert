@@ -67,6 +67,14 @@ func createIndexes() {
 		{Keys: bson.D{{Key: "email", Value: 1}}, Options: options.Index().SetUnique(true)},
 	})
 
+	// Refresh tokens — looked up by hash; TTL index lets MongoDB auto-delete
+	// expired sessions (expireAfterSeconds: 0 means "expire at the value in expires_at").
+	DB.Collection("refresh_tokens").Indexes().CreateMany(ctx, []mongo.IndexModel{
+		{Keys: bson.D{{Key: "token_hash", Value: 1}}, Options: options.Index().SetUnique(true)},
+		{Keys: bson.D{{Key: "employee_id", Value: 1}}},
+		{Keys: bson.D{{Key: "expires_at", Value: 1}}, Options: options.Index().SetExpireAfterSeconds(0)},
+	})
+
 	// Clients — unique client_id
 	DB.Collection("clients").Indexes().CreateMany(ctx, []mongo.IndexModel{
 		{Keys: bson.D{{Key: "client_id", Value: 1}}, Options: options.Index().SetUnique(true)},
@@ -141,6 +149,33 @@ func createIndexes() {
 		{Keys: bson.D{{Key: "transaction_date", Value: -1}}},
 		{Keys: bson.D{{Key: "item_id", Value: 1}, {Key: "transaction_date", Value: -1}}},
 		{Keys: bson.D{{Key: "created_at", Value: -1}}},
+	})
+
+	// Inventory stock lots — hit by {item_id, lot_id} lookups and
+	// {item_id, remaining_quantity} availability scans throughout the service.
+	DB.Collection("inventory_stock_lots").Indexes().CreateMany(ctx, []mongo.IndexModel{
+		{Keys: bson.D{{Key: "lot_id", Value: 1}}},
+		{Keys: bson.D{{Key: "item_id", Value: 1}, {Key: "lot_id", Value: 1}}},
+		{Keys: bson.D{{Key: "item_id", Value: 1}, {Key: "remaining_quantity", Value: 1}}},
+	})
+
+	// Quotations — filtered by status, sorted by created_at.
+	DB.Collection("quotations").Indexes().CreateMany(ctx, []mongo.IndexModel{
+		{Keys: bson.D{{Key: "quotation_id", Value: 1}}, Options: options.Index().SetUnique(true)},
+		{Keys: bson.D{{Key: "status", Value: 1}}},
+		{Keys: bson.D{{Key: "created_at", Value: -1}}},
+	})
+
+	// Furniture designs — filtered by furniture_type, sorted by updated_at.
+	DB.Collection("furniture_designs").Indexes().CreateMany(ctx, []mongo.IndexModel{
+		{Keys: bson.D{{Key: "design_id", Value: 1}}, Options: options.Index().SetUnique(true)},
+		{Keys: bson.D{{Key: "furniture_type", Value: 1}}},
+		{Keys: bson.D{{Key: "updated_at", Value: -1}}},
+	})
+
+	// Pricing rules — looked up by log_type_id on every entry cost calculation.
+	DB.Collection("pricing_rules").Indexes().CreateMany(ctx, []mongo.IndexModel{
+		{Keys: bson.D{{Key: "log_type_id", Value: 1}}},
 	})
 
 	log.Println("MongoDB indexes created successfully")

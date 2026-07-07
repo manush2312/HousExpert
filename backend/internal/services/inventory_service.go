@@ -414,21 +414,16 @@ func ListInventoryItems() ([]models.InventoryItem, error) {
 	return items, nil
 }
 
+// GetInventoryItem is a pure read: it fetches the item and computes its cost
+// metrics. It intentionally does NOT write — keeping stock lots' denormalized
+// item_name/item_unit in sync is done at write-time in UpdateInventoryItem.
+// (This getter is called from many hot paths, including loops, so it must be
+// side-effect free to avoid amplifying reads into writes.)
 func GetInventoryItem(itemID string) (*models.InventoryItem, error) {
 	var item models.InventoryItem
 	err := inventoryItemCol().FindOne(context.Background(), bson.M{"item_id": itemID}).Decode(&item)
 	if errors.Is(err, mongo.ErrNoDocuments) {
 		return nil, nil
-	}
-	if err == nil {
-		_, _ = inventoryStockLotCol().UpdateMany(
-			context.Background(),
-			bson.M{"item_id": itemID},
-			bson.M{"$set": bson.M{
-				"item_name": item.Name,
-				"item_unit": item.Unit,
-			}},
-		)
 	}
 	if err != nil {
 		return &item, err
@@ -526,6 +521,18 @@ func UpdateInventoryItem(itemID string, input UpdateInventoryItemInput) (*models
 	if err != nil {
 		return nil, err
 	}
+
+	// Keep the denormalized name/unit on this item's stock lots in sync — but
+	// only when those fields actually changed, and only here at write-time
+	// (GetInventoryItem used to do this on every read, which was very costly).
+	if _, nameChanged := set["name"]; nameChanged || set["unit"] != nil {
+		_, _ = inventoryStockLotCol().UpdateMany(
+			context.Background(),
+			bson.M{"item_id": itemID},
+			bson.M{"$set": bson.M{"item_name": item.Name, "item_unit": item.Unit}},
+		)
+	}
+
 	enriched := []models.InventoryItem{item}
 	if err := enrichInventoryItemsCostMetrics(enriched); err != nil {
 		return nil, err
@@ -898,6 +905,32 @@ func GetInventoryStockLot(itemID, lotID string) (*models.InventoryStockLot, erro
 	return findInventoryStockLot(itemID, lotID)
 }
 
+// toStockLotView maps a stock lot to its API view, resolving the sell price
+// from the (optional) owning item's vendor pricing.
+func toStockLotView(lot models.InventoryStockLot, item *models.InventoryItem) models.InventoryStockLotView {
+	lotCopy := lot
+	sellPrice := 0.0
+	if vp := findVendorPricingForSupplier(item, lot.SupplierBucket); vp != nil {
+		sellPrice = vp.DefaultSellPrice
+	}
+	return models.InventoryStockLotView{
+		LotID:             lot.LotID,
+		ItemID:            lot.ItemID,
+		ItemName:          lot.ItemName,
+		ItemUnit:          lot.ItemUnit,
+		SupplierBucket:    lot.SupplierBucket,
+		ReceivedQuantity:  lot.ReceivedQuantity,
+		RemainingQuantity: lot.RemainingQuantity,
+		UnitCost:          lot.UnitCost,
+		DefaultSellPrice:  sellPrice,
+		ReceivedDate:      lot.ReceivedDate,
+		DocumentNumber:    lot.DocumentNumber,
+		Reference:         lot.Reference,
+		Notes:             lot.Notes,
+		Label:             stockLotLabel(&lotCopy),
+	}
+}
+
 func ListInventoryStockLots(itemID string) ([]models.InventoryStockLotView, error) {
 	lots, err := listInventoryStockLotsInternal(itemID, true)
 	if err != nil {
@@ -909,45 +942,54 @@ func ListInventoryStockLots(itemID string) ([]models.InventoryStockLotView, erro
 	}
 	result := make([]models.InventoryStockLotView, 0, len(lots))
 	for _, lot := range lots {
-		lotCopy := lot
-		vendorPricing := findVendorPricingForSupplier(item, lot.SupplierBucket)
-		result = append(result, models.InventoryStockLotView{
-			LotID:             lot.LotID,
-			ItemID:            lot.ItemID,
-			ItemName:          lot.ItemName,
-			ItemUnit:          lot.ItemUnit,
-			SupplierBucket:    lot.SupplierBucket,
-			ReceivedQuantity:  lot.ReceivedQuantity,
-			RemainingQuantity: lot.RemainingQuantity,
-			UnitCost:          lot.UnitCost,
-			DefaultSellPrice: func() float64 {
-				if vendorPricing == nil {
-					return 0
-				}
-				return vendorPricing.DefaultSellPrice
-			}(),
-			ReceivedDate:   lot.ReceivedDate,
-			DocumentNumber: lot.DocumentNumber,
-			Reference:      lot.Reference,
-			Notes:          lot.Notes,
-			Label:          stockLotLabel(&lotCopy),
-		})
+		result = append(result, toStockLotView(lot, item))
 	}
 	return result, nil
 }
 
+// ListAllInventoryStockLots returns every available stock lot across all items.
+// It loads items once, backfills any missing lots, then fetches all lots in a
+// SINGLE query — instead of the previous per-item N+1 (which also amplified
+// into thousands of writes via the old GetInventoryItem).
 func ListAllInventoryStockLots() ([]models.InventoryStockLotView, error) {
 	items, err := ListInventoryItems()
 	if err != nil {
 		return nil, err
 	}
-	result := make([]models.InventoryStockLotView, 0)
-	for _, item := range items {
-		rows, err := ListInventoryStockLots(item.ItemID)
-		if err != nil {
+	if len(items) == 0 {
+		return []models.InventoryStockLotView{}, nil
+	}
+
+	itemByID := make(map[string]*models.InventoryItem, len(items))
+	itemIDs := make([]string, 0, len(items))
+	for i := range items {
+		// Backfill lots for legacy items that predate the stock-lot model.
+		// This is a cheap indexed count that no-ops once lots exist.
+		if err := ensureInventoryStockLots(&items[i]); err != nil {
 			return nil, err
 		}
-		result = append(result, rows...)
+		itemByID[items[i].ItemID] = &items[i]
+		itemIDs = append(itemIDs, items[i].ItemID)
+	}
+
+	ctx := context.Background()
+	cursor, err := inventoryStockLotCol().Find(ctx,
+		bson.M{"item_id": bson.M{"$in": itemIDs}, "remaining_quantity": bson.M{"$gt": 0}},
+		&options.FindOptions{Sort: bson.D{{Key: "received_date", Value: 1}, {Key: "created_at", Value: 1}}},
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer cursor.Close(ctx)
+
+	var lots []models.InventoryStockLot
+	if err := cursor.All(ctx, &lots); err != nil {
+		return nil, err
+	}
+
+	result := make([]models.InventoryStockLotView, 0, len(lots))
+	for _, lot := range lots {
+		result = append(result, toStockLotView(lot, itemByID[lot.ItemID]))
 	}
 	sort.Slice(result, func(i, j int) bool {
 		if result[i].ItemName != result[j].ItemName {
@@ -1329,11 +1371,35 @@ func enrichInventoryMovements(movements []models.InventoryMovement) error {
 	projectCache := map[string]*projectSnapshot{}
 	itemCache := map[string]*models.InventoryItem{}
 
+	// Pre-load every stock lot referenced by these movements in ONE query,
+	// rather than a FindOne per row. lot_id is globally unique, so we can key
+	// the cache by it and verify the item matches when using it.
+	lotCache := map[string]*models.InventoryStockLot{}
+	lotIDsNeeded := make([]string, 0)
+	for index := range movements {
+		m := &movements[index]
+		if m.LotID != "" && trimOrEmpty(m.LotLabel) == "" && trimOrEmpty(m.ItemID) != "" {
+			lotIDsNeeded = append(lotIDsNeeded, m.LotID)
+		}
+	}
+	if len(lotIDsNeeded) > 0 {
+		cursor, err := inventoryStockLotCol().Find(context.Background(), bson.M{"lot_id": bson.M{"$in": lotIDsNeeded}})
+		if err != nil {
+			return err
+		}
+		var preloadedLots []models.InventoryStockLot
+		if err := cursor.All(context.Background(), &preloadedLots); err != nil {
+			return err
+		}
+		for i := range preloadedLots {
+			lotCache[preloadedLots[i].LotID] = &preloadedLots[i]
+		}
+	}
+
 	for index := range movements {
 		movement := &movements[index]
 		if movement.LotID != "" && trimOrEmpty(movement.LotLabel) == "" && trimOrEmpty(movement.ItemID) != "" {
-			lot, err := findInventoryStockLot(movement.ItemID, movement.LotID)
-			if err == nil && lot != nil {
+			if lot := lotCache[movement.LotID]; lot != nil && lot.ItemID == movement.ItemID {
 				movement.LotLabel = stockLotLabel(lot)
 				if movement.SupplierBucket == "" {
 					movement.SupplierBucket = lot.SupplierBucket

@@ -10,6 +10,21 @@ export default defineConfig({
     react(),
     tailwindcss(),
   ],
+  build: {
+    rollupOptions: {
+      output: {
+        // Split heavy, page-specific libraries into their own vendor chunks so
+        // they're cached separately and only fetched when a route needs them.
+        manualChunks(id) {
+          if (id.includes('node_modules')) {
+            if (/[\\/](three|@react-three)[\\/]/.test(id)) return 'three'
+            if (/[\\/](konva|react-konva)[\\/]/.test(id)) return 'konva'
+            if (id.includes('jspdf') || id.includes('html2canvas')) return 'pdf'
+          }
+        },
+      },
+    },
+  },
   server: {
     port: 3000,
     proxy: {

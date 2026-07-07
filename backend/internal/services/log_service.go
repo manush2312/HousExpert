@@ -90,7 +90,16 @@ type LogEntryFilter struct {
 	LogTypeID  string // ObjectID hex
 	CategoryID string // ObjectID hex
 	LogDate    string // "YYYY-MM-DD" — filters for the entire day
+	Page       int64  // 1-based; defaults to 1
+	Limit      int64  // page size; defaults to defaultLogEntryLimit, capped at maxLogEntryLimit
 }
+
+// Bounds for log-entry listing. log_entries is the fastest-growing collection,
+// so we never return it unbounded — even the default page is capped.
+const (
+	defaultLogEntryLimit = 200
+	maxLogEntryLimit     = 500
+)
 
 type LogListOptions struct {
 	IncludeArchived bool
@@ -281,6 +290,103 @@ func effectiveLogItemInventoryMappings(mappings []models.LogItemInventoryMapping
 		return nil, nil
 	}
 	return resolved, nil
+}
+
+// loadInventoryItemsByIDs batch-fetches inventory items by their human IDs into
+// a cache map (a nil value means "looked up, not found"). One Find + one cost
+// enrichment replaces N per-item GetInventoryItem calls.
+func loadInventoryItemsByIDs(ids []string) (map[string]*models.InventoryItem, error) {
+	cache := map[string]*models.InventoryItem{}
+	unique := make([]string, 0, len(ids))
+	for _, id := range ids {
+		id = strings.TrimSpace(id)
+		if id == "" {
+			continue
+		}
+		if _, seen := cache[id]; seen {
+			continue
+		}
+		cache[id] = nil // provisional: mark as looked-up-not-found
+		unique = append(unique, id)
+	}
+	if len(unique) == 0 {
+		return cache, nil
+	}
+
+	ctx := context.Background()
+	cursor, err := inventoryItemCol().Find(ctx, bson.M{"item_id": bson.M{"$in": unique}})
+	if err != nil {
+		return nil, err
+	}
+	var items []models.InventoryItem
+	if err := cursor.All(ctx, &items); err != nil {
+		return nil, err
+	}
+	if err := enrichInventoryItemsCostMetrics(items); err != nil {
+		return nil, err
+	}
+	for i := range items {
+		cache[items[i].ItemID] = &items[i]
+	}
+	return cache, nil
+}
+
+// effectiveLogItemInventoryLinkCached mirrors effectiveLogItemInventoryLink but
+// resolves the inventory item from a pre-loaded cache instead of hitting the DB.
+func effectiveLogItemInventoryLinkCached(link *models.LogItemInventoryLink, cache map[string]*models.InventoryItem) (*models.LogItemInventoryLink, error) {
+	if link == nil || strings.TrimSpace(link.InventoryItemID) == "" {
+		return nil, nil
+	}
+	effective := *link
+	inventoryItem := cache[strings.TrimSpace(link.InventoryItemID)]
+	if inventoryItem == nil {
+		return &effective, nil
+	}
+	effective.InventoryItemID = inventoryItem.ItemID
+	effective.InventoryItemName = inventoryItem.Name
+	effective.InventoryUnit = inventoryItem.Unit
+	if shouldUseInventoryUsageFallback(link, inventoryItem) {
+		effective.QuantityUnit = inventoryItem.UsageUnit
+		effective.UsagePerQuantity = 1 / inventoryItem.UsageUnitsPerStockUnit
+	} else if strings.TrimSpace(effective.QuantityUnit) == "" {
+		effective.QuantityUnit = inventoryItem.Unit
+	}
+	return &effective, nil
+}
+
+func effectiveLogItemInventoryMappingsCached(mappings []models.LogItemInventoryMapping, cache map[string]*models.InventoryItem) ([]models.LogItemInventoryMapping, error) {
+	if len(mappings) == 0 {
+		return nil, nil
+	}
+	resolved := make([]models.LogItemInventoryMapping, 0, len(mappings))
+	for _, mapping := range mappings {
+		link, err := effectiveLogItemInventoryLinkCached(&mapping.Link, cache)
+		if err != nil {
+			return nil, err
+		}
+		if link == nil {
+			continue
+		}
+		resolved = append(resolved, models.LogItemInventoryMapping{
+			Conditions: mapping.Conditions,
+			Link:       *link,
+		})
+	}
+	if len(resolved) == 0 {
+		return nil, nil
+	}
+	return resolved, nil
+}
+
+// collectLogItemInventoryIDs gathers every inventory item ID referenced by a
+// log item (its direct link plus all conditional mappings).
+func collectLogItemInventoryIDs(item models.LogItem, into *[]string) {
+	if item.InventoryLink != nil {
+		*into = append(*into, item.InventoryLink.InventoryItemID)
+	}
+	for _, mapping := range item.InventoryMappings {
+		*into = append(*into, mapping.Link.InventoryItemID)
+	}
 }
 
 func resolveInventoryLinkForEntry(item models.LogItem, entryFields []models.FieldValue) (*models.LogItemInventoryLink, error) {
@@ -902,13 +1008,25 @@ func ListLogItems(categoryID string, opts LogListOptions) ([]models.LogItem, err
 	if items == nil {
 		items = []models.LogItem{}
 	}
+
+	// Batch-load every referenced inventory item in one query, then resolve
+	// links from the cache — instead of a GetInventoryItem call per item/mapping.
+	referencedIDs := make([]string, 0, len(items))
 	for i := range items {
-		effectiveLink, err := effectiveLogItemInventoryLink(items[i].InventoryLink)
+		collectLogItemInventoryIDs(items[i], &referencedIDs)
+	}
+	itemCache, err := loadInventoryItemsByIDs(referencedIDs)
+	if err != nil {
+		return nil, err
+	}
+
+	for i := range items {
+		effectiveLink, err := effectiveLogItemInventoryLinkCached(items[i].InventoryLink, itemCache)
 		if err != nil {
 			return nil, err
 		}
 		items[i].InventoryLink = effectiveLink
-		effectiveMappings, err := effectiveLogItemInventoryMappings(items[i].InventoryMappings)
+		effectiveMappings, err := effectiveLogItemInventoryMappingsCached(items[i].InventoryMappings, itemCache)
 		if err != nil {
 			return nil, err
 		}
@@ -1250,10 +1368,28 @@ func ListLogEntries(projectOID primitive.ObjectID, filter LogEntryFilter) ([]mod
 		}
 	}
 
+	// Bound the query so it never loads the whole (ever-growing) collection.
+	limit := filter.Limit
+	if limit <= 0 {
+		limit = defaultLogEntryLimit
+	}
+	if limit > maxLogEntryLimit {
+		limit = maxLogEntryLimit
+	}
+	page := filter.Page
+	if page < 1 {
+		page = 1
+	}
+	skip := (page - 1) * limit
+
+	// The {project_id:1, log_date:-1} compound index covers this filter+sort.
 	cursor, err := logEntryCol().Find(
 		context.Background(),
 		query,
-		options.Find().SetSort(bson.D{{Key: "log_date", Value: -1}, {Key: "created_at", Value: -1}}),
+		options.Find().
+			SetSort(bson.D{{Key: "log_date", Value: -1}, {Key: "created_at", Value: -1}}).
+			SetSkip(skip).
+			SetLimit(limit),
 	)
 	if err != nil {
 		return nil, err

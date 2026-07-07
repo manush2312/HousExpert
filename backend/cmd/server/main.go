@@ -2,13 +2,17 @@ package main
 
 import (
 	"log"
+	"net/http"
 	"os"
+	"strings"
 
 	"github.com/gin-gonic/gin"
 	"github.com/joho/godotenv"
 
 	"housexpert/backend/internal/database"
 	"housexpert/backend/internal/handlers"
+	"housexpert/backend/internal/middleware"
+	"housexpert/backend/internal/models"
 	"housexpert/backend/internal/utils"
 )
 
@@ -41,25 +45,31 @@ func main() {
 	// Set up Gin router
 	r := gin.Default()
 
-	// CORS — allow requests from any origin (frontend on S3, local dev, etc.)
-	r.Use(func(c *gin.Context) {
-		c.Header("Access-Control-Allow-Origin", "*")
-		c.Header("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
-		c.Header("Access-Control-Allow-Headers", "Content-Type, Authorization")
-		if c.Request.Method == "OPTIONS" {
-			c.AbortWithStatus(204)
-			return
-		}
-		c.Next()
-	})
+	// CORS — restrict to an allowlist of origins from ALLOWED_ORIGINS
+	// (comma-separated). Falls back to localhost dev origins if unset.
+	r.Use(corsMiddleware(allowedOrigins()))
 
 	// Health check
 	r.GET("/health", func(c *gin.Context) {
 		c.JSON(200, gin.H{"status": "ok", "service": "HouseXpert API"})
 	})
 
-	// API v1 — register module routes here as they are built
+	// ── Public API (no authentication) ──────────────────────────────────────
+	// Login, token refresh, and password reset must be reachable without a token.
+	public := r.Group("/api/v1")
+	handlers.RegisterPublicAuthRoutes(public)
+
+	// ── Protected API (valid JWT required) ──────────────────────────────────
+	// Every business endpoint sits behind RequireAuth. Destructive operations
+	// (DELETE) are further restricted to managers and admins via RBAC.
 	v1 := r.Group("/api/v1")
+	v1.Use(middleware.RequireAuth())
+	v1.Use(middleware.RequireRoleForMethods(
+		[]string{http.MethodDelete},
+		models.RoleManager, models.RoleAdmin, models.RoleSuperAdmin,
+	))
+
+	handlers.RegisterProtectedAuthRoutes(v1)
 	handlers.RegisterProjectRoutes(v1)
 	handlers.RegisterLogRoutes(v1)
 	handlers.RegisterProductRoutes(v1)
@@ -76,5 +86,45 @@ func main() {
 	log.Printf("HouseXpert API running on port %s", port)
 	if err := r.Run(":" + port); err != nil {
 		log.Fatalf("Failed to start server: %v", err)
+	}
+}
+
+// allowedOrigins reads the CORS allowlist from ALLOWED_ORIGINS (comma-separated).
+// When unset it falls back to common local dev origins so development isn't blocked.
+func allowedOrigins() map[string]bool {
+	raw := os.Getenv("ALLOWED_ORIGINS")
+	if raw == "" {
+		raw = "http://localhost:5173,http://localhost:3000,http://127.0.0.1:5173"
+		log.Println("⚠️  ALLOWED_ORIGINS not set — using localhost dev origins only")
+	}
+
+	origins := make(map[string]bool)
+	for _, o := range strings.Split(raw, ",") {
+		if trimmed := strings.TrimSpace(o); trimmed != "" {
+			origins[trimmed] = true
+		}
+	}
+	return origins
+}
+
+// corsMiddleware echoes the request Origin back only when it's in the allowlist.
+// Unlike a wildcard `*`, this is safe to combine with credentials and prevents
+// arbitrary sites from calling the API from a browser.
+func corsMiddleware(allowed map[string]bool) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		origin := c.GetHeader("Origin")
+		if origin != "" && allowed[origin] {
+			c.Header("Access-Control-Allow-Origin", origin)
+			c.Header("Vary", "Origin")
+			c.Header("Access-Control-Allow-Credentials", "true")
+		}
+		c.Header("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
+		c.Header("Access-Control-Allow-Headers", "Content-Type, Authorization")
+
+		if c.Request.Method == http.MethodOptions {
+			c.AbortWithStatus(http.StatusNoContent)
+			return
+		}
+		c.Next()
 	}
 }
