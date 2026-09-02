@@ -6,6 +6,12 @@ import (
 	"go.mongodb.org/mongo-driver/bson/primitive"
 )
 
+// PricingDimensionSupplier is a reserved dimension field id. When it appears in
+// a PricingRule's DimensionFields, the rate table is keyed (in part) by the
+// supplier the stock is drawn from at log time, instead of by a schema field.
+// Its rate values are canonical vendor names from the supplier master.
+const PricingDimensionSupplier = "__supplier__"
+
 // PricingRateEntry holds the rate for a specific combination of dimension field values.
 // Keys maps field_id → selected value (e.g. {"thickness_id": "4mm", "quality_id": "premium"}).
 type PricingRateEntry struct {

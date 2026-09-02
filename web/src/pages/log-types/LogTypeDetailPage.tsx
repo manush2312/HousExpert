@@ -6,7 +6,9 @@ import LoadingButton from '../../components/LoadingButton'
 import SearchableSelect from '../../components/SearchableSelect'
 import SizeTextInput from '../../components/SizeTextInput'
 import { listInventoryItems, type InventoryItem } from '../../services/inventoryService'
+import { listVendors, type Vendor } from '../../services/vendorService'
 import {
+  PRICING_DIMENSION_SUPPLIER,
   archiveLogCategory,
   archiveLogItem,
   createLogCategory,
@@ -44,7 +46,62 @@ interface SchemaDraft {
 }
 
 interface PricingDimensionOption extends SchemaField {
-  source: 'item' | 'entry'
+  source: 'item' | 'entry' | 'supplier'
+}
+
+// buildPricingDimensionOptions lists the dropdown fields that can key a pricing
+// rule, plus a synthetic "Supplier" dimension whose options are the active
+// suppliers. Selecting Supplier lets the rate vary by which supplier's stock the
+// entry draws from at log time.
+function buildPricingDimensionOptions(
+  itemSchema: SchemaField[],
+  entrySchema: SchemaField[],
+  supplierNames: string[],
+): PricingDimensionOption[] {
+  const options: PricingDimensionOption[] = [
+    ...itemSchema
+      .filter((field) => field.field_type === 'dropdown')
+      .map((field) => ({ ...field, source: 'item' as const })),
+    ...entrySchema
+      .filter((field) => field.field_type === 'dropdown')
+      .map((field) => ({ ...field, source: 'entry' as const })),
+  ]
+  options.push({
+    field_id: PRICING_DIMENSION_SUPPLIER,
+    label: 'Supplier',
+    field_type: 'dropdown',
+    required: false,
+    options: supplierNames,
+    added_at: new Date().toISOString(),
+    source: 'supplier',
+  })
+  return options
+}
+
+// supplierNamesForCategories returns the names of active suppliers that serve any
+// of the given categories (this log type's name and its category names). Falls
+// back to all active suppliers only when none are tagged for these categories,
+// so the rate grid is never left with an empty supplier list.
+function supplierNamesForCategories(vendors: Vendor[], categoryNames: string[]): string[] {
+  const active = vendors.filter((v) => v.status !== 'inactive')
+  const wanted = new Set(categoryNames.map((c) => c.trim().toLowerCase()).filter(Boolean))
+  if (wanted.size === 0) return active.map((v) => v.name)
+  const matches = active.filter((v) => (v.categories_served ?? []).some((c) => wanted.has(c.trim().toLowerCase())))
+  return (matches.length > 0 ? matches : active).map((v) => v.name)
+}
+
+// extractRuleSuppliers returns the distinct supplier values a saved rule already
+// uses (empty when the rule doesn't use the supplier dimension), so editing an
+// existing rule pre-selects the same suppliers.
+function extractRuleSuppliers(rule: PricingRule | null | undefined): string[] {
+  if (!rule || !rule.dimension_fields.includes(PRICING_DIMENSION_SUPPLIER)) return []
+  const seen = new Set<string>()
+  const out: string[] = []
+  rule.rates.forEach((r) => {
+    const v = (r.keys[PRICING_DIMENSION_SUPPLIER] ?? '').trim()
+    if (v && !seen.has(v.toLowerCase())) { seen.add(v.toLowerCase()); out.push(v) }
+  })
+  return out
 }
 
 function normalizePricingRateDraft(
@@ -178,11 +235,15 @@ export default function LogTypeDetailPage() {
   const [itemSchemaDrafts, setItemSchemaDrafts] = useState<SchemaDraft[]>([])
   const [entrySchemaDrafts, setEntrySchemaDrafts] = useState<SchemaDraft[]>([])
   const [savingSchema, setSavingSchema] = useState(false)
+  const [vendors, setVendors] = useState<Vendor[]>([])
   const [pricingRule, setPricingRule] = useState<PricingRule | null>(null)
   const [editingPricingRule, setEditingPricingRule] = useState(false)
   const [pricingRuleNameDraft, setPricingRuleNameDraft] = useState('')
   const [pricingDimensionFieldsDraft, setPricingDimensionFieldsDraft] = useState<string[]>([])
   const [pricingRatesDraft, setPricingRatesDraft] = useState<PricingRateEntry[]>([])
+  // When the Supplier dimension is used, which suppliers the rule covers (a
+  // subset of the suppliers serving this category).
+  const [selectedRuleSuppliers, setSelectedRuleSuppliers] = useState<string[]>([])
   const [savingPricingRuleDraft, setSavingPricingRuleDraft] = useState(false)
   const [deletingPricingRuleDraft, setDeletingPricingRuleDraft] = useState(false)
   const [expandedPricingRuleVersion, setExpandedPricingRuleVersion] = useState<number | null>(null)
@@ -204,26 +265,27 @@ export default function LogTypeDetailPage() {
   const fetchAll = async () => {
     if (!id) return
     try {
-      const [ltRes, catRes, pricingRuleRes, inventoryRes] = await Promise.all([
+      const [ltRes, catRes, pricingRuleRes, inventoryRes, vendorsRes] = await Promise.all([
         getLogType(id),
         listLogCategories(id, { include_archived: true }),
         getPricingRule(id),
         listInventoryItems(),
+        listVendors({ status: 'active' }),
       ])
       const nextLogType = ltRes.data.data
       const itemSchema = getItemSchema(nextLogType)
       const entrySchema = getEntrySchema(nextLogType)
-      const nextPricingDimensionOptions: PricingDimensionOption[] = [
-        ...itemSchema
-          .filter((field) => field.field_type === 'dropdown')
-          .map((field) => ({ ...field, source: 'item' as const })),
-        ...entrySchema
-          .filter((field) => field.field_type === 'dropdown')
-          .map((field) => ({ ...field, source: 'entry' as const })),
-      ]
+      const nextVendors = vendorsRes.data.data
       const nextCategories = catRes.data.data
       const nextPricingRule = pricingRuleRes.data.data
+      const nextCategorySuppliers = supplierNamesForCategories(nextVendors, [nextLogType.name, ...nextCategories.map((c) => c.name)])
+      // An existing supplier rule keeps its chosen suppliers; a fresh rule
+      // starts with every supplier serving this category (user can deselect).
+      const ruleSuppliers = extractRuleSuppliers(nextPricingRule)
+      const initialSuppliers = ruleSuppliers.length > 0 ? ruleSuppliers : nextCategorySuppliers
+      const nextPricingDimensionOptions = buildPricingDimensionOptions(itemSchema, entrySchema, initialSuppliers)
       setInventoryItems(inventoryRes.data.data)
+      setVendors(nextVendors)
       setLogType(nextLogType)
       setCategories(nextCategories)
       setPricingRule(nextPricingRule)
@@ -238,6 +300,7 @@ export default function LogTypeDetailPage() {
       if (!editingPricingRule) {
         setPricingRuleNameDraft(nextPricingRule?.name ?? `${nextLogType.name} pricing`)
         setPricingDimensionFieldsDraft(nextPricingRule?.dimension_fields ?? [])
+        setSelectedRuleSuppliers(initialSuppliers)
         setPricingRatesDraft(
           normalizePricingRateDraft(
             nextPricingDimensionOptions,
@@ -298,17 +361,29 @@ export default function LogTypeDetailPage() {
     () => filterCategories(orderedCategories, categorySearch),
     [orderedCategories, categorySearch],
   )
-  const pricingDimensionOptions = useMemo<PricingDimensionOption[]>(
-    () => [
-      ...itemSchema
-        .filter((field) => field.field_type === 'dropdown')
-        .map((field) => ({ ...field, source: 'item' as const })),
-      ...entrySchema
-        .filter((field) => field.field_type === 'dropdown')
-        .map((field) => ({ ...field, source: 'entry' as const })),
-    ],
-    [itemSchema, entrySchema],
+  // All suppliers serving this log type's category — the pool shown in the
+  // supplier picker.
+  const categorySupplierNames = useMemo(
+    () => supplierNamesForCategories(vendors, [logType?.name ?? '', ...categories.map((c) => c.name)]),
+    [vendors, logType?.name, categories],
   )
+  // The rate grid is generated only for the suppliers the user picked for this
+  // rule, so the synthetic Supplier dimension carries just those as its options.
+  const pricingDimensionOptions = useMemo<PricingDimensionOption[]>(
+    () => buildPricingDimensionOptions(itemSchema, entrySchema, selectedRuleSuppliers),
+    [itemSchema, entrySchema, selectedRuleSuppliers],
+  )
+  // The supplier picker shows every category supplier plus any already-selected
+  // supplier that may no longer carry the tag, so nothing is silently dropped.
+  const supplierPickerList = useMemo(() => {
+    const seen = new Set<string>()
+    const out: string[] = []
+    for (const name of [...categorySupplierNames, ...selectedRuleSuppliers]) {
+      const key = name.trim().toLowerCase()
+      if (name.trim() && !seen.has(key)) { seen.add(key); out.push(name) }
+    }
+    return out
+  }, [categorySupplierNames, selectedRuleSuppliers])
   const selectedPricingFields = useMemo(
     () => pricingDimensionFieldsDraft
       .map((fieldID) => pricingDimensionOptions.find((field) => field.field_id === fieldID))
@@ -463,40 +538,54 @@ export default function LogTypeDetailPage() {
     setEditingEntrySchema(false)
   }
 
+  // resetPricingDraftFrom seeds the editable pricing draft (name, dimensions,
+  // chosen suppliers, rate rows) from a saved rule (or a blank rule).
+  const resetPricingDraftFrom = (rule: PricingRule | null | undefined, fallbackName: string) => {
+    const ruleSuppliers = extractRuleSuppliers(rule)
+    const suppliers = ruleSuppliers.length > 0 ? ruleSuppliers : categorySupplierNames
+    const options = buildPricingDimensionOptions(itemSchema, entrySchema, suppliers)
+    setPricingRuleNameDraft(rule?.name ?? fallbackName)
+    setPricingDimensionFieldsDraft(rule?.dimension_fields ?? [])
+    setSelectedRuleSuppliers(suppliers)
+    setPricingRatesDraft(normalizePricingRateDraft(options, rule?.dimension_fields ?? [], rule?.rates ?? []))
+  }
+
   const startEditingPricingRule = () => {
     if (!logType) return
-    setPricingRuleNameDraft(pricingRule?.name ?? `${logType.name} pricing`)
-    setPricingDimensionFieldsDraft(pricingRule?.dimension_fields ?? [])
-    setPricingRatesDraft(
-      normalizePricingRateDraft(
-        pricingDimensionOptions,
-        pricingRule?.dimension_fields ?? [],
-        pricingRule?.rates ?? [],
-      ),
-    )
+    resetPricingDraftFrom(pricingRule, `${logType.name} pricing`)
     setEditingPricingRule(true)
   }
 
   const cancelEditingPricingRule = () => {
     if (!logType) return
-    setPricingRuleNameDraft(pricingRule?.name ?? `${logType.name} pricing`)
-    setPricingDimensionFieldsDraft(pricingRule?.dimension_fields ?? [])
-    setPricingRatesDraft(
-      normalizePricingRateDraft(
-        pricingDimensionOptions,
-        pricingRule?.dimension_fields ?? [],
-        pricingRule?.rates ?? [],
-      ),
-    )
+    resetPricingDraftFrom(pricingRule, `${logType.name} pricing`)
     setEditingPricingRule(false)
   }
 
   const togglePricingDimension = (fieldId: string) => {
     setPricingDimensionFieldsDraft((prev) => {
-      const next = prev.includes(fieldId)
-        ? prev.filter((item) => item !== fieldId)
-        : [...prev, fieldId]
-      setPricingRatesDraft((currentRates) => normalizePricingRateDraft(pricingDimensionOptions, next, currentRates))
+      const turningOn = !prev.includes(fieldId)
+      const next = turningOn ? [...prev, fieldId] : prev.filter((item) => item !== fieldId)
+      // Turning the Supplier dimension on with nothing chosen yet defaults to
+      // every supplier serving this category.
+      let suppliers = selectedRuleSuppliers
+      if (fieldId === PRICING_DIMENSION_SUPPLIER && turningOn && selectedRuleSuppliers.length === 0) {
+        suppliers = categorySupplierNames
+        setSelectedRuleSuppliers(suppliers)
+      }
+      const options = buildPricingDimensionOptions(itemSchema, entrySchema, suppliers)
+      setPricingRatesDraft((currentRates) => normalizePricingRateDraft(options, next, currentRates))
+      return next
+    })
+  }
+
+  // Toggle one supplier in/out of the rule and rebuild the rate rows for the new
+  // supplier set (existing rates are preserved by their field combination).
+  const toggleRuleSupplier = (name: string) => {
+    setSelectedRuleSuppliers((prev) => {
+      const next = prev.includes(name) ? prev.filter((n) => n !== name) : [...prev, name]
+      const options = buildPricingDimensionOptions(itemSchema, entrySchema, next)
+      setPricingRatesDraft((currentRates) => normalizePricingRateDraft(options, pricingDimensionFieldsDraft, currentRates))
       return next
     })
   }
@@ -883,7 +972,7 @@ export default function LogTypeDetailPage() {
                           >
                             {field.label}
                             <span className="ml-2 text-[11px]" style={{ color: 'var(--ink-4)' }}>
-                              {field.source === 'item' ? 'Item field' : 'Daily field'}
+                              {field.source === 'item' ? 'Item field' : field.source === 'supplier' ? 'Supplier' : 'Daily field'}
                             </span>
                           </button>
                         )
@@ -892,6 +981,44 @@ export default function LogTypeDetailPage() {
                   )}
                 </div>
               </div>
+
+              {pricingDimensionFieldsDraft.includes(PRICING_DIMENSION_SUPPLIER) && (
+                <div className="space-y-1.5">
+                  <span className="text-[11px] font-medium" style={{ color: 'var(--ink-3)' }}>Suppliers in this rule</span>
+                  {supplierPickerList.length === 0 ? (
+                    <div className="input flex items-center text-[12px]" style={{ color: 'var(--ink-4)' }}>
+                      No suppliers serve this category yet — tag suppliers with this category on the Suppliers page.
+                    </div>
+                  ) : (
+                    <>
+                      <div className="flex flex-wrap gap-2">
+                        {supplierPickerList.map((name) => {
+                          const active = selectedRuleSuppliers.includes(name)
+                          return (
+                            <button
+                              key={name}
+                              type="button"
+                              onClick={() => toggleRuleSupplier(name)}
+                              className="rounded-lg border px-3 py-1.5 text-[12px] flex items-center gap-1.5 transition-colors"
+                              style={{
+                                borderColor: active ? 'var(--accent)' : 'var(--line)',
+                                background: active ? 'var(--accent-wash)' : 'var(--bg-elev)',
+                                color: active ? 'var(--accent-ink)' : 'var(--ink-2)',
+                              }}
+                            >
+                              {active ? <Check size={12} /> : <Plus size={12} />}
+                              {name}
+                            </button>
+                          )
+                        })}
+                      </div>
+                      <p className="text-[11px]" style={{ color: 'var(--ink-4)' }}>
+                        Only the selected suppliers get rate rows. Tap to add or remove one.
+                      </p>
+                    </>
+                  )}
+                </div>
+              )}
 
               {pricingRule && (
                 <div className="rounded-xl border px-3 py-3 text-[12px]" style={{ borderColor: 'color-mix(in oklab, var(--accent) 16%, var(--line))', background: 'var(--accent-wash)', color: 'var(--accent-ink)' }}>

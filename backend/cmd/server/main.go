@@ -13,6 +13,7 @@ import (
 	"housexpert/backend/internal/handlers"
 	"housexpert/backend/internal/middleware"
 	"housexpert/backend/internal/models"
+	"housexpert/backend/internal/services"
 	"housexpert/backend/internal/utils"
 )
 
@@ -34,6 +35,15 @@ func main() {
 
 	// Connect to MongoDB and create indexes
 	database.Connect()
+
+	// Backfill the supplier master from any supplier names already present in
+	// inventory data. Safe & idempotent: only creates missing suppliers, never
+	// touches existing records. Non-fatal so startup is never blocked by it.
+	if n, err := services.EnsureVendorsFromInventoryData(); err != nil {
+		log.Printf("⚠️  Supplier backfill skipped (%v)", err)
+	} else if n > 0 {
+		log.Printf("✅ Backfilled %d supplier(s) from existing inventory data", n)
+	}
 
 	// Initialize file storage (S3/R2) — non-fatal if not configured
 	if err := utils.InitStorage(); err != nil {
@@ -73,6 +83,7 @@ func main() {
 	handlers.RegisterProjectRoutes(v1)
 	handlers.RegisterLogRoutes(v1)
 	handlers.RegisterProductRoutes(v1)
+	handlers.RegisterVendorRoutes(v1)
 	handlers.RegisterInventoryRoutes(v1)
 	handlers.RegisterQuotationRoutes(v1)
 	handlers.RegisterFurnitureDesignRoutes(v1)

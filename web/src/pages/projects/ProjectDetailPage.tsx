@@ -2,6 +2,7 @@ import { Fragment, useCallback, useEffect, useMemo, useRef, useState, type React
 import api from '../../services/api'
 import { useNavigate, useParams } from 'react-router-dom'
 import {
+  AlertTriangle,
   Calendar,
   Check,
   ChevronRight,
@@ -22,7 +23,12 @@ import DatePicker from '../../components/DatePicker'
 import LoadingButton from '../../components/LoadingButton'
 import SearchableSelect from '../../components/SearchableSelect'
 import SizeTextInput from '../../components/SizeTextInput'
-import { listInventoryStockLots, type InventoryStockLot } from '../../services/inventoryService'
+import {
+  getProjectCostConfidence,
+  listInventoryStockLots,
+  type InventoryStockLot,
+  type ProjectCostConfidence,
+} from '../../services/inventoryService'
 import {
   addFloorPlan,
   getProject,
@@ -132,6 +138,7 @@ export default function ProjectDetailPage() {
   const [deletingEntryId, setDeletingEntryId] = useState<string | null>(null)
 
   const [exportLoading, setExportLoading] = useState(false)
+  const [costConfidence, setCostConfidence] = useState<ProjectCostConfidence | null>(null)
 
   const [dragOver, setDragOver] = useState<string | null>(null)
   const [pendingUploadBhk, setPendingUploadBhk] = useState('')
@@ -177,6 +184,12 @@ export default function ProjectDetailPage() {
       .finally(() => {
         if (active) setPageLoading(false)
       })
+
+    // Material spend split into billed vs still-estimated. Fetched separately
+    // and failure-tolerant: the page is fully usable without it.
+    getProjectCostConfidence(id)
+      .then((res) => { if (active) setCostConfidence(res.data.data) })
+      .catch(() => { if (active) setCostConfidence(null) })
 
     return () => { active = false }
   }, [id, navigate])
@@ -725,6 +738,10 @@ export default function ProjectDetailPage() {
           />
         </div>
 
+        {costConfidence && costConfidence.pending_lots > 0 && (
+          <MaterialCostConfidence data={costConfidence} onOpenPendingBills={() => navigate('/inventory')} />
+        )}
+
         <Tabs value={tab} onChange={setTab} items={tabs} />
 
         <div className="mt-6">
@@ -882,6 +899,57 @@ function TotalCostStatCell({ totalCost, breakdown }: { totalCost: number; breakd
           </div>
         </div>
       )}
+    </div>
+  )
+}
+
+// MaterialCostConfidence answers "can I trust this project's profit yet?".
+// It appears only while some of the material on site is still valued at an
+// estimate, and states the exact size of what is unknown rather than folding it
+// into a single falsely precise figure.
+function MaterialCostConfidence({
+  data,
+  onOpenPendingBills,
+}: {
+  data: ProjectCostConfidence
+  onOpenPendingBills: () => void
+}) {
+  return (
+    <div
+      className="card mb-6 px-4 py-3.5"
+      style={{ borderColor: 'var(--warn)', background: 'var(--warn-wash)' }}
+    >
+      <div className="flex flex-wrap items-start justify-between gap-4">
+        <div className="min-w-[220px]">
+          <div className="flex items-center gap-1.5 text-[12px] font-medium" style={{ color: 'var(--warn-ink)' }}>
+            <AlertTriangle size={13} aria-hidden="true" />
+            {data.pending_lots} {data.pending_lots === 1 ? 'bill' : 'bills'} pending
+          </div>
+          <div className="mt-1 text-[11.5px]" style={{ color: 'var(--ink-3)' }}>
+            {data.pending_items_label
+              ? `Awaiting supplier bills for ${data.pending_items_label}.`
+              : 'Some material on this project is still valued at an estimate.'}
+          </div>
+        </div>
+
+        <div className="flex flex-wrap items-end gap-5">
+          <div>
+            <div className="text-[11px]" style={{ color: 'var(--ink-4)' }}>Material cost (billed)</div>
+            <div className="text-[15px] font-semibold numeral" style={{ color: 'var(--ink)' }}>
+              {fmtCr(data.confirmed_cost)}
+            </div>
+          </div>
+          <div>
+            <div className="text-[11px]" style={{ color: 'var(--ink-4)' }}>Still estimated</div>
+            <div className="text-[15px] font-semibold numeral" style={{ color: 'var(--warn-ink)' }}>
+              ±{fmtCr(data.provisional_cost)}
+            </div>
+          </div>
+          <button className="btn btn-ghost btn-sm" onClick={onOpenPendingBills}>
+            Enter bills
+          </button>
+        </div>
+      </div>
     </div>
   )
 }

@@ -61,18 +61,23 @@ type InventoryVendorPricingInput struct {
 }
 
 type CreateInventoryMovementInput struct {
-	ItemID          string  `json:"item_id" binding:"required"`
-	Type            string  `json:"type" binding:"required"`
-	Reason          string  `json:"reason"`
-	Quantity        float64 `json:"quantity" binding:"required"`
-	UnitCost        float64 `json:"unit_cost"`
-	Party           string  `json:"party"`
-	SupplierBucket  string  `json:"supplier_bucket"`
-	LotID           string  `json:"lot_id"`
-	DocumentNumber  string  `json:"document_number"`
-	TransactionDate string  `json:"transaction_date"`
-	Reference       string  `json:"reference"`
-	Notes           string  `json:"notes"`
+	ItemID   string  `json:"item_id" binding:"required"`
+	Type     string  `json:"type" binding:"required"`
+	Reason   string  `json:"reason"`
+	Quantity float64 `json:"quantity" binding:"required"`
+	UnitCost float64 `json:"unit_cost"`
+	// PricePending marks a receipt whose supplier bill has not arrived yet. The
+	// lot is stored at an estimated rate and flagged provisional, and the real
+	// rate is applied later via ConfirmLotBill. Only meaningful for stock that
+	// comes in; ignored on issues, which inherit their lot's status.
+	PricePending    bool   `json:"price_pending"`
+	Party           string `json:"party"`
+	SupplierBucket  string `json:"supplier_bucket"`
+	LotID           string `json:"lot_id"`
+	DocumentNumber  string `json:"document_number"`
+	TransactionDate string `json:"transaction_date"`
+	Reference       string `json:"reference"`
+	Notes           string `json:"notes"`
 }
 
 type InventoryMovementFilter struct {
@@ -164,7 +169,7 @@ func normalizeVendorPricing(inputs []InventoryVendorPricingInput) ([]models.Inve
 	result := make([]models.InventoryVendorPricing, 0, len(inputs))
 	preferredCount := 0
 	for _, input := range inputs {
-		supplierName := trimOrEmpty(input.SupplierName)
+		supplierName := canonicalSupplierName(input.SupplierName)
 		if supplierName == "" {
 			continue
 		}
@@ -320,7 +325,7 @@ func CreateInventoryItem(input CreateInventoryItemInput) (*models.InventoryItem,
 		Unit:                   normalizeUnit(input.Unit),
 		UsageUnit:              trimOrEmpty(input.UsageUnit),
 		UsageUnitsPerStockUnit: input.UsageUnitsPerStockUnit,
-		Supplier:               trimOrEmpty(input.Supplier),
+		Supplier:               canonicalSupplierName(input.Supplier),
 		Location:               trimOrEmpty(input.Location),
 		MinStockLevel:          input.MinStockLevel,
 		CurrentStock:           input.OpeningStock,
@@ -458,7 +463,7 @@ func UpdateInventoryItem(itemID string, input UpdateInventoryItemInput) (*models
 		nextUnit = normalizeUnit(*input.Unit)
 	}
 	if input.Supplier != nil {
-		set["supplier"] = trimOrEmpty(*input.Supplier)
+		set["supplier"] = canonicalSupplierName(*input.Supplier)
 	}
 	if input.Location != nil {
 		set["location"] = trimOrEmpty(*input.Location)
@@ -554,17 +559,20 @@ func DeleteInventoryItem(itemID string) error {
 }
 
 type inventoryMovementRecordOptions struct {
-	Reason           string
-	UnitCost         float64
-	ResolvedUnitCost float64
-	Party            string
-	SupplierBucket   string
-	LotID            string
-	LotLabel         string
-	DocumentNumber   string
-	TransactionDate  time.Time
-	Reference        string
-	Notes            string
+	Reason            string
+	UnitCost          float64
+	ResolvedUnitCost  float64
+	CostStatus        models.LotCostStatus
+	CostSource        string
+	EstimatedUnitCost float64
+	Party             string
+	SupplierBucket    string
+	LotID             string
+	LotLabel          string
+	DocumentNumber    string
+	TransactionDate   time.Time
+	Reference         string
+	Notes             string
 }
 
 func costFallback(primary, fallback float64) float64 {
@@ -592,6 +600,24 @@ func resolvedMovementUnitCost(item *models.InventoryItem, movementType models.In
 		return costFallback(item.AverageUnitCost, item.LastPurchaseCost)
 	}
 	return 0
+}
+
+// estimateUnitCostForReceipt picks the best available stand-in rate for stock
+// received before its bill, and reports where the number came from. Preference
+// order is the supplier's own rate card, then the item's last *invoiced* price,
+// then nothing — a zero estimate is allowed, it just means the lot carries no
+// value until the bill lands.
+func estimateUnitCostForReceipt(item *models.InventoryItem, supplierBucket string) (float64, string) {
+	if item == nil {
+		return 0, models.LotCostSourceManual
+	}
+	if vp := findVendorPricingForSupplier(item, supplierBucket); vp != nil && vp.DefaultBuyPrice > 0 {
+		return vp.DefaultBuyPrice, models.LotCostSourceVendorDefault
+	}
+	if item.LastPurchaseCost > 0 {
+		return item.LastPurchaseCost, models.LotCostSourceLastPurchase
+	}
+	return 0, models.LotCostSourceManual
 }
 
 func computeInventoryItemCostMetrics(item *models.InventoryItem, lots []models.InventoryStockLot) (float64, float64) {
@@ -699,6 +725,9 @@ func createInventoryStockLot(item *models.InventoryItem, quantity float64, opts 
 		ReceivedQuantity:  quantity,
 		RemainingQuantity: quantity,
 		UnitCost:          costFallback(opts.ResolvedUnitCost, resolvedMovementUnitCost(item, models.InventoryMovementIn, opts.UnitCost, nil)),
+		CostStatus:        opts.CostStatus,
+		CostSource:        opts.CostSource,
+		EstimatedUnitCost: opts.EstimatedUnitCost,
 		ReceivedDate:      opts.TransactionDate,
 		DocumentNumber:    trimOrEmpty(opts.DocumentNumber),
 		Reference:         trimOrEmpty(opts.Reference),
@@ -746,6 +775,48 @@ func applyLotQuantityDelta(lot *models.InventoryStockLot, delta float64) (*model
 		return nil, err
 	}
 	return lot, nil
+}
+
+// backfillMissingInventoryStockLots runs the legacy stock-lot backfill, but
+// only for items that have no lots at all.
+//
+// It exists because the obvious form — calling ensureInventoryStockLots in a
+// loop — costs one CountDocuments per item just to discover there is nothing
+// to do. Every one of those is a network round trip, so a few hundred items
+// turned a page load into tens of seconds. One distinct() answers the same
+// question for the whole set in a single trip, and the backfill (empty for
+// every item created since the stock-lot model landed) runs only for the
+// stragglers.
+func backfillMissingInventoryStockLots(items []models.InventoryItem, itemIDs []string) error {
+	if len(itemIDs) == 0 {
+		return nil
+	}
+
+	existing, err := inventoryStockLotCol().Distinct(
+		context.Background(),
+		"item_id",
+		bson.M{"item_id": bson.M{"$in": itemIDs}},
+	)
+	if err != nil {
+		return err
+	}
+
+	hasLots := make(map[string]bool, len(existing))
+	for _, raw := range existing {
+		if id, ok := raw.(string); ok {
+			hasLots[id] = true
+		}
+	}
+
+	for i := range items {
+		if hasLots[items[i].ItemID] {
+			continue
+		}
+		if err := ensureInventoryStockLots(&items[i]); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func ensureInventoryStockLots(item *models.InventoryItem) error {
@@ -922,6 +993,10 @@ func toStockLotView(lot models.InventoryStockLot, item *models.InventoryItem) mo
 		ReceivedQuantity:  lot.ReceivedQuantity,
 		RemainingQuantity: lot.RemainingQuantity,
 		UnitCost:          lot.UnitCost,
+		CostStatus:        lot.CostStatus.Normalized(),
+		CostSource:        lot.CostSource,
+		EstimatedUnitCost: lot.EstimatedUnitCost,
+		InvoiceNumber:     lot.InvoiceNumber,
 		DefaultSellPrice:  sellPrice,
 		ReceivedDate:      lot.ReceivedDate,
 		DocumentNumber:    lot.DocumentNumber,
@@ -956,6 +1031,13 @@ func ListAllInventoryStockLots() ([]models.InventoryStockLotView, error) {
 	if err != nil {
 		return nil, err
 	}
+	return stockLotViewsForItems(items)
+}
+
+// stockLotViewsForItems builds the stock-lot view rows for an already-loaded
+// set of items. Split out from ListAllInventoryStockLots so callers that have
+// the items in hand — GetInventoryOverview — don't re-fetch and re-enrich them.
+func stockLotViewsForItems(items []models.InventoryItem) ([]models.InventoryStockLotView, error) {
 	if len(items) == 0 {
 		return []models.InventoryStockLotView{}, nil
 	}
@@ -963,13 +1045,13 @@ func ListAllInventoryStockLots() ([]models.InventoryStockLotView, error) {
 	itemByID := make(map[string]*models.InventoryItem, len(items))
 	itemIDs := make([]string, 0, len(items))
 	for i := range items {
-		// Backfill lots for legacy items that predate the stock-lot model.
-		// This is a cheap indexed count that no-ops once lots exist.
-		if err := ensureInventoryStockLots(&items[i]); err != nil {
-			return nil, err
-		}
 		itemByID[items[i].ItemID] = &items[i]
 		itemIDs = append(itemIDs, items[i].ItemID)
+	}
+
+	// Backfill lots for legacy items that predate the stock-lot model.
+	if err := backfillMissingInventoryStockLots(items, itemIDs); err != nil {
+		return nil, err
 	}
 
 	ctx := context.Background()
@@ -1078,6 +1160,7 @@ func createMovementRecord(item *models.InventoryItem, t models.InventoryMovement
 		Quantity:        quantity,
 		UnitCost:        unitCost,
 		TotalAmount:     math.Abs(quantity) * unitCost,
+		CostStatus:      opts.CostStatus,
 		BalanceAfter:    item.CurrentStock,
 		Party:           trimOrEmpty(opts.Party),
 		DocumentNumber:  trimOrEmpty(opts.DocumentNumber),
@@ -1127,9 +1210,9 @@ func CreateInventoryMovement(input CreateInventoryMovementInput) (*models.Invent
 
 	var lot *models.InventoryStockLot
 	normalizedLotID := trimOrEmpty(input.LotID)
-	normalizedSupplierBucket := trimOrEmpty(input.SupplierBucket)
+	normalizedSupplierBucket := canonicalSupplierName(input.SupplierBucket)
 	if delta > 0 && normalizedSupplierBucket == "" {
-		normalizedSupplierBucket = firstNonEmpty(input.Party, item.Supplier)
+		normalizedSupplierBucket = canonicalSupplierName(firstNonEmpty(input.Party, item.Supplier))
 	}
 	if delta < 0 {
 		lot, err = resolveOutgoingStockLot(item, normalizedLotID, normalizedSupplierBucket)
@@ -1141,7 +1224,12 @@ func CreateInventoryMovement(input CreateInventoryMovementInput) (*models.Invent
 		}
 		normalizedLotID = lot.LotID
 		normalizedSupplierBucket = lot.SupplierBucket
-	} else if delta > 0 && normalizedLotID != "" {
+	} else if delta > 0 && normalizedLotID != "" && movementType == models.InventoryMovementAdjustment {
+		// Only an adjustment tops up a specific existing lot (and therefore
+		// inherits that lot's supplier). A purchase ("in") always opens a fresh
+		// lot under the supplier the user chose, so it must ignore any lot_id and
+		// keep the selected supplier bucket — otherwise adding a second supplier's
+		// stock to an item silently merges into the first lot's supplier.
 		lot, err = findInventoryStockLot(item.ItemID, normalizedLotID)
 		if err != nil {
 			return nil, err
@@ -1154,13 +1242,49 @@ func CreateInventoryMovement(input CreateInventoryMovementInput) (*models.Invent
 
 	resolvedUnitCost := resolvedMovementUnitCost(item, movementType, input.UnitCost, lot)
 
+	// Resolve the cost status for this movement.
+	//
+	//   • Stock coming in may be flagged price-pending, in which case it is
+	//     valued at an estimate and marked provisional.
+	//   • Stock going out (and any adjustment onto an existing lot) inherits the
+	//     status of the lot it touches, so an issue from an unbilled lot is
+	//     itself unbilled and gets corrected by the same repricing.
+	costStatus := models.LotCostConfirmed
+	costSource := ""
+	estimatedUnitCost := 0.0
+	// The flag only applies where a NEW lot is opened. An adjustment that tops up
+	// an existing lot must inherit that lot's status instead: marking the
+	// movement provisional while its lot stayed confirmed would strand it —
+	// ConfirmLotBill works on lots, so nothing could ever correct it.
+	pricePending := input.PricePending && delta > 0 && lot == nil
+	switch {
+	case pricePending:
+		costStatus = models.LotCostProvisional
+		if input.UnitCost > 0 {
+			estimatedUnitCost, costSource = input.UnitCost, models.LotCostSourceManual
+		} else {
+			estimatedUnitCost, costSource = estimateUnitCostForReceipt(item, normalizedSupplierBucket)
+			resolvedUnitCost = costFallback(estimatedUnitCost, resolvedUnitCost)
+		}
+	case lot != nil:
+		costStatus = lot.CostStatus.Normalized()
+		costSource = lot.CostSource
+		estimatedUnitCost = lot.EstimatedUnitCost
+	default:
+		costSource = models.LotCostSourceInvoice
+	}
+
 	item.CurrentStock = nextStock
 	item.UpdatedAt = time.Now()
 	updateSet := bson.M{
 		"current_stock": item.CurrentStock,
 		"updated_at":    item.UpdatedAt,
 	}
-	if input.UnitCost > 0 && movementType == models.InventoryMovementIn {
+	// A price-pending receipt must NOT write last_purchase_cost: that field is
+	// the fallback used to estimate the *next* receipt, so seeding it from a
+	// guess would compound the error across purchases. ConfirmLotBill writes it
+	// once the real invoice rate is known.
+	if input.UnitCost > 0 && movementType == models.InventoryMovementIn && !pricePending {
 		updateSet["last_purchase_cost"] = input.UnitCost
 		item.LastPurchaseCost = input.UnitCost
 	}
@@ -1179,15 +1303,18 @@ func CreateInventoryMovement(input CreateInventoryMovementInput) (*models.Invent
 	switch {
 	case delta > 0 && movementType == models.InventoryMovementIn:
 		lot, err = createInventoryStockLot(item, delta, inventoryMovementRecordOptions{
-			Reason:           input.Reason,
-			UnitCost:         input.UnitCost,
-			ResolvedUnitCost: resolvedUnitCost,
-			Party:            input.Party,
-			SupplierBucket:   normalizedSupplierBucket,
-			DocumentNumber:   input.DocumentNumber,
-			TransactionDate:  transactionDate,
-			Reference:        input.Reference,
-			Notes:            input.Notes,
+			Reason:            input.Reason,
+			UnitCost:          input.UnitCost,
+			ResolvedUnitCost:  resolvedUnitCost,
+			CostStatus:        costStatus,
+			CostSource:        costSource,
+			EstimatedUnitCost: estimatedUnitCost,
+			Party:             input.Party,
+			SupplierBucket:    normalizedSupplierBucket,
+			DocumentNumber:    input.DocumentNumber,
+			TransactionDate:   transactionDate,
+			Reference:         input.Reference,
+			Notes:             input.Notes,
 		})
 		if err != nil {
 			return nil, err
@@ -1203,15 +1330,18 @@ func CreateInventoryMovement(input CreateInventoryMovementInput) (*models.Invent
 			}
 		} else {
 			lot, err = createInventoryStockLot(item, delta, inventoryMovementRecordOptions{
-				Reason:           input.Reason,
-				UnitCost:         input.UnitCost,
-				ResolvedUnitCost: resolvedUnitCost,
-				Party:            input.Party,
-				SupplierBucket:   normalizedSupplierBucket,
-				DocumentNumber:   input.DocumentNumber,
-				TransactionDate:  transactionDate,
-				Reference:        input.Reference,
-				Notes:            input.Notes,
+				Reason:            input.Reason,
+				UnitCost:          input.UnitCost,
+				ResolvedUnitCost:  resolvedUnitCost,
+				CostStatus:        costStatus,
+				CostSource:        costSource,
+				EstimatedUnitCost: estimatedUnitCost,
+				Party:             input.Party,
+				SupplierBucket:    normalizedSupplierBucket,
+				DocumentNumber:    input.DocumentNumber,
+				TransactionDate:   transactionDate,
+				Reference:         input.Reference,
+				Notes:             input.Notes,
 			})
 			if err != nil {
 				return nil, err
@@ -1229,17 +1359,20 @@ func CreateInventoryMovement(input CreateInventoryMovementInput) (*models.Invent
 	}
 
 	return createMovementRecord(item, movementType, input.Quantity, inventoryMovementRecordOptions{
-		Reason:           input.Reason,
-		UnitCost:         input.UnitCost,
-		ResolvedUnitCost: resolvedUnitCost,
-		Party:            input.Party,
-		SupplierBucket:   normalizedSupplierBucket,
-		LotID:            normalizedLotID,
-		LotLabel:         lotLabel,
-		DocumentNumber:   input.DocumentNumber,
-		TransactionDate:  transactionDate,
-		Reference:        input.Reference,
-		Notes:            input.Notes,
+		Reason:            input.Reason,
+		UnitCost:          input.UnitCost,
+		ResolvedUnitCost:  resolvedUnitCost,
+		CostStatus:        costStatus,
+		CostSource:        costSource,
+		EstimatedUnitCost: estimatedUnitCost,
+		Party:             input.Party,
+		SupplierBucket:    normalizedSupplierBucket,
+		LotID:             normalizedLotID,
+		LotLabel:          lotLabel,
+		DocumentNumber:    input.DocumentNumber,
+		TransactionDate:   transactionDate,
+		Reference:         input.Reference,
+		Notes:             input.Notes,
 	})
 }
 
@@ -1367,33 +1500,112 @@ func enrichInventoryMovements(movements []models.InventoryMovement) error {
 		Name      string             `bson:"name"`
 	}
 
+	// Everything below is pre-loaded up front, in a number of queries that does
+	// not grow with the number of movements.
+	//
+	// The previous shape cached by key but still issued a FindOne on each cache
+	// miss, so a page of 120 movements referencing 120 distinct log entries
+	// meant ~120 sequential round trips — plus two more per distinct item,
+	// since GetInventoryItem re-runs its own cost enrichment.
+	ctx := context.Background()
+	lotCache := map[string]*models.InventoryStockLot{}
 	logCache := map[string]*logEntrySnapshot{}
 	projectCache := map[string]*projectSnapshot{}
-	itemCache := map[string]*models.InventoryItem{}
 
-	// Pre-load every stock lot referenced by these movements in ONE query,
-	// rather than a FindOne per row. lot_id is globally unique, so we can key
-	// the cache by it and verify the item matches when using it.
-	lotCache := map[string]*models.InventoryStockLot{}
 	lotIDsNeeded := make([]string, 0)
+	itemIDsNeeded := make([]string, 0)
+	entryOIDs := make([]primitive.ObjectID, 0)
+	entryHexes := make([]string, 0)
+
 	for index := range movements {
 		m := &movements[index]
 		if m.LotID != "" && trimOrEmpty(m.LotLabel) == "" && trimOrEmpty(m.ItemID) != "" {
 			lotIDsNeeded = append(lotIDsNeeded, m.LotID)
 		}
+		if m.UnitCost <= 0 && m.TotalAmount <= 0 && trimOrEmpty(m.ItemID) != "" {
+			itemIDsNeeded = append(itemIDsNeeded, m.ItemID)
+		}
+		if strings.HasPrefix(m.Reference, "log-entry:") {
+			hex := strings.TrimSpace(strings.TrimPrefix(m.Reference, "log-entry:"))
+			if oid, err := primitive.ObjectIDFromHex(hex); err == nil {
+				entryOIDs = append(entryOIDs, oid)
+				entryHexes = append(entryHexes, hex)
+			}
+		}
 	}
+
+	// Stock lots. lot_id is globally unique, so key the cache by it and verify
+	// the item matches at use time.
 	if len(lotIDsNeeded) > 0 {
-		cursor, err := inventoryStockLotCol().Find(context.Background(), bson.M{"lot_id": bson.M{"$in": lotIDsNeeded}})
+		cursor, err := inventoryStockLotCol().Find(ctx, bson.M{"lot_id": bson.M{"$in": lotIDsNeeded}})
 		if err != nil {
 			return err
 		}
 		var preloadedLots []models.InventoryStockLot
-		if err := cursor.All(context.Background(), &preloadedLots); err != nil {
+		if err := cursor.All(ctx, &preloadedLots); err != nil {
 			return err
 		}
 		for i := range preloadedLots {
 			lotCache[preloadedLots[i].LotID] = &preloadedLots[i]
 		}
+	}
+
+	// Log entries. Their project ids and consumption records feed the two loads
+	// below, so this one has to resolve first.
+	if len(entryOIDs) > 0 {
+		cursor, err := logEntrySnapshotCol().Find(ctx, bson.M{"_id": bson.M{"$in": entryOIDs}})
+		if err != nil {
+			return err
+		}
+		var entries []logEntrySnapshot
+		if err := cursor.All(ctx, &entries); err != nil {
+			return err
+		}
+		for i := range entries {
+			logCache[entries[i].ID.Hex()] = &entries[i]
+		}
+		// Record the misses explicitly, so a deleted entry reads as "known to
+		// be absent" rather than "not looked up yet".
+		for _, hex := range entryHexes {
+			if _, ok := logCache[hex]; !ok {
+				logCache[hex] = nil
+			}
+		}
+	}
+
+	// Projects referenced by those entries.
+	projectOIDs := make([]primitive.ObjectID, 0, len(logCache))
+	for _, entry := range logCache {
+		if entry != nil {
+			projectOIDs = append(projectOIDs, entry.ProjectID)
+		}
+	}
+	if len(projectOIDs) > 0 {
+		cursor, err := projectSnapshotCol().Find(ctx, bson.M{"_id": bson.M{"$in": projectOIDs}})
+		if err != nil {
+			return err
+		}
+		var projects []projectSnapshot
+		if err := cursor.All(ctx, &projects); err != nil {
+			return err
+		}
+		for i := range projects {
+			projectCache[projects[i].ID.Hex()] = &projects[i]
+		}
+	}
+
+	// Inventory items — those needed for a fallback unit cost, plus any an
+	// entry's consumption record points at for its display unit.
+	for _, entry := range logCache {
+		if entry != nil && entry.InventoryConsumption != nil {
+			if id := trimOrEmpty(entry.InventoryConsumption.InventoryItemID); id != "" {
+				itemIDsNeeded = append(itemIDsNeeded, id)
+			}
+		}
+	}
+	itemCache, err := loadInventoryItemsByIDs(itemIDsNeeded)
+	if err != nil {
+		return err
 	}
 
 	for index := range movements {
@@ -1407,16 +1619,7 @@ func enrichInventoryMovements(movements []models.InventoryMovement) error {
 			}
 		}
 		if movement.UnitCost <= 0 && movement.TotalAmount <= 0 && strings.TrimSpace(movement.ItemID) != "" {
-			item, cached := itemCache[movement.ItemID]
-			if !cached {
-				loaded, err := GetInventoryItem(movement.ItemID)
-				if err != nil {
-					return err
-				}
-				item = loaded
-				itemCache[movement.ItemID] = item
-			}
-			if item != nil {
+			if item := itemCache[movement.ItemID]; item != nil {
 				unitCost := resolvedMovementUnitCost(item, movement.Type, 0, nil)
 				if unitCost > 0 {
 					movement.UnitCost = unitCost
@@ -1431,24 +1634,7 @@ func enrichInventoryMovements(movements []models.InventoryMovement) error {
 		if entryHex == "" {
 			continue
 		}
-		entry, cached := logCache[entryHex]
-		if !cached {
-			entryOID, err := primitive.ObjectIDFromHex(entryHex)
-			if err != nil {
-				continue
-			}
-			var loaded logEntrySnapshot
-			err = logEntrySnapshotCol().FindOne(context.Background(), bson.M{"_id": entryOID}).Decode(&loaded)
-			if errors.Is(err, mongo.ErrNoDocuments) {
-				logCache[entryHex] = nil
-				continue
-			}
-			if err != nil {
-				return err
-			}
-			entry = &loaded
-			logCache[entryHex] = entry
-		}
+		entry := logCache[entryHex]
 		if entry == nil {
 			continue
 		}
@@ -1459,16 +1645,7 @@ func enrichInventoryMovements(movements []models.InventoryMovement) error {
 			}
 			displayUnit := trimOrEmpty(entry.InventoryConsumption.QuantityUnit)
 			if displayQuantity > 0 && displayUnit == "" {
-				item, cached := itemCache[entry.InventoryConsumption.InventoryItemID]
-				if !cached {
-					loaded, err := GetInventoryItem(entry.InventoryConsumption.InventoryItemID)
-					if err != nil {
-						return err
-					}
-					item = loaded
-					itemCache[entry.InventoryConsumption.InventoryItemID] = item
-				}
-				if item != nil && trimOrEmpty(item.UsageUnit) != "" {
+				if item := itemCache[entry.InventoryConsumption.InventoryItemID]; item != nil && trimOrEmpty(item.UsageUnit) != "" {
 					displayUnit = item.UsageUnit
 				}
 			}
@@ -1478,20 +1655,7 @@ func enrichInventoryMovements(movements []models.InventoryMovement) error {
 			}
 		}
 
-		projectKey := entry.ProjectID.Hex()
-		project, cached := projectCache[projectKey]
-		if !cached {
-			var loaded projectSnapshot
-			err := projectSnapshotCol().FindOne(context.Background(), bson.M{"_id": entry.ProjectID}).Decode(&loaded)
-			if errors.Is(err, mongo.ErrNoDocuments) {
-				projectCache[projectKey] = nil
-			} else if err != nil {
-				return err
-			} else {
-				project = &loaded
-				projectCache[projectKey] = project
-			}
-		}
+		project := projectCache[entry.ProjectID.Hex()]
 		if project != nil {
 			if movement.Party == "" {
 				movement.Party = project.Name
@@ -1538,12 +1702,162 @@ func enrichInventoryMovements(movements []models.InventoryMovement) error {
 	return nil
 }
 
-func GetInventorySummary() (*InventorySummary, error) {
+// InventoryLogLink is one log item that consumes an inventory item, flattened
+// with the type and category names needed to describe it.
+type InventoryLogLink struct {
+	InventoryItemID  string  `json:"inventory_item_id"`
+	LogTypeID        string  `json:"log_type_id"`
+	LogTypeName      string  `json:"log_type_name"`
+	CategoryID       string  `json:"category_id"`
+	CategoryName     string  `json:"category_name"`
+	ItemID           string  `json:"item_id"`
+	ItemName         string  `json:"item_name"`
+	InventoryUnit    string  `json:"inventory_unit"`
+	QuantityUnit     string  `json:"quantity_unit"`
+	UsagePerQuantity float64 `json:"usage_per_quantity"`
+}
+
+// ListInventoryLogLinks returns every log item wired to an inventory item.
+//
+// The inventory page used to assemble this client-side by walking the whole
+// hierarchy — list log types, then categories per type, then items per
+// category — which is a three-level request waterfall whose width grows with
+// the number of categories. Since log_items stores log_type_id and category_id
+// on each document and there is an index on inventory_link.inventory_item_id,
+// the same answer is three batched queries here.
+func ListInventoryLogLinks() ([]InventoryLogLink, error) {
+	ctx := context.Background()
+
+	cursor, err := logItemCol().Find(ctx, bson.M{
+		"inventory_link.inventory_item_id": bson.M{"$exists": true, "$ne": ""},
+	})
+	if err != nil {
+		return nil, err
+	}
+	defer cursor.Close(ctx)
+
+	var items []models.LogItem
+	if err := cursor.All(ctx, &items); err != nil {
+		return nil, err
+	}
+	if len(items) == 0 {
+		return []InventoryLogLink{}, nil
+	}
+
+	typeIDs := make([]primitive.ObjectID, 0, len(items))
+	categoryIDs := make([]primitive.ObjectID, 0, len(items))
+	for i := range items {
+		typeIDs = append(typeIDs, items[i].LogTypeID)
+		categoryIDs = append(categoryIDs, items[i].CategoryID)
+	}
+
+	typeNames, err := objectIDNameMap(logTypeCol(), typeIDs)
+	if err != nil {
+		return nil, err
+	}
+	categoryNames, err := objectIDNameMap(logCategoryCol(), categoryIDs)
+	if err != nil {
+		return nil, err
+	}
+
+	links := make([]InventoryLogLink, 0, len(items))
+	for i := range items {
+		link := items[i].InventoryLink
+		if link == nil || trimOrEmpty(link.InventoryItemID) == "" {
+			continue
+		}
+		links = append(links, InventoryLogLink{
+			InventoryItemID:  link.InventoryItemID,
+			LogTypeID:        items[i].LogTypeID.Hex(),
+			LogTypeName:      typeNames[items[i].LogTypeID.Hex()],
+			CategoryID:       items[i].CategoryID.Hex(),
+			CategoryName:     categoryNames[items[i].CategoryID.Hex()],
+			ItemID:           items[i].ID.Hex(),
+			ItemName:         items[i].Name,
+			InventoryUnit:    link.InventoryUnit,
+			QuantityUnit:     link.QuantityUnit,
+			UsagePerQuantity: link.UsagePerQuantity,
+		})
+	}
+	return links, nil
+}
+
+// objectIDNameMap fetches just the name field for a set of ids, keyed by hex id.
+func objectIDNameMap(col *mongo.Collection, ids []primitive.ObjectID) (map[string]string, error) {
+	names := map[string]string{}
+	if len(ids) == 0 {
+		return names, nil
+	}
+
+	ctx := context.Background()
+	cursor, err := col.Find(ctx,
+		bson.M{"_id": bson.M{"$in": ids}},
+		options.Find().SetProjection(bson.M{"name": 1}),
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer cursor.Close(ctx)
+
+	var rows []struct {
+		ID   primitive.ObjectID `bson:"_id"`
+		Name string             `bson:"name"`
+	}
+	if err := cursor.All(ctx, &rows); err != nil {
+		return nil, err
+	}
+	for _, row := range rows {
+		names[row.ID.Hex()] = row.Name
+	}
+	return names, nil
+}
+
+// InventoryOverview is everything the inventory page needs to render, in one
+// payload.
+type InventoryOverview struct {
+	Items     []models.InventoryItem         `json:"items"`
+	Summary   InventorySummary               `json:"summary"`
+	StockLots []models.InventoryStockLotView `json:"stock_lots"`
+}
+
+// GetInventoryOverview loads the items once and derives the summary and the
+// stock-lot views from that single read.
+//
+// The page used to fetch /items, /summary and /stock-lots in parallel, and
+// each of those independently ran the full item query plus its cost-metric
+// enrichment — the same work three times over, six round trips where two will
+// do. Callers should prefer this over the three separate endpoints, which stay
+// for anything that genuinely needs just one piece.
+func GetInventoryOverview() (*InventoryOverview, error) {
 	items, err := ListInventoryItems()
 	if err != nil {
 		return nil, err
 	}
 
+	stockLots, err := stockLotViewsForItems(items)
+	if err != nil {
+		return nil, err
+	}
+
+	return &InventoryOverview{
+		Items:     items,
+		Summary:   *summarizeInventoryItems(items),
+		StockLots: stockLots,
+	}, nil
+}
+
+func GetInventorySummary() (*InventorySummary, error) {
+	items, err := ListInventoryItems()
+	if err != nil {
+		return nil, err
+	}
+	return summarizeInventoryItems(items), nil
+}
+
+// summarizeInventoryItems derives the summary counters from items already in
+// memory. Pure — every field it reports comes off the items themselves, so no
+// caller needs a second trip to the database to get them.
+func summarizeInventoryItems(items []models.InventoryItem) *InventorySummary {
 	summary := &InventorySummary{TotalItems: len(items)}
 	for _, item := range items {
 		summary.TotalUnits += item.CurrentStock
@@ -1555,5 +1869,5 @@ func GetInventorySummary() (*InventorySummary, error) {
 			summary.LowStockCount++
 		}
 	}
-	return summary, nil
+	return summary
 }

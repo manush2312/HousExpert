@@ -2,22 +2,25 @@ import { useEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
 import { createPortal, flushSync } from 'react-dom'
 import { useNavigate } from 'react-router-dom'
 import {
-  AlertTriangle, ArrowDownCircle, ArrowUpCircle, Boxes, Check, History, Info, Package, Pencil, Plus, Trash2, X,
+  AlertTriangle, ArrowDownCircle, ArrowUpCircle, Boxes, Check, ChevronDown, History, Info, Package, Pencil, Plus, ReceiptText, Trash2, X,
 } from 'lucide-react'
 import DatePicker from '../../components/DatePicker'
 import LoadingButton from '../../components/LoadingButton'
 import Modal from '../../components/Modal'
-import SearchableSelect from '../../components/SearchableSelect'
+import SearchableSelect, { type SearchableOption } from '../../components/SearchableSelect'
+import { listVendors, createVendor, type Vendor } from '../../services/vendorService'
 import {
-  listAllInventoryStockLots,
+  confirmLotBill,
   createInventoryItem,
   createInventoryMovement,
   deleteInventoryItem,
-  getInventorySummary,
-  listInventoryItems,
+  getInventoryOverview,
+  listInventoryLogLinks,
   listInventoryMovements,
   listInventoryStockLots,
+  listPendingBills,
   updateInventoryItem,
+  type ConfirmLotBillResult,
   type CreateInventoryItemPayload,
   type CreateInventoryMovementPayload,
   type InventoryItem,
@@ -25,14 +28,9 @@ import {
   type InventoryStockLot,
   type InventoryMovementType,
   type InventorySummary,
+  type PendingBillRow,
 } from '../../services/inventoryService'
-import {
-  deleteLogItemInventoryLink,
-  listLogCategories,
-  listLogItems,
-  listLogTypes,
-  type LogType,
-} from '../../services/logService'
+import { deleteLogItemInventoryLink } from '../../services/logService'
 
 type ItemDraft = {
   sku: string
@@ -66,6 +64,7 @@ type MovementDraft = {
   quantity: string
   quantity_unit: 'stock' | 'usage'
   unit_cost: string
+  price_pending: boolean
   party: string
   supplier_bucket: string
   lot_id: string
@@ -105,7 +104,7 @@ type MovementReasonOption = {
 }
 
 type StockView = 'all' | 'in_stock' | 'low_stock' | 'out_of_stock'
-type InventoryTab = 'overview' | 'items' | 'snapshot' | 'movements'
+type InventoryTab = 'overview' | 'items' | 'snapshot' | 'movements' | 'bills'
 
 type InventoryLogLink = {
   logTypeId: string
@@ -161,6 +160,7 @@ function emptyMovementDraft(itemId = '', type: InventoryMovementType = 'in'): Mo
     quantity: '',
     quantity_unit: 'stock',
     unit_cost: '',
+    price_pending: false,
     party: '',
     supplier_bucket: '',
     lot_id: '',
@@ -378,15 +378,20 @@ function aggregateSupplierLots(lots: InventoryStockLot[]) {
     totalCost: number
     averageUnitCost?: number
     lastUnitCost?: number
+    // True when any lot behind this bucket is still valued at an estimate, so
+    // the snapshot can flag a supplier total that is not yet firm.
+    hasProvisional: boolean
   }>()
   lots.forEach((lot) => {
     const key = lot.supplier_bucket || 'Unassigned stock'
     const current = grouped.get(key)
     const lotCost = lot.unit_cost ?? 0
+    const provisional = lot.cost_status === 'provisional'
     if (current) {
       current.quantity += lot.remaining_quantity
       current.totalCost += lot.remaining_quantity * lotCost
       if (lotCost > 0) current.lastUnitCost = lotCost
+      if (provisional) current.hasProvisional = true
       return
     }
     grouped.set(key, {
@@ -395,6 +400,7 @@ function aggregateSupplierLots(lots: InventoryStockLot[]) {
       unit: lot.item_unit,
       totalCost: lot.remaining_quantity * lotCost,
       lastUnitCost: lotCost > 0 ? lotCost : undefined,
+      hasProvisional: provisional,
     })
   })
   return Array.from(grouped.values())
@@ -468,6 +474,7 @@ function inventoryLinkUsageLabel(link: InventoryLogLink) {
 export default function InventoryPage() {
   const navigate = useNavigate()
   const [items, setItems] = useState<InventoryItem[]>([])
+  const [vendors, setVendors] = useState<Vendor[]>([])
   const [stockLots, setStockLots] = useState<InventoryStockLot[]>([])
   const [summary, setSummary] = useState<InventorySummary | null>(null)
   const [movements, setMovements] = useState<InventoryMovement[]>([])
@@ -491,23 +498,48 @@ export default function InventoryPage() {
   const [deletingInventoryLinkId, setDeletingInventoryLinkId] = useState<string | null>(null)
   const [linkManagerItem, setLinkManagerItem] = useState<InventoryItem | null>(null)
   const [pendingInventoryLinkRemoval, setPendingInventoryLinkRemoval] = useState<InventoryLogLink | null>(null)
+  const [pendingBills, setPendingBills] = useState<PendingBillRow[]>([])
+  const [pendingBillsLoading, setPendingBillsLoading] = useState(true)
+  const [billToConfirm, setBillToConfirm] = useState<PendingBillRow | null>(null)
+
+  // Merge a supplier created inline (from a SupplierSelect) into the list so it
+  // immediately appears in every supplier dropdown on the page.
+  const handleVendorCreated = (vendor: Vendor) =>
+    setVendors((prev) => (prev.some((v) => v.vendor_id === vendor.vendor_id) ? prev : [...prev, vendor]))
 
   const refreshOverview = async () => {
     try {
       setLoading(true)
       setError('')
-      const [itemsRes, summaryRes, stockLotsRes] = await Promise.all([
-        listInventoryItems(),
-        getInventorySummary(),
-        listAllInventoryStockLots(),
+      const [overviewRes, vendorsRes] = await Promise.all([
+        getInventoryOverview(),
+        listVendors({ status: 'active' }),
       ])
-      setItems(itemsRes.data.data)
-      setSummary(summaryRes.data.data)
-      setStockLots(stockLotsRes.data.data)
+      const overview = overviewRes.data.data
+      setItems(overview.items)
+      setSummary(overview.summary)
+      setStockLots(overview.stock_lots)
+      setVendors(vendorsRes.data.data)
     } catch {
       setError('Failed to load inventory. Make sure the backend is running.')
     } finally {
       setLoading(false)
+    }
+  }
+
+  // Lots received before their supplier bill. Kept in its own request so the
+  // (much heavier) overview call is unaffected, and refreshed after any receipt
+  // or confirmation since both change the queue.
+  const refreshPendingBills = async () => {
+    try {
+      setPendingBillsLoading(true)
+      const res = await listPendingBills()
+      setPendingBills(res.data.data)
+    } catch {
+      // Non-fatal: the rest of the page is still usable without the queue.
+      setPendingBills([])
+    } finally {
+      setPendingBillsLoading(false)
     }
   }
 
@@ -530,36 +562,32 @@ export default function InventoryPage() {
     }
   }
 
+  // One request, grouped by inventory item. This used to walk the hierarchy
+  // client-side — log types, then categories per type, then items per category
+  // — a three-level waterfall costing 1 + T + C requests before anything could
+  // render.
   const refreshInventoryLinks = async () => {
     try {
-      const logTypesRes = await listLogTypes({ include_archived: true })
+      const res = await listInventoryLogLinks()
       const nextLinks: Record<string, InventoryLogLink[]> = {}
 
-      await Promise.all(logTypesRes.data.data.map(async (logType: LogType) => {
-        const categoriesRes = await listLogCategories(logType.id, { include_archived: true })
-        await Promise.all(categoriesRes.data.data.map(async (category) => {
-          const itemsRes = await listLogItems(category.id, { include_archived: true })
-          itemsRes.data.data.forEach((item) => {
-            const inventoryLink = item.inventory_link
-            const inventoryItemId = inventoryLink?.inventory_item_id
-            if (!inventoryItemId || !inventoryLink) return
-            nextLinks[inventoryItemId] = [
-              ...(nextLinks[inventoryItemId] ?? []),
-              {
-                logTypeId: logType.id,
-                logTypeName: logType.name,
-                categoryId: category.id,
-                categoryName: category.name,
-                itemId: item.id,
-                itemName: item.name,
-                inventoryUnit: inventoryLink.inventory_unit,
-                quantityUnit: inventoryLink.quantity_unit,
-                usagePerQuantity: inventoryLink.usage_per_quantity,
-              },
-            ]
-          })
-        }))
-      }))
+      res.data.data.forEach((row) => {
+        if (!row.inventory_item_id) return
+        nextLinks[row.inventory_item_id] = [
+          ...(nextLinks[row.inventory_item_id] ?? []),
+          {
+            logTypeId: row.log_type_id,
+            logTypeName: row.log_type_name,
+            categoryId: row.category_id,
+            categoryName: row.category_name,
+            itemId: row.item_id,
+            itemName: row.item_name,
+            inventoryUnit: row.inventory_unit,
+            quantityUnit: row.quantity_unit,
+            usagePerQuantity: row.usage_per_quantity,
+          },
+        ]
+      })
 
       setInventoryLogLinks(nextLinks)
     } catch {
@@ -570,6 +598,7 @@ export default function InventoryPage() {
   useEffect(() => {
     void refreshOverview()
     void refreshInventoryLinks()
+    void refreshPendingBills()
   }, [])
 
   useEffect(() => {
@@ -697,8 +726,19 @@ export default function InventoryPage() {
       { value: 'items' as InventoryTab, label: 'Items', count: items.length },
       { value: 'snapshot' as InventoryTab, label: 'Stock Snapshot', count: stockViewCounts.all },
       { value: 'movements' as InventoryTab, label: 'Movements', count: movements.length },
+      {
+        value: 'bills' as InventoryTab,
+        label: 'Pending Bills',
+        count: pendingBills.length,
+        alert: pendingBills.length > 0,
+      },
     ],
-    [items.length, movements.length, stockViewCounts.all],
+    [items.length, movements.length, stockViewCounts.all, pendingBills.length],
+  )
+
+  const pendingBillsValue = useMemo(
+    () => pendingBills.reduce((sum, row) => sum + row.estimated_value, 0),
+    [pendingBills],
   )
 
   const currentStockRows = useMemo(() => {
@@ -903,9 +943,14 @@ export default function InventoryPage() {
       reason: movementDraft.reason || undefined,
       quantity,
       unit_cost: Number(movementDraft.unit_cost || 0) || undefined,
+      // Only meaningful when stock is coming in; the backend ignores it on
+      // issues, which inherit their lot's status.
+      price_pending: movementDraft.type === 'in' && movementDraft.price_pending ? true : undefined,
       party: movementDraft.party.trim() || undefined,
       supplier_bucket: movementDraft.supplier_bucket.trim() || undefined,
-      lot_id: movementDraft.lot_id || undefined,
+      // A stock-in opens a fresh lot under the chosen supplier — never target an
+      // existing lot (that would merge it into that lot's supplier bucket).
+      lot_id: movementDraft.type === 'in' ? undefined : (movementDraft.lot_id || undefined),
       document_number: movementDraft.document_number.trim() || undefined,
       transaction_date: movementDraft.transaction_date || undefined,
       reference: movementDraft.reference.trim() || undefined,
@@ -917,7 +962,7 @@ export default function InventoryPage() {
       await createInventoryMovement(payload)
       setMovementFormOpen(false)
       setMovementDraft(emptyMovementDraft())
-      await Promise.all([refreshOverview(), refreshMovements()])
+      await Promise.all([refreshOverview(), refreshMovements(), refreshPendingBills()])
     } catch {
       alert('Failed to save inventory movement')
     } finally {
@@ -1033,6 +1078,8 @@ export default function InventoryPage() {
           draft={itemDraft}
           editing={Boolean(editingItem)}
           saving={savingItem}
+          vendors={vendors}
+          onVendorCreated={handleVendorCreated}
           onChange={setItemDraft}
           onCancel={resetItemForm}
           onSave={submitItem}
@@ -1044,6 +1091,8 @@ export default function InventoryPage() {
           items={items}
           draft={movementDraft}
           saving={savingMovement}
+          vendors={vendors}
+          onVendorCreated={handleVendorCreated}
           onChange={setMovementDraft}
           onCancel={() => {
             setMovementFormOpen(false)
@@ -1295,6 +1344,7 @@ export default function InventoryPage() {
                             {supplierRows.map((row) => (
                               <div key={`${item.item_id}-${row.supplier}`} className="text-[11.5px]">
                                 {row.supplier} · {fmtQty(row.quantity, row.unit)}{row.averageUnitCost ? ` @ Rs ${fmtMoney(row.averageUnitCost)}` : ''}
+                                {row.hasProvisional && <span className="ml-1.5 inline-block align-middle"><ProvisionalChip label="est." /></span>}
                               </div>
                             ))}
                           </div>
@@ -1455,6 +1505,7 @@ export default function InventoryPage() {
                                       style={{ background: 'var(--bg-sunken)', color: 'var(--ink-2)' }}
                                     >
                                       {row.supplier} · {fmtQty(row.quantity, row.unit)}{row.averageUnitCost ? ` @ Rs ${fmtMoney(row.averageUnitCost)}` : ''}
+                                {row.hasProvisional && <span className="ml-1.5 inline-block align-middle"><ProvisionalChip label="est." /></span>}
                                     </span>
                                   ))}
                                 </div>
@@ -1600,6 +1651,7 @@ export default function InventoryPage() {
                               {movement.supplier_bucket ? `Supplier ${movement.supplier_bucket}` : 'Supplier —'}
                               {movement.party ? ` · Party ${movement.party}` : ''}
                               {movement.unit_cost ? ` · Rate Rs ${fmtMoney(movement.unit_cost)}` : ''}
+                              {movement.cost_status === 'provisional' && <span className="ml-1.5 inline-block align-middle"><ProvisionalChip label="est." /></span>}
                             </div>
                           )}
                           {formatMovementReferenceHint(movement) && (
@@ -1784,6 +1836,11 @@ export default function InventoryPage() {
                             </td>
                             <td className="px-4 py-3 text-right numeral" style={{ color: 'var(--ink)' }}>
                               {movement.total_amount ? `Rs ${fmtMoney(movement.total_amount)}` : '—'}
+                              {/* An amount resting on an estimate is labelled, so it is never
+                                  read as a settled figure. */}
+                              {movement.cost_status === 'provisional' && (
+                                <div className="mt-0.5"><ProvisionalChip label="est." /></div>
+                              )}
                             </td>
                           </tr>
                         )
@@ -1797,7 +1854,324 @@ export default function InventoryPage() {
         </div>
       </div>
       )}
+
+      {activeTab === 'bills' && (
+        <PendingBillsPanel
+          rows={pendingBills}
+          loading={pendingBillsLoading}
+          totalValue={pendingBillsValue}
+          onEnterBill={setBillToConfirm}
+        />
+      )}
+
+      {billToConfirm && (
+        <ConfirmBillModal
+          row={billToConfirm}
+          onClose={() => setBillToConfirm(null)}
+          onConfirmed={async () => {
+            setBillToConfirm(null)
+            // A confirmation rewrites lot costs and movement amounts, so the
+            // snapshot and ledger both need re-reading, not just the queue.
+            await Promise.all([refreshOverview(), refreshMovements(), refreshPendingBills()])
+          }}
+        />
+      )}
     </div>
+  )
+}
+
+// PendingBillsPanel is the weekly habit that makes the whole flow work: every
+// lot taken in without a price, oldest first, with the projects a correction
+// will move. A forgotten bill is invisible without it.
+function PendingBillsPanel({
+  rows,
+  loading,
+  totalValue,
+  onEnterBill,
+}: {
+  rows: PendingBillRow[]
+  loading: boolean
+  totalValue: number
+  onEnterBill: (row: PendingBillRow) => void
+}) {
+  return (
+    <div className="card mt-4 overflow-hidden">
+      <div className="px-5 py-4" style={{ borderBottom: '1px solid var(--line)' }}>
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div>
+            <div className="text-[15px] font-semibold" style={{ color: 'var(--ink)' }}>Stock received, bill awaited</div>
+            <div className="text-[12px] mt-1" style={{ color: 'var(--ink-4)' }}>
+              These lots are valued at an estimate. Entering the bill corrects this stock and every project that used it.
+            </div>
+          </div>
+          {rows.length > 0 && (
+            <div className="rounded-xl px-3 py-2 text-right" style={{ background: 'var(--warn-wash)' }}>
+              <div className="text-[11px]" style={{ color: 'var(--warn-ink)' }}>Value still estimated</div>
+              <div className="text-[15px] font-semibold numeral" style={{ color: 'var(--warn-ink)' }}>
+                Rs {fmtMoney(totalValue)}
+              </div>
+            </div>
+          )}
+        </div>
+      </div>
+
+      {loading ? (
+        <div className="p-5">
+          {[...Array(3)].map((_, i) => <div key={i} className="skeleton h-16 w-full mb-2 last:mb-0" />)}
+        </div>
+      ) : rows.length === 0 ? (
+        <div className="px-5 py-12 text-center">
+          <Check size={22} className="mx-auto mb-3" style={{ color: 'var(--ink-4)' }} />
+          <p className="text-[14px] font-medium" style={{ color: 'var(--ink)' }}>No bills pending</p>
+          <p className="text-[12px] mt-1" style={{ color: 'var(--ink-4)' }}>
+            Every lot in stock is priced from a real supplier bill, so project costs are exact.
+          </p>
+        </div>
+      ) : (
+        <div className="divide-y" style={{ borderColor: 'var(--line-2)' }}>
+          {rows.map((row) => (
+            <div key={row.lot_id} className="flex flex-wrap items-start justify-between gap-4 px-5 py-4">
+              <div className="min-w-[240px] flex-1">
+                <div className="flex flex-wrap items-center gap-2">
+                  <span className="text-[13.5px] font-medium" style={{ color: 'var(--ink)' }}>{row.item_name}</span>
+                  <ProvisionalChip />
+                  <span
+                    className="rounded px-1.5 py-0.5 text-[11px] font-medium"
+                    style={{
+                      background: row.days_pending >= 7 ? 'var(--bad-wash)' : 'var(--bg-sunken)',
+                      color: row.days_pending >= 7 ? 'var(--bad-ink)' : 'var(--ink-3)',
+                    }}
+                  >
+                    {row.days_pending === 0 ? 'today' : `${row.days_pending} day${row.days_pending === 1 ? '' : 's'} ago`}
+                  </span>
+                </div>
+                <div className="mt-1 text-[12px]" style={{ color: 'var(--ink-3)' }}>
+                  {row.supplier_bucket || 'Unassigned stock'} · {fmtQty(row.received_quantity, row.item_unit)} received
+                  {row.document_number ? ` · ${row.document_number}` : ''}
+                </div>
+                <div className="mt-1 text-[12px] numeral" style={{ color: 'var(--ink-3)' }}>
+                  est. Rs {fmtMoney(row.estimated_unit_cost)}/{row.item_unit} · Rs {fmtMoney(row.estimated_value)} total
+                </div>
+                {row.used_in_projects && row.used_in_projects.length > 0 && (
+                  <div className="mt-2 text-[11.5px]" style={{ color: 'var(--ink-4)' }}>
+                    Used in:{' '}
+                    {row.used_in_projects
+                      .map((p) => `${p.project_name || p.project_ref || 'Unassigned'} (${fmtQty(p.quantity, row.item_unit)})`)
+                      .join(' · ')}
+                  </div>
+                )}
+                {row.consumed_quantity > 0 && (
+                  <div className="mt-1 text-[11.5px]" style={{ color: 'var(--ink-4)' }}>
+                    {fmtQty(row.consumed_quantity, row.item_unit)} already used · {fmtQty(row.remaining_quantity, row.item_unit)} still in stock
+                  </div>
+                )}
+              </div>
+              <button className="btn btn-primary btn-sm shrink-0" onClick={() => onEnterBill(row)}>
+                <ReceiptText size={14} /> Enter Bill
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
+
+// ProvisionalChip marks any number that is still an estimate. It appears
+// wherever such a number is shown so the user never mistakes one for a fact.
+function ProvisionalChip({ label = 'Bill awaited' }: { label?: string }) {
+  return (
+    <span
+      className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[10.5px] font-medium uppercase tracking-wide"
+      style={{ background: 'var(--warn-wash)', color: 'var(--warn-ink)' }}
+    >
+      <AlertTriangle size={10} aria-hidden="true" /> {label}
+    </span>
+  )
+}
+
+// ConfirmBillModal applies the supplier's real rate. It always asks the backend
+// for a dry-run preview first, so the user approves the exact per-project impact
+// rather than a number the client guessed at.
+function ConfirmBillModal({
+  row,
+  onClose,
+  onConfirmed,
+}: {
+  row: PendingBillRow
+  onClose: () => void
+  onConfirmed: () => void | Promise<void>
+}) {
+  const [rate, setRate] = useState(String(row.suggested_unit_cost || row.estimated_unit_cost || ''))
+  const [invoiceNumber, setInvoiceNumber] = useState(row.document_number ?? '')
+  const [invoiceDate, setInvoiceDate] = useState(new Date().toISOString().split('T')[0])
+  // The preview is tagged with the rate it was computed for, so a stale result
+  // is never shown against a newly typed rate — and the effect below never has
+  // to clear it synchronously.
+  const [preview, setPreview] = useState<{ rate: number; result: ConfirmLotBillResult } | null>(null)
+  const [previewing, setPreviewing] = useState(false)
+  const [saving, setSaving] = useState(false)
+  const [error, setError] = useState('')
+
+  const parsedRate = Number(rate)
+  const rateValid = rate.trim() !== '' && Number.isFinite(parsedRate) && parsedRate >= 0
+
+  // Debounced preview: the rate box is typed into, and each keystroke would
+  // otherwise fire a request.
+  useEffect(() => {
+    if (!rateValid) return
+    let cancelled = false
+    const timer = window.setTimeout(async () => {
+      try {
+        setPreviewing(true)
+        const res = await confirmLotBill(row.lot_id, {
+          item_id: row.item_id,
+          unit_cost: parsedRate,
+          dry_run: true,
+        })
+        if (!cancelled) {
+          setPreview({ rate: parsedRate, result: res.data.data })
+          setError('')
+        }
+      } catch {
+        if (!cancelled) setPreview(null)
+      } finally {
+        if (!cancelled) setPreviewing(false)
+      }
+    }, 300)
+    return () => {
+      cancelled = true
+      window.clearTimeout(timer)
+    }
+  }, [row.lot_id, row.item_id, parsedRate, rateValid])
+
+  // Only a preview computed for the rate currently in the box is usable.
+  const livePreview = preview && preview.rate === parsedRate ? preview.result : null
+
+  const submit = async () => {
+    if (!rateValid || saving) return
+    flushSync(() => setSaving(true))
+    try {
+      await confirmLotBill(row.lot_id, {
+        item_id: row.item_id,
+        unit_cost: parsedRate,
+        invoice_number: invoiceNumber.trim() || undefined,
+        invoice_date: invoiceDate || undefined,
+      })
+      await onConfirmed()
+    } catch {
+      setError('Could not save the bill. Please try again.')
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  const delta = rateValid ? parsedRate - row.estimated_unit_cost : 0
+  const deltaColor = delta > 0 ? 'var(--bad-ink)' : delta < 0 ? 'var(--ok-ink)' : 'var(--ink-3)'
+  const signed = (value: number) => `${value > 0 ? '+' : value < 0 ? '\u2212' : ''}Rs ${fmtMoney(Math.abs(value))}`
+
+  return (
+    <Modal open onClose={onClose} panelClassName="max-w-2xl">
+      <div className="px-5 py-4" style={{ borderBottom: '1px solid var(--line)' }}>
+        <div className="text-[15px] font-semibold" style={{ color: 'var(--ink)' }}>Enter bill</div>
+        <div className="mt-1 text-[12px]" style={{ color: 'var(--ink-4)' }}>
+          {row.item_name} · {row.supplier_bucket || 'Unassigned stock'} · {fmtQty(row.received_quantity, row.item_unit)}
+        </div>
+      </div>
+
+      <div className="px-5 py-4 space-y-4">
+        <div className="grid gap-3 sm:grid-cols-3">
+          <Field label="Invoice number">
+            <input className="input" value={invoiceNumber} onChange={(e) => setInvoiceNumber(e.target.value)} placeholder="e.g. INV-4471" />
+          </Field>
+          <Field label="Invoice date">
+            <DatePicker value={invoiceDate} onChange={setInvoiceDate} />
+          </Field>
+          <Field label={`Actual rate per ${row.item_unit}`}>
+            <input
+              className="input numeral"
+              type="number"
+              min="0"
+              step="any"
+              value={rate}
+              onChange={(e) => setRate(e.target.value)}
+              placeholder={String(row.estimated_unit_cost)}
+            />
+          </Field>
+        </div>
+
+        <div className="rounded-xl px-3 py-2 text-[12px]" style={{ background: 'var(--bg-sunken)', color: 'var(--ink-3)' }}>
+          Estimated rate was <strong className="numeral" style={{ color: 'var(--ink-2)' }}>Rs {fmtMoney(row.estimated_unit_cost)}</strong>
+          {rateValid && delta !== 0 && (
+            <> · difference <strong className="numeral" style={{ color: deltaColor }}>{signed(delta)}</strong> per {row.item_unit}</>
+          )}
+        </div>
+
+        {/* The impact preview. The user approves this, not a bare number. */}
+        <div className="rounded-xl overflow-hidden" style={{ border: '1px solid var(--line)' }}>
+          <div className="px-3 py-2 text-[11px] font-medium uppercase tracking-wider" style={{ background: 'var(--bg-sunken)', color: 'var(--ink-4)' }}>
+            This will update
+          </div>
+          {!rateValid ? (
+            <div className="px-3 py-4 text-[12px]" style={{ color: 'var(--ink-4)' }}>Enter the rate from the bill to see what changes.</div>
+          ) : !livePreview ? (
+            <div className="px-3 py-4">
+              {previewing
+                ? <div className="skeleton h-4 w-2/3" />
+                : <span className="text-[12px]" style={{ color: 'var(--ink-4)' }}>Working out the impact…</span>}
+            </div>
+          ) : (
+            <div className="divide-y" style={{ borderColor: 'var(--line-2)' }}>
+              {/* Defensive: a lot not yet issued to any project has no rows, and an
+                  older backend sends null rather than []. */}
+              {(livePreview.projects ?? []).map((project) => (
+                <div key={project.project_ref || project.project_name} className="flex items-center justify-between gap-3 px-3 py-2 text-[12.5px]">
+                  <span style={{ color: 'var(--ink-2)' }}>
+                    {project.project_name || project.project_ref || 'Unassigned'}
+                    <span className="ml-1.5 numeral" style={{ color: 'var(--ink-4)' }}>{fmtQty(project.quantity, row.item_unit)}</span>
+                  </span>
+                  <span className="numeral" style={{ color: 'var(--ink-3)' }}>
+                    Rs {fmtMoney(project.previous_amount)} → <strong style={{ color: 'var(--ink)' }}>Rs {fmtMoney(project.new_amount)}</strong>
+                    <span className="ml-2" style={{ color: project.delta > 0 ? 'var(--bad-ink)' : project.delta < 0 ? 'var(--ok-ink)' : 'var(--ink-4)' }}>
+                      {signed(project.delta)}
+                    </span>
+                  </span>
+                </div>
+              ))}
+              {(livePreview.projects ?? []).length === 0 && (
+                <div className="px-3 py-2 text-[12px]" style={{ color: 'var(--ink-4)' }}>
+                  None of this stock has been used on a project yet — only its stock value changes.
+                </div>
+              )}
+              <div className="flex items-center justify-between gap-3 px-3 py-2 text-[12.5px]">
+                <span style={{ color: 'var(--ink-2)' }}>
+                  Remaining stock
+                  <span className="ml-1.5 numeral" style={{ color: 'var(--ink-4)' }}>{fmtQty(row.remaining_quantity, row.item_unit)}</span>
+                </span>
+                <span className="numeral" style={{ color: livePreview.revision.stock_delta > 0 ? 'var(--bad-ink)' : livePreview.revision.stock_delta < 0 ? 'var(--ok-ink)' : 'var(--ink-4)' }}>
+                  {signed(livePreview.revision.stock_delta)}
+                </span>
+              </div>
+              <div className="flex items-center justify-between gap-3 px-3 py-2 text-[12.5px] font-medium" style={{ background: 'var(--bg-sunken)' }}>
+                <span style={{ color: 'var(--ink-2)' }}>Total change</span>
+                <span className="numeral" style={{ color: livePreview.revision.total_delta > 0 ? 'var(--bad-ink)' : livePreview.revision.total_delta < 0 ? 'var(--ok-ink)' : 'var(--ink-3)' }}>
+                  {signed(livePreview.revision.total_delta)}
+                </span>
+              </div>
+            </div>
+          )}
+        </div>
+
+        {error && <div className="text-[12px]" style={{ color: 'var(--bad-ink)' }}>{error}</div>}
+      </div>
+
+      <div className="flex justify-end gap-2 px-5 py-4" style={{ borderTop: '1px solid var(--line)' }}>
+        <button className="btn btn-ghost btn-sm" onClick={onClose}>Cancel</button>
+        <LoadingButton className="btn btn-primary btn-sm" loading={saving} disabled={!rateValid} onClick={submit}>
+          Confirm bill
+        </LoadingButton>
+      </div>
+    </Modal>
   )
 }
 
@@ -1961,7 +2335,7 @@ function InventoryTabs({
 }: {
   value: InventoryTab
   onChange: (next: InventoryTab) => void
-  items: Array<{ value: InventoryTab; label: string; count?: number }>
+  items: Array<{ value: InventoryTab; label: string; count?: number; alert?: boolean }>
 }) {
   return (
     <div className="flex items-center gap-0 overflow-x-auto" style={{ borderTop: '1px solid var(--line)' }}>
@@ -1978,10 +2352,16 @@ function InventoryTabs({
             {typeof item.count === 'number' && (
               <span
                 className="rounded px-1.5 py-0.5 text-[11px] font-medium"
-                style={{
-                  background: active ? 'var(--accent-wash)' : 'var(--bg-sunken)',
-                  color: active ? 'var(--accent-ink)' : 'var(--ink-3)',
-                }}
+                style={
+                  // An outstanding bill is something the user must act on, so the
+                  // count is styled as a warning rather than a neutral tally.
+                  item.alert
+                    ? { background: 'var(--warn-wash)', color: 'var(--warn-ink)' }
+                    : {
+                        background: active ? 'var(--accent-wash)' : 'var(--bg-sunken)',
+                        color: active ? 'var(--accent-ink)' : 'var(--ink-3)',
+                      }
+                }
               >
                 {item.count}
               </span>
@@ -2046,10 +2426,192 @@ function MetricCell({ label, value }: { label: string; value: string }) {
   )
 }
 
+// buildSupplierOptions turns the vendor master into dropdown options. When a
+// category is given and at least one active vendor serves it, the list is
+// narrowed to those vendors; otherwise every active vendor is offered. Any
+// current free-text value not in the vendor master is preserved as an
+// "(unlisted)" option so editing legacy items never drops their supplier.
+function buildSupplierOptions(
+  vendors: Vendor[],
+  category: string | undefined,
+  currentValue: string,
+  allowEmpty: boolean,
+): SearchableOption[] {
+  const active = vendors.filter((v) => v.status !== 'inactive')
+  const cat = (category ?? '').trim().toLowerCase()
+  let pool = active
+  if (cat) {
+    const matches = active.filter((v) => (v.categories_served ?? []).some((c) => c.trim().toLowerCase() === cat))
+    if (matches.length > 0) pool = matches
+  }
+
+  const options: SearchableOption[] = pool.map((v) => ({
+    value: v.name,
+    label: v.name,
+    keywords: [v.vendor_id, ...(v.categories_served ?? [])],
+  }))
+
+  const trimmed = currentValue.trim()
+  if (trimmed && !options.some((o) => o.value.toLowerCase() === trimmed.toLowerCase())) {
+    options.unshift({ value: trimmed, label: `${trimmed} (unlisted)` })
+  }
+  if (allowEmpty) options.unshift({ value: '', label: '— None —' })
+  return options
+}
+
+// SupplierSelect is a searchable dropdown of suppliers that also lets the user
+// add a brand-new supplier inline (type a name → "Add new supplier"). A newly
+// created supplier is reported via onVendorCreated so the whole page's list
+// updates, and is tagged with the item's category when one is set.
+function SupplierSelect({
+  value,
+  onChange,
+  vendors,
+  category,
+  placeholder,
+  allowEmpty,
+  onVendorCreated,
+}: {
+  value: string
+  onChange: (value: string) => void
+  vendors: Vendor[]
+  category?: string
+  placeholder?: string
+  allowEmpty?: boolean
+  onVendorCreated?: (vendor: Vendor) => void
+}) {
+  const [open, setOpen] = useState(false)
+  const [query, setQuery] = useState('')
+  const [creating, setCreating] = useState(false)
+  const [createError, setCreateError] = useState<string | null>(null)
+  const containerRef = useRef<HTMLDivElement>(null)
+  const inputRef = useRef<HTMLInputElement>(null)
+
+  const options = useMemo(
+    () => buildSupplierOptions(vendors, category, value, false),
+    [vendors, category, value],
+  )
+  const q = query.trim().toLowerCase()
+  const filtered = q
+    ? options.filter((o) => `${o.label} ${(o.keywords ?? []).join(' ')}`.toLowerCase().includes(q))
+    : options
+  // Offer to create only when the typed name isn't already a selectable option
+  // here. (A supplier tagged for another category won't be in options — trying
+  // to create it just 409s and selects it, handled in handleCreate.)
+  const nameExists = options.some((o) => o.value.trim().toLowerCase() === q)
+  const showCreate = q.length > 0 && !nameExists
+
+  useEffect(() => {
+    if (!open) return
+    const onDoc = (e: MouseEvent) => {
+      if (containerRef.current && !containerRef.current.contains(e.target as Node)) {
+        setOpen(false); setQuery(''); setCreateError(null)
+      }
+    }
+    document.addEventListener('mousedown', onDoc)
+    return () => document.removeEventListener('mousedown', onDoc)
+  }, [open])
+
+  const choose = (next: string) => { onChange(next); setOpen(false); setQuery(''); setCreateError(null) }
+
+  const handleCreate = async () => {
+    const name = query.trim()
+    if (!name || creating) return
+    setCreating(true); setCreateError(null)
+    try {
+      const res = await createVendor({ name, categories_served: category?.trim() ? [category.trim()] : undefined })
+      onVendorCreated?.(res.data.data)
+      choose(res.data.data.name)
+    } catch (e) {
+      const status = (e as { response?: { status?: number } })?.response?.status
+      if (status === 409) { choose(name) } // already exists — just select it
+      else setCreateError('Could not add supplier')
+    } finally {
+      setCreating(false)
+    }
+  }
+
+  return (
+    <div ref={containerRef} className="relative">
+      <button
+        type="button"
+        className="input flex items-center gap-2 w-full text-left"
+        onClick={() => { setOpen((o) => !o); setTimeout(() => inputRef.current?.focus(), 0) }}
+      >
+        <span className="flex-1 truncate" style={{ color: value ? 'var(--ink)' : 'var(--ink-4)' }}>
+          {value || placeholder || 'Select supplier'}
+        </span>
+        <ChevronDown size={14} style={{ color: 'var(--ink-4)', flexShrink: 0 }} />
+      </button>
+
+      {open && (
+        <div
+          className="absolute z-30 mt-1 w-full rounded-lg overflow-hidden"
+          style={{ background: 'var(--bg-elev)', border: '1px solid var(--line)', boxShadow: 'var(--shadow-lg)' }}
+        >
+          <div className="p-1.5" style={{ borderBottom: '1px solid var(--line-2)' }}>
+            <input
+              ref={inputRef}
+              className="input"
+              placeholder="Search or add supplier…"
+              value={query}
+              onChange={(e) => { setQuery(e.target.value); setCreateError(null) }}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') {
+                  e.preventDefault()
+                  if (showCreate) handleCreate()
+                  else if (filtered.length === 1) choose(filtered[0].value)
+                } else if (e.key === 'Escape') { setOpen(false); setQuery('') }
+              }}
+            />
+          </div>
+          <div className="max-h-52 overflow-y-auto py-1">
+            {allowEmpty && (
+              <button type="button" className="w-full text-left px-3 py-1.5 text-[13px] hover-bg" style={{ color: 'var(--ink-4)' }} onMouseDown={(e) => { e.preventDefault(); choose('') }}>
+                — None —
+              </button>
+            )}
+            {filtered.map((o) => (
+              <button
+                key={o.value}
+                type="button"
+                className="w-full text-left px-3 py-1.5 text-[13px] hover-bg"
+                style={{ color: o.value === value ? 'var(--accent-ink)' : 'var(--ink-2)', background: o.value === value ? 'var(--accent-wash)' : undefined }}
+                onMouseDown={(e) => { e.preventDefault(); choose(o.value) }}
+              >
+                {o.label}
+              </button>
+            ))}
+            {filtered.length === 0 && !showCreate && (
+              <div className="px-3 py-2 text-[12.5px]" style={{ color: 'var(--ink-4)' }}>No suppliers found</div>
+            )}
+            {showCreate && (
+              <button
+                type="button"
+                className="w-full text-left px-3 py-1.5 text-[13px] hover-bg flex items-center gap-1.5"
+                style={{ color: 'var(--accent-ink)', borderTop: filtered.length > 0 ? '1px solid var(--line-2)' : undefined }}
+                onMouseDown={(e) => { e.preventDefault(); handleCreate() }}
+                disabled={creating}
+              >
+                <Plus size={12} /> {creating ? 'Adding…' : `Add new supplier "${query.trim()}"`}
+              </button>
+            )}
+          </div>
+          {createError && (
+            <div className="px-3 py-1.5 text-[12px]" style={{ color: 'var(--bad)', borderTop: '1px solid var(--line-2)' }}>{createError}</div>
+          )}
+        </div>
+      )}
+    </div>
+  )
+}
+
 function ItemFormCard({
   draft,
   editing,
   saving,
+  vendors,
+  onVendorCreated,
   onChange,
   onCancel,
   onSave,
@@ -2057,6 +2619,8 @@ function ItemFormCard({
   draft: ItemDraft
   editing: boolean
   saving: boolean
+  vendors: Vendor[]
+  onVendorCreated: (vendor: Vendor) => void
   onChange: (draft: ItemDraft) => void
   onCancel: () => void
   onSave: () => void
@@ -2105,8 +2669,16 @@ function ItemFormCard({
               placeholder="10"
             />
           </Field>
-          <Field label="Supplier" tooltip="The vendor or shop you usually buy this item from.">
-            <input className="input" value={draft.supplier} onChange={(e) => update('supplier', e.target.value)} placeholder="Supplier name" />
+          <Field label="Supplier" tooltip="The vendor or shop you usually buy this item from. Choose from your Suppliers list — set a category on the item to filter it.">
+            <SupplierSelect
+              value={draft.supplier}
+              onChange={(value) => update('supplier', value)}
+              vendors={vendors}
+              category={draft.category}
+              placeholder="Select supplier"
+              allowEmpty
+              onVendorCreated={onVendorCreated}
+            />
           </Field>
           <Field label="Location" tooltip="Where this stock is physically kept, such as Main Store, Rack A2, Site Store, or Godown.">
             <input className="input" value={draft.location} onChange={(e) => update('location', e.target.value)} placeholder="Main store / Rack A2" />
@@ -2167,8 +2739,15 @@ function ItemFormCard({
             ) : draft.vendor_pricing.map((row, index) => (
               <div key={`vendor-pricing-${index}`} className="rounded-xl border p-3" style={{ borderColor: 'var(--line-2)', background: 'var(--bg-sunken)' }}>
                 <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-5">
-                  <Field label="Vendor" tooltip="Supplier or vendor name for this commercial price card.">
-                    <input className="input" value={row.supplier_name} onChange={(e) => update('vendor_pricing', draft.vendor_pricing.map((entry, rowIndex) => rowIndex === index ? { ...entry, supplier_name: e.target.value } : entry))} placeholder="JK Suppliers" />
+                  <Field label="Vendor" tooltip="Supplier for this commercial price card. Choose from your Suppliers list.">
+                    <SupplierSelect
+                      value={row.supplier_name}
+                      onChange={(value) => update('vendor_pricing', draft.vendor_pricing.map((entry, rowIndex) => rowIndex === index ? { ...entry, supplier_name: value } : entry))}
+                      vendors={vendors}
+                      category={draft.category}
+                      placeholder="Select supplier"
+                      onVendorCreated={onVendorCreated}
+                    />
                   </Field>
                   <Field label="Default buy" tooltip="Typical purchase price from this vendor, used as a commercial reference.">
                     <input className="input numeral" type="number" min="0" step="any" value={row.default_buy_price} onChange={(e) => update('vendor_pricing', draft.vendor_pricing.map((entry, rowIndex) => rowIndex === index ? { ...entry, default_buy_price: e.target.value } : entry))} placeholder="90" />
@@ -2235,6 +2814,8 @@ function MovementFormCard({
   items,
   draft,
   saving,
+  vendors,
+  onVendorCreated,
   onChange,
   onCancel,
   onSave,
@@ -2242,6 +2823,8 @@ function MovementFormCard({
   items: InventoryItem[]
   draft: MovementDraft
   saving: boolean
+  vendors: Vendor[]
+  onVendorCreated: (vendor: Vendor) => void
   onChange: (draft: MovementDraft) => void
   onCancel: () => void
   onSave: () => void
@@ -2270,6 +2853,43 @@ function MovementFormCard({
     selectedItem.usage_unit !== selectedItem.unit,
   )
   const needsLotSelection = (draft.type === 'out' || draft.type === 'adjustment') && availableLots.length > 0
+
+  // "Bill not received yet" only applies to incoming stock. The estimate it
+  // offers walks the same ladder the backend uses when no rate is typed: the
+  // supplier's own rate card first, then the item's last invoiced price — so
+  // what the user sees pre-filled is what would be stored either way.
+  const pricePending = draft.type === 'in' && draft.price_pending
+  const vendorRate = selectedItem?.vendor_pricing?.find(
+    (row) => row.supplier_name.trim().toLowerCase() === draft.supplier_bucket.trim().toLowerCase(),
+  )?.default_buy_price
+  const estimatedRate = (vendorRate && vendorRate > 0)
+    ? vendorRate
+    : (selectedItem?.last_purchase_cost && selectedItem.last_purchase_cost > 0 ? selectedItem.last_purchase_cost : 0)
+  const estimateSourceLabel = (vendorRate && vendorRate > 0)
+    ? `Suggested from ${draft.supplier_bucket.trim()}'s rate card. Corrected when the bill arrives.`
+    : estimatedRate > 0
+      ? 'Suggested from this item\u2019s last billed rate. Corrected when the bill arrives.'
+      : 'No past rate to suggest \u2014 enter your best estimate. It is corrected when the bill arrives.'
+
+  // Ticking the box pre-fills the estimate when no rate has been typed;
+  // unticking clears an untouched auto-fill so a normal receipt does not
+  // silently inherit a guess.
+  const togglePricePending = (next: boolean) => {
+    if (next) {
+      onChange({
+        ...draft,
+        price_pending: true,
+        unit_cost: draft.unit_cost.trim() === '' && estimatedRate > 0 ? String(estimatedRate) : draft.unit_cost,
+      })
+      return
+    }
+    onChange({
+      ...draft,
+      price_pending: false,
+      unit_cost: draft.unit_cost === String(estimatedRate) ? '' : draft.unit_cost,
+    })
+  }
+
   const sourceFieldMeta = movementSourceFieldMeta(draft.type)
   const partyFieldMeta = movementPartyFieldMeta(draft.type)
   const documentFieldMeta = movementDocumentFieldMeta(draft.type)
@@ -2283,23 +2903,32 @@ function MovementFormCard({
       .then((response) => {
         const rows = response.data.data ?? []
         setAvailableLots(rows)
-        if (rows.length === 1 && !draft.lot_id) {
+        // A stock-in always opens a new lot under the chosen supplier, so it must
+        // never carry an existing lot_id — otherwise the backend would file the
+        // new stock under that lot's supplier and break supplier bifurcation.
+        if (draft.type === 'in') {
+          if (draft.lot_id) update('lot_id', '')
+        } else if (rows.length === 1 && !draft.lot_id) {
           update('lot_id', rows[0].lot_id)
         } else if (draft.lot_id && !rows.some((lot) => lot.lot_id === draft.lot_id)) {
           update('lot_id', '')
         }
       })
       .catch(() => setAvailableLots([]))
-  }, [draft.item_id])
+  }, [draft.item_id, draft.type])
 
   useEffect(() => {
     if (!selectedItem) return
+    // Apply both defaults in a single update — two separate update() calls would
+    // each spread the same stale draft, so the second would drop the first.
+    const patch: Partial<MovementDraft> = {}
     if ((draft.type === 'in' || draft.type === 'adjustment') && !draft.supplier_bucket.trim() && selectedItem.supplier) {
-      update('supplier_bucket', selectedItem.supplier)
+      patch.supplier_bucket = selectedItem.supplier
     }
     if (!hasUsageUnit && draft.quantity_unit !== 'stock') {
-      update('quantity_unit', 'stock')
+      patch.quantity_unit = 'stock'
     }
+    if (Object.keys(patch).length > 0) onChange({ ...draft, ...patch })
   }, [selectedItem?.item_id, selectedItem?.supplier, draft.type, hasUsageUnit])
 
   const quantityPreview = (() => {
@@ -2380,12 +3009,66 @@ function MovementFormCard({
             />
           </Field>
         )}
-        <Field label="Unit cost" tooltip="Optional rate per stock unit. This is especially useful for purchase entries and inventory value tracking.">
-          <input className="input numeral" type="number" min="0" step="any" value={draft.unit_cost} onChange={(e) => update('unit_cost', e.target.value)} placeholder="e.g. 20000" />
+        <Field
+          label={pricePending ? 'Estimated rate' : 'Unit cost'}
+          tooltip={pricePending
+            ? 'A stand-in rate used until the supplier bill arrives. Stock and projects are valued at this number, and every one of them is corrected automatically when you enter the real bill.'
+            : 'Optional rate per stock unit. This is especially useful for purchase entries and inventory value tracking.'}
+        >
+          <input
+            className="input numeral"
+            type="number"
+            min="0"
+            step="any"
+            value={draft.unit_cost}
+            onChange={(e) => update('unit_cost', e.target.value)}
+            placeholder={pricePending ? String(estimatedRate || 'e.g. 1150') : 'e.g. 20000'}
+          />
+          {pricePending && (
+            <span className="mt-1 block text-[11px]" style={{ color: 'var(--warn-ink)' }}>
+              {estimateSourceLabel}
+            </span>
+          )}
         </Field>
+        {draft.type === 'in' && (
+          <Field
+            label="Bill status"
+            tooltip="Tick this when the goods have arrived but the supplier's bill has not. The stock is recorded at an estimate and lands in Pending Bills, so the real rate can be applied to every project later."
+          >
+            <button
+              type="button"
+              onClick={() => togglePricePending(!draft.price_pending)}
+              className="flex w-full items-center gap-2.5 rounded-xl px-3 py-2.5 text-left text-[12.5px] transition-colors"
+              style={{
+                border: `1px solid ${draft.price_pending ? 'var(--warn)' : 'var(--line)'}`,
+                background: draft.price_pending ? 'var(--warn-wash)' : 'var(--bg-sunken)',
+                color: draft.price_pending ? 'var(--warn-ink)' : 'var(--ink-2)',
+              }}
+            >
+              <span
+                className="flex h-4 w-4 shrink-0 items-center justify-center rounded"
+                style={{
+                  border: `1px solid ${draft.price_pending ? 'var(--warn-ink)' : 'var(--line-2)'}`,
+                  background: draft.price_pending ? 'var(--warn-ink)' : 'transparent',
+                }}
+              >
+                {draft.price_pending && <Check size={11} style={{ color: '#fff' }} />}
+              </span>
+              <span>Bill not received yet</span>
+            </button>
+          </Field>
+        )}
         {(draft.type === 'in' || draft.type === 'adjustment') && (
           <Field label={sourceFieldMeta.label} tooltip={sourceFieldMeta.tooltip}>
-            <input className="input" value={draft.supplier_bucket} onChange={(e) => update('supplier_bucket', e.target.value)} placeholder={sourceFieldMeta.placeholder} />
+            <SupplierSelect
+              value={draft.supplier_bucket}
+              onChange={(value) => update('supplier_bucket', value)}
+              vendors={vendors}
+              category={selectedItem?.category}
+              placeholder={sourceFieldMeta.placeholder}
+              allowEmpty
+              onVendorCreated={onVendorCreated}
+            />
           </Field>
         )}
         <Field label={partyFieldMeta.label} tooltip={partyFieldMeta.tooltip}>

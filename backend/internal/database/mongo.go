@@ -126,6 +126,8 @@ func createIndexes() {
 	// Vendors
 	DB.Collection("vendors").Indexes().CreateMany(ctx, []mongo.IndexModel{
 		{Keys: bson.D{{Key: "vendor_id", Value: 1}}, Options: options.Index().SetUnique(true)},
+		// Case-insensitive uniqueness on the canonical supplier name.
+		{Keys: bson.D{{Key: "name_key", Value: 1}}, Options: options.Index().SetUnique(true)},
 	})
 
 	// Products

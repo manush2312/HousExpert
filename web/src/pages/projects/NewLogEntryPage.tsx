@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { flushSync } from 'react-dom'
 import { useParams, useNavigate } from 'react-router-dom'
 import { Info } from 'lucide-react'
@@ -8,6 +8,7 @@ import SearchableSelect from '../../components/SearchableSelect'
 import SizeTextInput from '../../components/SizeTextInput'
 import { listInventoryStockLots, type InventoryStockLot } from '../../services/inventoryService'
 import {
+  PRICING_DIMENSION_SUPPLIER,
   createLogEntry,
   getPricingRule,
   listLogCategories,
@@ -25,6 +26,8 @@ import { getProject, type Project } from '../../services/projectService'
 import {
   computeLogTotalCost,
   computeInventoryVendorSellTotal,
+  findPricingRuleRate,
+  findResolvedSizeMultiplier,
   findSizeFieldLabel,
   isDirectAmountFieldLabel,
   isQuantityFieldLabel,
@@ -64,6 +67,7 @@ export default function NewLogEntryPage() {
   const [notes, setNotes] = useState('')
   const [fieldValues, setFieldValues] = useState<Record<string, unknown>>({})
   const [lotAllocations, setLotAllocations] = useState<LotAllocationDraft[]>([])
+  const [selectedSupplier, setSelectedSupplier] = useState('')
   const [stockLotRows, setStockLotRows] = useState<InventoryStockLot[]>([])
   const [pricingRule, setPricingRule] = useState<PricingRule | null>(null)
   const [loading, setLoading] = useState(false)
@@ -84,15 +88,39 @@ export default function NewLogEntryPage() {
   const inventoryConsumption = inventoryLinked && parsedQuantity != null
     ? parsedQuantity * (resolvedInventoryLink?.usage_per_quantity ?? 0)
     : null
-  const lotSelectionRequired = inventoryLinked && stockLotRows.length > 0
+  // Suppliers that currently hold stock of the linked item (remaining > 0).
+  const supplierStockOptions = useMemo(() => buildSupplierStockOptions(stockLotRows), [stockLotRows])
+  const supplierSelectionRequired = inventoryLinked && supplierStockOptions.length > 0
+  // The supplier whose stock this entry draws from. Auto-selected when only one
+  // supplier has stock; otherwise the user must pick one.
+  const activeSupplier = selectedSupplier || (supplierStockOptions.length === 1 ? supplierStockOptions[0].bucket : '')
+  // Stock lots scoped to the active supplier — deduction stays within it. When
+  // no supplier has stock (all lots empty), fall back to all lots.
+  const activeLots = useMemo(() => {
+    if (activeSupplier) return stockLotRows.filter((lot) => lot.supplier_bucket === activeSupplier)
+    return supplierStockOptions.length === 0 ? stockLotRows : []
+  }, [stockLotRows, activeSupplier, supplierStockOptions.length])
+
+  const lotSelectionRequired = inventoryLinked && activeLots.length > 0
   const parsedLotAllocations = normalizeLotAllocationDrafts(lotAllocations)
+  // Mirror the backend precedence: a supplier-keyed pricing rate wins over the
+  // flat vendor-lot sell price, which in turn wins over field/other pricing.
+  const ruleUsesSupplier = pricingRule?.dimension_fields.includes(PRICING_DIMENSION_SUPPLIER) ?? false
+  const supplierRuleTotalCost = ruleUsesSupplier && costMode === 'quantity_x_unit_cost' && parsedQuantity != null && activeSupplier
+    ? (() => {
+        const rate = findPricingRuleRate(pricingRule, fieldValues, selectedItem?.fields ?? [], activeSupplier)
+        if (rate == null) return null
+        const sizeMultiplier = findResolvedSizeMultiplier(entrySchema, selectedItem?.fields ?? [], fieldValues)
+        return rate * parsedQuantity * (sizeMultiplier ?? 1)
+      })()
+    : null
   const vendorPricedTotalCost = resolvedInventoryLink
     ? computeInventoryVendorSellTotal(parsedQuantity, resolvedInventoryLink.usage_per_quantity, parsedLotAllocations, stockLotRows)
     : null
-  const totalCost = vendorPricedTotalCost ?? (
+  const totalCost = supplierRuleTotalCost ?? vendorPricedTotalCost ?? (
     parsedQuantity != null
-      ? computeLogTotalCost(costMode, entrySchema, selectedItem?.fields ?? [], fieldValues, parsedQuantity, pricingRule)
-      : computeLogTotalCost(costMode, entrySchema, selectedItem?.fields ?? [], fieldValues, null, pricingRule)
+      ? computeLogTotalCost(costMode, entrySchema, selectedItem?.fields ?? [], fieldValues, parsedQuantity, pricingRule, activeSupplier)
+      : computeLogTotalCost(costMode, entrySchema, selectedItem?.fields ?? [], fieldValues, null, pricingRule, activeSupplier)
   )
   const visibleEntryFields = getVisibleEntryFields(entrySchema, costMode)
   const quantityLabel = sizeFieldLabel
@@ -167,22 +195,25 @@ export default function NewLogEntryPage() {
     if (!resolvedInventoryLink?.inventory_item_id) {
       setStockLotRows([])
       setLotAllocations([])
+      setSelectedSupplier('')
       return
     }
     listInventoryStockLots(resolvedInventoryLink.inventory_item_id)
       .then((response) => {
         const rows = response.data.data ?? []
         setStockLotRows(rows)
+        setSelectedSupplier('')
       })
       .catch(() => {
         setStockLotRows([])
         setLotAllocations([])
+        setSelectedSupplier('')
       })
   }, [resolvedInventoryLink?.inventory_item_id])
 
   useEffect(() => {
-    setLotAllocations((prev) => syncLotAllocations(prev, stockLotRows, inventoryConsumption))
-  }, [stockLotRows, inventoryConsumption])
+    setLotAllocations((prev) => syncLotAllocations(prev, activeLots, inventoryConsumption))
+  }, [activeLots, inventoryConsumption])
 
   const setField = (fid: string, value: unknown) =>
     setFieldValues((prev) => ({ ...prev, [fid]: value }))
@@ -206,6 +237,7 @@ export default function NewLogEntryPage() {
     && logDate
     && (!itemRequired || selectedItemId)
     && (!quantityRequired || parsedQuantity != null)
+    && (!supplierSelectionRequired || Boolean(activeSupplier))
     && lotAllocationReady
 
   const handleSubmit = async (e: React.FormEvent<HTMLFormElement>) => {
@@ -229,6 +261,7 @@ export default function NewLogEntryPage() {
         category_id: selectedCatId,
         item_id: selectedItemId || undefined,
         quantity: parsedQuantity ?? undefined,
+        inventory_supplier_bucket: activeSupplier || undefined,
         inventory_lot_id: parsedLotAllocations.length === 1 ? parsedLotAllocations[0].inventory_lot_id : undefined,
         inventory_lot_allocations: parsedLotAllocations.length > 0 ? parsedLotAllocations : undefined,
         log_date: logDate,
@@ -277,7 +310,27 @@ export default function NewLogEntryPage() {
                 </FormField>
               )}
 
-              {inventoryLinked && resolvedInventoryLink && stockLotRows.length > 0 && (
+              {inventoryLinked && resolvedInventoryLink && supplierSelectionRequired && (
+                <FormField
+                  label="Supplier"
+                  required
+                  hint="Stock is deducted from this supplier, and its pricing rule (if any) is applied."
+                >
+                  <SearchableSelect
+                    value={activeSupplier}
+                    onChange={(value) => { setSelectedSupplier(value); setLotAllocations([]) }}
+                    options={supplierStockOptions.map((option) => ({
+                      value: option.bucket,
+                      label: `${option.bucket} · ${formatQty(option.remaining)} ${resolvedInventoryLink.inventory_unit} available`,
+                    }))}
+                    placeholder="Select supplier"
+                    searchPlaceholder="Search suppliers…"
+                    emptyMessage="No supplier has stock of this item"
+                  />
+                </FormField>
+              )}
+
+              {inventoryLinked && resolvedInventoryLink && activeLots.length > 0 && (
                 <FormField
                   label="Allocate stock lots"
                   required
@@ -285,7 +338,7 @@ export default function NewLogEntryPage() {
                 >
                   <LotAllocationEditor
                     allocations={lotAllocations}
-                    stockLots={stockLotRows}
+                    stockLots={activeLots}
                     inventoryUnit={resolvedInventoryLink.inventory_unit}
                     requiredTotal={inventoryConsumption}
                     onChange={setLotAllocations}
@@ -680,6 +733,22 @@ function normalizeLotAllocationDrafts(allocations: LotAllocationDraft[]) {
       allocated_quantity: parseOptionalNumber(allocation.allocated_quantity),
     }))
     .filter((allocation): allocation is { inventory_lot_id: string; allocated_quantity: number } => Boolean(allocation.inventory_lot_id) && allocation.allocated_quantity != null && allocation.allocated_quantity > 0)
+}
+
+type SupplierStockOption = { bucket: string; remaining: number }
+
+// buildSupplierStockOptions groups an item's stock lots by supplier, keeping only
+// suppliers that still have stock. Drives the log-entry supplier picker.
+function buildSupplierStockOptions(lots: InventoryStockLot[]): SupplierStockOption[] {
+  const byBucket = new Map<string, number>()
+  for (const lot of lots) {
+    if (lot.remaining_quantity <= 0) continue
+    const bucket = lot.supplier_bucket || 'Unassigned stock'
+    byBucket.set(bucket, (byBucket.get(bucket) ?? 0) + lot.remaining_quantity)
+  }
+  return [...byBucket.entries()]
+    .map(([bucket, remaining]) => ({ bucket, remaining }))
+    .sort((a, b) => b.remaining - a.remaining || a.bucket.localeCompare(b.bucket))
 }
 
 function syncLotAllocations(current: LotAllocationDraft[], stockLots: InventoryStockLot[], requiredTotal: number | null) {

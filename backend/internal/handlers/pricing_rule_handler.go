@@ -283,6 +283,12 @@ func validatePricingRuleInput(logTypeID string, dimensionFields []string, rates 
 		}
 		seenDimensions[fieldID] = struct{}{}
 
+		// The reserved supplier dimension is chosen from the supplier master at
+		// log time, not from the schema, so skip the schema-field checks.
+		if fieldID == models.PricingDimensionSupplier {
+			continue
+		}
+
 		field, ok := fieldByID[fieldID]
 		if !ok {
 			return fmt.Errorf("dimension field %q does not exist in the current schema", fieldID)
@@ -303,8 +309,20 @@ func validatePricingRuleInput(logTypeID string, dimensionFields []string, rates 
 
 		parts := make([]string, 0, len(dimensionFields))
 		for _, fieldID := range dimensionFields {
-			field := fieldByID[fieldID]
 			value := strings.TrimSpace(rate.Keys[fieldID])
+
+			if fieldID == models.PricingDimensionSupplier {
+				if value == "" {
+					return fmt.Errorf("each pricing row must select a supplier")
+				}
+				if !services.IsKnownSupplier(value) {
+					return fmt.Errorf("%q is not a supplier in your Suppliers list", value)
+				}
+				parts = append(parts, fieldID+"="+value)
+				continue
+			}
+
+			field := fieldByID[fieldID]
 			if value == "" {
 				return fmt.Errorf("each pricing row must define a value for %s", field.Label)
 			}

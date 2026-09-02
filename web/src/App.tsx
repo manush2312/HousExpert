@@ -17,6 +17,7 @@ const NewLogTypePage = lazy(() => import('./pages/log-types/NewLogTypePage'))
 const LogTypeDetailPage = lazy(() => import('./pages/log-types/LogTypeDetailPage'))
 const ProductsPage = lazy(() => import('./pages/products/ProductsPage'))
 const InventoryPage = lazy(() => import('./pages/inventory/InventoryPage'))
+const VendorsPage = lazy(() => import('./pages/vendors/VendorsPage'))
 const QuotationsPage = lazy(() => import('./pages/quotations/QuotationsPage'))
 const FloorPlanQuotationPage = lazy(() => import('./pages/quotations/FloorPlanQuotationPage'))
 const NewQuotationPage = lazy(() => import('./pages/quotations/NewQuotationPage'))
@@ -68,6 +69,7 @@ export default function App() {
             {/* Products catalog */}
             <Route path="products" element={<ProductsPage />} />
             <Route path="inventory" element={<InventoryPage />} />
+            <Route path="suppliers" element={<VendorsPage />} />
 
             {/* Quotations */}
             <Route path="quotations" element={<QuotationsPage />} />

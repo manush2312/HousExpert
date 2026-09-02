@@ -2,7 +2,7 @@ import { useState, useEffect, useRef, useMemo, useCallback } from 'react'
 import { Outlet, useNavigate, useLocation, NavLink } from 'react-router-dom'
 import {
   Search, Layers, Plus, Sun, Moon, AlignJustify, ArrowLeft,
-  Building2, ChevronRight, Folder, Package, FileText, Armchair, Boxes, LogOut, Users,
+  Building2, ChevronRight, Folder, Package, FileText, Armchair, Boxes, LogOut, Users, Truck,
 } from 'lucide-react'
 import Modal from '../components/Modal'
 import { listProjects, type Project } from '../services/projectService'
@@ -145,6 +145,7 @@ function Sidebar({ collapsed, theme, onToggleTheme, onOpenPalette, projects, mob
     { to: '/quotations', label: 'Quotations', Icon: FileText },
     { to: '/products', label: 'Products', Icon: Package },
     { to: '/inventory', label: 'Inventory', Icon: Boxes },
+    { to: '/suppliers', label: 'Suppliers', Icon: Truck },
     { to: '/furniture', label: 'Furniture Designer', Icon: Armchair },
     { to: '/log-types', label: 'Log Types', Icon: Layers },
     // Team management is only shown to admins.
@@ -319,6 +320,8 @@ function Topbar({ onToggleSidebar }: { collapsed: boolean; onToggleSidebar: () =
       result.push({ label: 'Products', to: '/products' })
     } else if (parts[0] === 'inventory') {
       result.push({ label: 'Inventory', to: '/inventory' })
+    } else if (parts[0] === 'suppliers') {
+      result.push({ label: 'Suppliers', to: '/suppliers' })
     } else if (parts[0] === 'quotations') {
       result.push({ label: 'Quotations', to: '/quotations' })
       if (parts[1] === 'new') result.push({ label: 'New quotation' })
@@ -405,7 +408,7 @@ function getBackFallbackPath(pathname: string): string {
     return '/projects'
   }
 
-  if (section === 'products' || section === 'inventory') return '/projects'
+  if (section === 'products' || section === 'inventory' || section === 'suppliers') return '/projects'
   return '/projects'
 }
 
@@ -466,6 +469,7 @@ function CommandPalette({ open, onClose, projects, logTypes }: PaletteProps) {
     const out: PaletteItem[] = [
       { section: 'Navigate', label: 'All projects', Icon: Folder, action: () => navigate('/projects') },
       { section: 'Navigate', label: 'Inventory', Icon: Boxes, action: () => navigate('/inventory') },
+      { section: 'Navigate', label: 'Suppliers', Icon: Truck, action: () => navigate('/suppliers') },
       { section: 'Navigate', label: 'Products', Icon: Package, action: () => navigate('/products') },
       { section: 'Navigate', label: 'All log types', Icon: Layers, action: () => navigate('/log-types') },
       { section: 'Actions', label: 'New project', Icon: Plus, action: () => navigate('/projects/new'), kbd: ['N', 'P'] },

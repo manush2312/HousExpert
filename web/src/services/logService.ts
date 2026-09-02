@@ -126,6 +126,12 @@ export interface PricingRateEntry {
   rate: number
 }
 
+// PRICING_DIMENSION_SUPPLIER is a reserved dimension field id. When present in a
+// pricing rule's dimension_fields, the rate table is keyed (in part) by the
+// supplier the stock is drawn from at log time. Keep in sync with the backend
+// models.PricingDimensionSupplier constant.
+export const PRICING_DIMENSION_SUPPLIER = '__supplier__'
+
 export interface PricingRuleVersion {
   version: number
   name: string

@@ -500,9 +500,34 @@ func inventoryConsumptionFromLink(link *models.LogItemInventoryLink, loggedQuant
 	} else if len(allocations) > 1 {
 		consumption.InventoryLotID = ""
 		consumption.InventoryLotLabel = fmt.Sprintf("%d lots", len(allocations))
-		consumption.SupplierBucket = "Multiple lots"
+		// When every lot belongs to the same supplier, keep that supplier so a
+		// supplier-keyed pricing rule still resolves; only mixed suppliers fall
+		// back to the generic "Multiple lots" label.
+		if shared := sharedSupplierBucket(allocations); shared != "" {
+			consumption.SupplierBucket = shared
+		} else {
+			consumption.SupplierBucket = "Multiple lots"
+		}
 	}
 	return consumption
+}
+
+// sharedSupplierBucket returns the supplier bucket common to every allocation,
+// or "" when they draw from more than one distinct supplier.
+func sharedSupplierBucket(allocations []models.InventoryLotAllocation) string {
+	bucket := ""
+	for _, allocation := range allocations {
+		b := strings.TrimSpace(allocation.SupplierBucket)
+		if b == "" {
+			continue
+		}
+		if bucket == "" {
+			bucket = b
+		} else if bucket != b {
+			return ""
+		}
+	}
+	return bucket
 }
 
 func inventoryAllocationsFromConsumption(consumption *models.InventoryConsumption) []models.InventoryLotAllocation {
@@ -597,7 +622,11 @@ func applyInventoryConsumptionMovements(consumption *models.InventoryConsumption
 		} else if len(updatedAllocations) > 1 {
 			consumption.InventoryLotID = ""
 			consumption.InventoryLotLabel = fmt.Sprintf("%d lots", len(updatedAllocations))
-			consumption.SupplierBucket = "Multiple lots"
+			if shared := sharedSupplierBucket(updatedAllocations); shared != "" {
+				consumption.SupplierBucket = shared
+			} else {
+				consumption.SupplierBucket = "Multiple lots"
+			}
 		}
 	}
 	return consumption, nil
@@ -1986,11 +2015,40 @@ func computeEntryTotalCostForLogType(logType models.LogType, fields []models.Fie
 
 func computeEntryTotalCostWithInventoryPricing(logType models.LogType, fields []models.FieldValue, itemFields []models.FieldValue, quantity *float64, consumption *models.InventoryConsumption) *float64 {
 	if effectiveCostMode(logType) == models.LogCostModeQuantityXUnitCost {
+		supplierBucket := ""
+		if consumption != nil {
+			supplierBucket = consumption.SupplierBucket
+		}
+		// A supplier-keyed pricing rule is the most specific intent, so it wins
+		// over the flat per-vendor sell price when it produces a match.
+		if supplierTotal := computeSupplierPricingRuleTotal(logType, fields, itemFields, quantity, supplierBucket); supplierTotal != nil {
+			return supplierTotal
+		}
 		if vendorTotal := computeInventoryVendorSellTotal(quantity, consumption); vendorTotal != nil {
 			return vendorTotal
 		}
 	}
 	return computeEntryTotalCostForLogType(logType, fields, itemFields, quantity)
+}
+
+// computeSupplierPricingRuleTotal resolves total cost from a pricing rule that
+// uses the reserved supplier dimension. It returns nil for rules that do not use
+// the supplier dimension (those keep flowing through the normal precedence) or
+// when no row matches the selected supplier + dimension values.
+func computeSupplierPricingRuleTotal(logType models.LogType, fields []models.FieldValue, itemFields []models.FieldValue, quantity *float64, supplierBucket string) *float64 {
+	if quantity == nil {
+		return nil
+	}
+	rate := extractSupplierPricingRuleUnitCost(logType.ID, fields, itemFields, supplierBucket)
+	if rate == nil {
+		return nil
+	}
+	totalUnits := *quantity
+	if sizeMultiplier := extractSizeMultiplier(fields, itemFields); sizeMultiplier != nil {
+		totalUnits *= *sizeMultiplier
+	}
+	total := totalUnits * *rate
+	return &total
 }
 
 func computeInventoryVendorSellTotal(quantity *float64, consumption *models.InventoryConsumption) *float64 {
@@ -2102,6 +2160,57 @@ func extractPricingRuleUnitCost(logTypeID primitive.ObjectID, fields []models.Fi
 		}
 	}
 
+	return nil
+}
+
+// extractSupplierPricingRuleUnitCost returns a unit rate only when the log
+// type's pricing rule uses the reserved supplier dimension and a row matches the
+// selected supplier plus any other dimension values. It returns nil for rules
+// that do not use the supplier dimension, so ordinary rules are untouched.
+func extractSupplierPricingRuleUnitCost(logTypeID primitive.ObjectID, fields []models.FieldValue, itemFields []models.FieldValue, supplierBucket string) *float64 {
+	if strings.TrimSpace(supplierBucket) == "" {
+		return nil
+	}
+
+	var rule models.PricingRule
+	err := pricingRuleCol().FindOne(context.Background(), bson.M{"log_type_id": logTypeID}).Decode(&rule)
+	if err != nil || len(rule.DimensionFields) == 0 || len(rule.Rates) == 0 {
+		return nil
+	}
+
+	usesSupplier := false
+	for _, fieldID := range rule.DimensionFields {
+		if fieldID == models.PricingDimensionSupplier {
+			usesSupplier = true
+			break
+		}
+	}
+	if !usesSupplier {
+		return nil
+	}
+
+	selectedKeys := make(map[string]string, len(rule.DimensionFields))
+	for _, fieldID := range rule.DimensionFields {
+		if fieldID == models.PricingDimensionSupplier {
+			selectedKeys[fieldID] = canonicalSupplierName(supplierBucket)
+			continue
+		}
+		value := findFieldStringValue(fieldID, fields)
+		if value == "" {
+			value = findFieldStringValue(fieldID, itemFields)
+		}
+		if value == "" {
+			return nil
+		}
+		selectedKeys[fieldID] = value
+	}
+
+	for _, rate := range rule.Rates {
+		if pricingRateMatches(rule.DimensionFields, selectedKeys, rate.Keys) {
+			value := rate.Rate
+			return &value
+		}
+	}
 	return nil
 }
 

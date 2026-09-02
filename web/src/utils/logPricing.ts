@@ -6,6 +6,7 @@ import type {
   PricingRule,
   SchemaField,
 } from '../services/logService'
+import { PRICING_DIMENSION_SUPPLIER } from '../services/logService'
 import type { InventoryStockLot } from '../services/inventoryService'
 
 export function computeLogTotalCost(
@@ -15,6 +16,7 @@ export function computeLogTotalCost(
   values: Record<string, unknown>,
   quantity: number | null,
   pricingRule?: PricingRule | null,
+  supplier?: string | null,
 ): number | null {
   if (costMode === 'direct_amount') {
     return findDirectAmountValue(schema, values) ?? findTotalCostValue(schema, values)
@@ -24,7 +26,7 @@ export function computeLogTotalCost(
   }
   if (quantity == null) return null
 
-  const unitCost = findResolvedUnitCost(schema, itemFields, values, pricingRule)
+  const unitCost = findResolvedUnitCost(schema, itemFields, values, pricingRule, supplier)
   if (unitCost == null) return null
   const sizeMultiplier = findResolvedSizeMultiplier(schema, itemFields, values)
   return unitCost * quantity * (sizeMultiplier ?? 1)
@@ -57,10 +59,11 @@ export function findResolvedUnitCost(
   itemFields: FieldValue[],
   values: Record<string, unknown>,
   pricingRule?: PricingRule | null,
+  supplier?: string | null,
 ): number | null {
   const directUnitCost = findUnitCostValue(schema, itemFields, values)
   if (directUnitCost != null) return directUnitCost
-  return findPricingRuleRate(pricingRule, values, itemFields)
+  return findPricingRuleRate(pricingRule, values, itemFields, supplier)
 }
 
 export function findUnitCostValue(
@@ -121,11 +124,18 @@ export function findPricingRuleRate(
   pricingRule: PricingRule | null | undefined,
   values: Record<string, unknown>,
   itemFields: FieldValue[],
+  supplier?: string | null,
 ): number | null {
   if (!pricingRule || pricingRule.dimension_fields.length === 0) return null
 
   const selectedKeys: Record<string, string> = {}
   for (const fieldID of pricingRule.dimension_fields) {
+    if (fieldID === PRICING_DIMENSION_SUPPLIER) {
+      const supplierValue = (supplier ?? '').trim()
+      if (!supplierValue) return null
+      selectedKeys[fieldID] = supplierValue
+      continue
+    }
     const entryValue = normalizeStringValue(values[fieldID])
     const itemValue = normalizeStringValue(itemFields.find((field) => field.field_id === fieldID)?.value)
     const value = entryValue || itemValue

@@ -45,6 +45,41 @@ const (
 	InventoryMovementAdjustment InventoryMovementType = "adjustment"
 )
 
+// LotCostStatus tracks whether a stock lot's unit cost is the real invoiced
+// price or a provisional estimate entered because the supplier's bill had not
+// arrived yet.
+//
+// The zero value ("") means confirmed. Every lot created before this feature
+// existed has no cost_status field at all, and those are settled history — so
+// "unknown" must read as confirmed, never as pending. Code therefore tests for
+// the provisional value explicitly and never for equality with confirmed.
+type LotCostStatus string
+
+const (
+	LotCostProvisional LotCostStatus = "provisional"
+	LotCostConfirmed   LotCostStatus = "confirmed"
+)
+
+// IsProvisional reports whether a cost status means "still waiting on the bill".
+func (s LotCostStatus) IsProvisional() bool { return s == LotCostProvisional }
+
+// Normalized maps the empty (legacy) status onto confirmed.
+func (s LotCostStatus) Normalized() LotCostStatus {
+	if s == LotCostProvisional {
+		return LotCostProvisional
+	}
+	return LotCostConfirmed
+}
+
+// LotCostSource records where a lot's unit cost came from, so the UI can tell
+// the user whether an estimate was auto-filled or typed by hand.
+const (
+	LotCostSourceInvoice       = "invoice"        // taken from the supplier's bill
+	LotCostSourceVendorDefault = "vendor_default" // vendor pricing row for this item
+	LotCostSourceLastPurchase  = "last_purchase"  // item's previous purchase cost
+	LotCostSourceManual        = "manual"         // typed in by the user
+)
+
 type InventoryMovement struct {
 	ID              primitive.ObjectID    `bson:"_id,omitempty" json:"id"`
 	MovementID      string                `bson:"movement_id" json:"movement_id"`
@@ -61,13 +96,17 @@ type InventoryMovement struct {
 	DisplayUnit     string                `bson:"-" json:"display_unit,omitempty"`
 	UnitCost        float64               `bson:"unit_cost,omitempty" json:"unit_cost,omitempty"`
 	TotalAmount     float64               `bson:"total_amount,omitempty" json:"total_amount,omitempty"`
-	BalanceAfter    float64               `bson:"balance_after" json:"balance_after"`
-	Party           string                `bson:"party,omitempty" json:"party,omitempty"`
-	DocumentNumber  string                `bson:"document_number,omitempty" json:"document_number,omitempty"`
-	Reference       string                `bson:"reference,omitempty" json:"reference,omitempty"`
-	Notes           string                `bson:"notes,omitempty" json:"notes,omitempty"`
-	TransactionDate time.Time             `bson:"transaction_date" json:"transaction_date"`
-	CreatedAt       time.Time             `bson:"created_at" json:"created_at"`
+	// CostStatus mirrors the cost status of the lot this movement drew from, so
+	// a report can split confirmed spend from spend that is still an estimate
+	// without joining back to the lot.
+	CostStatus      LotCostStatus `bson:"cost_status,omitempty" json:"cost_status,omitempty"`
+	BalanceAfter    float64       `bson:"balance_after" json:"balance_after"`
+	Party           string        `bson:"party,omitempty" json:"party,omitempty"`
+	DocumentNumber  string        `bson:"document_number,omitempty" json:"document_number,omitempty"`
+	Reference       string        `bson:"reference,omitempty" json:"reference,omitempty"`
+	Notes           string        `bson:"notes,omitempty" json:"notes,omitempty"`
+	TransactionDate time.Time     `bson:"transaction_date" json:"transaction_date"`
+	CreatedAt       time.Time     `bson:"created_at" json:"created_at"`
 }
 
 type InventoryStockLot struct {
@@ -80,12 +119,23 @@ type InventoryStockLot struct {
 	ReceivedQuantity  float64            `bson:"received_quantity" json:"received_quantity"`
 	RemainingQuantity float64            `bson:"remaining_quantity" json:"remaining_quantity"`
 	UnitCost          float64            `bson:"unit_cost,omitempty" json:"unit_cost,omitempty"`
-	ReceivedDate      time.Time          `bson:"received_date" json:"received_date"`
-	DocumentNumber    string             `bson:"document_number,omitempty" json:"document_number,omitempty"`
-	Reference         string             `bson:"reference,omitempty" json:"reference,omitempty"`
-	Notes             string             `bson:"notes,omitempty" json:"notes,omitempty"`
-	CreatedAt         time.Time          `bson:"created_at" json:"created_at"`
-	UpdatedAt         time.Time          `bson:"updated_at" json:"updated_at"`
+	// CostStatus is "provisional" while the supplier's bill is outstanding.
+	// Absent/empty means confirmed — see LotCostStatus.
+	CostStatus LotCostStatus `bson:"cost_status,omitempty" json:"cost_status,omitempty"`
+	CostSource string        `bson:"cost_source,omitempty" json:"cost_source,omitempty"`
+	// EstimatedUnitCost preserves the guess that was used while the bill was
+	// outstanding, so the estimate-vs-actual variance survives confirmation.
+	EstimatedUnitCost float64    `bson:"estimated_unit_cost,omitempty" json:"estimated_unit_cost,omitempty"`
+	InvoiceNumber     string     `bson:"invoice_number,omitempty" json:"invoice_number,omitempty"`
+	InvoiceDate       *time.Time `bson:"invoice_date,omitempty" json:"invoice_date,omitempty"`
+	ConfirmedAt       *time.Time `bson:"confirmed_at,omitempty" json:"confirmed_at,omitempty"`
+	ConfirmedBy       string     `bson:"confirmed_by,omitempty" json:"confirmed_by,omitempty"`
+	ReceivedDate      time.Time  `bson:"received_date" json:"received_date"`
+	DocumentNumber    string     `bson:"document_number,omitempty" json:"document_number,omitempty"`
+	Reference         string     `bson:"reference,omitempty" json:"reference,omitempty"`
+	Notes             string     `bson:"notes,omitempty" json:"notes,omitempty"`
+	CreatedAt         time.Time  `bson:"created_at" json:"created_at"`
+	UpdatedAt         time.Time  `bson:"updated_at" json:"updated_at"`
 }
 
 type InventorySupplierStock struct {
@@ -99,18 +149,22 @@ type InventorySupplierStock struct {
 }
 
 type InventoryStockLotView struct {
-	LotID             string    `json:"lot_id"`
-	ItemID            string    `json:"item_id"`
-	ItemName          string    `json:"item_name"`
-	ItemUnit          string    `json:"item_unit"`
-	SupplierBucket    string    `json:"supplier_bucket"`
-	ReceivedQuantity  float64   `json:"received_quantity"`
-	RemainingQuantity float64   `json:"remaining_quantity"`
-	UnitCost          float64   `json:"unit_cost,omitempty"`
-	DefaultSellPrice  float64   `json:"default_sell_price,omitempty"`
-	ReceivedDate      time.Time `json:"received_date"`
-	DocumentNumber    string    `json:"document_number,omitempty"`
-	Reference         string    `json:"reference,omitempty"`
-	Notes             string    `json:"notes,omitempty"`
-	Label             string    `json:"label"`
+	LotID             string        `json:"lot_id"`
+	ItemID            string        `json:"item_id"`
+	ItemName          string        `json:"item_name"`
+	ItemUnit          string        `json:"item_unit"`
+	SupplierBucket    string        `json:"supplier_bucket"`
+	ReceivedQuantity  float64       `json:"received_quantity"`
+	RemainingQuantity float64       `json:"remaining_quantity"`
+	UnitCost          float64       `json:"unit_cost,omitempty"`
+	CostStatus        LotCostStatus `json:"cost_status,omitempty"`
+	CostSource        string        `json:"cost_source,omitempty"`
+	EstimatedUnitCost float64       `json:"estimated_unit_cost,omitempty"`
+	InvoiceNumber     string        `json:"invoice_number,omitempty"`
+	DefaultSellPrice  float64       `json:"default_sell_price,omitempty"`
+	ReceivedDate      time.Time     `json:"received_date"`
+	DocumentNumber    string        `json:"document_number,omitempty"`
+	Reference         string        `json:"reference,omitempty"`
+	Notes             string        `json:"notes,omitempty"`
+	Label             string        `json:"label"`
 }
