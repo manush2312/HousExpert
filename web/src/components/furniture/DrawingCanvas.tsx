@@ -16,6 +16,11 @@ import {
   FURNITURE_BOX_FRAME_PADDING,
   FURNITURE_CANVAS_PX_PER_MM,
 } from '../../utils/furnitureCanvasGeometry'
+import {
+  getCarcassMetrics,
+  getDrawerWidths,
+  getShelfCells,
+} from '../../utils/furnitureConstruction'
 export { OUTER_BOX_SELECTION_ID }
 
 // ── Scale ─────────────────────────────────────────────────────────────────────
@@ -69,13 +74,14 @@ interface FillGapDraft {
   isShelfCell: boolean
 }
 
-// Interior bounds of the drawn box (in canvas px), accounting for panel thickness
-function interiorOf(box: CanvasBox, T: number) {
+// Interior bounds of the drawn box (in canvas px), accounting for panel
+// thickness and the plinth, which occupies the bottom of the drawn box.
+function interiorOf(box: CanvasBox, T: number, basePx = 0) {
   return {
     left:   box.x + T,
     right:  box.x + box.width  - T,
     top:    box.y + T,
-    bottom: box.y + box.height - T,
+    bottom: box.y + box.height - basePx - T,
   }
 }
 
@@ -83,8 +89,9 @@ function isInsideInterior(
   pos: { x: number; y: number },
   box: CanvasBox,
   T: number,
+  basePx = 0,
 ): boolean {
-  const { left, right, top, bottom } = interiorOf(box, T)
+  const { left, right, top, bottom } = interiorOf(box, T, basePx)
   return pos.x >= left && pos.x <= right && pos.y >= top && pos.y <= bottom
 }
 
@@ -101,24 +108,6 @@ function getSectionBoundaries(
     iRight,
   ]
   return xs.slice(0, -1).map((left, i) => ({ index: i, left, right: xs[i + 1] }))
-}
-
-// Returns the open cells between shelves using shelf FACES, not centres.
-// Each cell is the empty space between adjacent horizontal surfaces.
-function getShelfCells(
-  shelfFromBottoms: number[],  // centres in mm (already sorted ascending)
-  T_mm: number,
-  interiorHeightMm: number,
-): Array<{ from: number; to: number }> {
-  const cells: Array<{ from: number; to: number }> = []
-  let prevTop = 0
-  for (const fb of shelfFromBottoms) {
-    const shelfBottomFace = Math.max(prevTop, fb - T_mm / 2)
-    cells.push({ from: prevTop, to: shelfBottomFace })
-    prevTop = fb + T_mm / 2
-  }
-  cells.push({ from: prevTop, to: interiorHeightMm })
-  return cells
 }
 
 function getClearVerticalCells(
@@ -255,6 +244,69 @@ function snapDeltaForFreehandPath(
   return { dx: x.value, dy: y.value, snappedX: x.snapped, snappedY: y.snapped }
 }
 
+/**
+ * Everything on the canvas lives in a Konva Layer scaled by `zoom`, so text and
+ * its offsets shrink with the drawing. A 2100mm box fitted to the viewport sits
+ * at roughly 0.25 zoom, which renders a 12px label at 3px -- invisible. Anything
+ * that must stay readable is therefore multiplied by `inv` (= 1 / zoom).
+ */
+interface MeasureBadgeProps {
+  x: number
+  y: number
+  text: string
+  sub?: string
+  inv: number
+  accent?: string
+}
+
+function MeasureBadge({ x, y, text, sub, inv, accent = '#3b82f6' }: MeasureBadgeProps) {
+  const fontSize = 12
+  const subFontSize = 9
+  const padX = 6
+  const padY = 4
+  // Konva cannot measure before layout, so approximate from the longest line.
+  const widest = Math.max(text.length * 6.9, (sub?.length ?? 0) * 5.2)
+  const w = (widest + padX * 2) * inv
+  const h = (sub ? fontSize + subFontSize + padY * 2 + 2 : fontSize + padY * 2) * inv
+
+  return (
+    <Group listening={false}>
+      <Rect
+        x={x} y={y - h / 2} width={w} height={h}
+        fill="rgba(255,255,255,0.94)"
+        stroke={accent} strokeWidth={1 * inv}
+        cornerRadius={3 * inv}
+      />
+      <Text
+        x={x + padX * inv} y={y - h / 2 + padY * inv}
+        text={text}
+        fontSize={fontSize * inv} fontStyle="bold" fill={accent}
+      />
+      {sub && (
+        <Text
+          x={x + padX * inv} y={y - h / 2 + (padY + fontSize + 2) * inv}
+          text={sub}
+          fontSize={subFontSize * inv} fill={accent} opacity={0.75}
+        />
+      )}
+    </Group>
+  )
+}
+
+/** Vertical extent line with end ticks, drawn at a constant on-screen weight. */
+function HeightGuide({ x, top, bottom, inv, accent = '#3b82f6' }: {
+  x: number; top: number; bottom: number; inv: number; accent?: string
+}) {
+  const tick = 4 * inv
+  return (
+    <Group listening={false}>
+      <Line points={[x, top, x, bottom]} stroke={accent} strokeWidth={1 * inv} />
+      <Line points={[x - tick, top, x + tick, top]} stroke={accent} strokeWidth={1 * inv} />
+      <Line points={[x - tick, bottom, x + tick, bottom]} stroke={accent} strokeWidth={1 * inv} />
+    </Group>
+  )
+}
+
 // ── Component ─────────────────────────────────────────────────────────────────
 
 export default function DrawingCanvas() {
@@ -287,7 +339,7 @@ export default function DrawingCanvas() {
   const [fillGapDraft, setFillGapDraft] = useState<FillGapDraft | null>(null)
 
   const {
-    outerBox, mode, material,
+    outerBox, mode, material, construction,
     shelves, partitions, drawers, customPanels, shelfPartitions, freehandPaths,
     setOuterBox, addShelf, addPartition, addDrawer, addCustomPanel, addShelfPartition,
     addEqualShelves, addEqualPartitions, addEqualShelfPartitions, addFreehandPath,
@@ -307,9 +359,19 @@ export default function DrawingCanvas() {
   const isDraggingElement = useRef(false)
   const viewWasAdjustedRef = useRef(false)
   const T = mmToPx(material.thickness)   // panel thickness in px
+  // The drawn box includes the plinth, so the interior floor sits above it.
+  const carcass = useMemo(
+    () => (outerBox ? getCarcassMetrics(outerBox, material, construction) : null),
+    [outerBox, material, construction],
+  )
+  const basePx = carcass ? mmToPx(carcass.baseHeight) : 0
+  const carcassInteriorHeightMm = carcass ? carcass.interiorHeight : 0
 
   // ── Zoom / pan ────────────────────────────────────────────────────────────
   const [zoom,     setZoom]     = useState(DEFAULT_ZOOM)
+  // Canvas annotations live inside a Layer scaled by `zoom`, so multiply any
+  // size or offset that must stay constant on screen by this.
+  const inv = 1 / zoom
   const [stagePos, setStagePos] = useState({ x: 0, y: 0 })
   const [isPanning, setIsPanning] = useState(false)
   const panLastRef = useRef<{ x: number; y: number } | null>(null)
@@ -467,7 +529,7 @@ export default function DrawingCanvas() {
   const pencilSnapGuides = useMemo<PencilSnapGuides>(() => {
     if (!boxCanvas || !outerBox) return { x: [], y: [] }
 
-    const { left: iLeft, right: iRight, top: iTop, bottom: iBottom } = interiorOf(boxCanvas, T)
+    const { left: iLeft, right: iRight, top: iTop, bottom: iBottom } = interiorOf(boxCanvas, T, basePx)
     const xs = [
       boxCanvas.x,
       iLeft,
@@ -513,6 +575,7 @@ export default function DrawingCanvas() {
     boxCanvas,
     outerBox,
     T,
+    basePx,
     partitions,
     shelfPartitions,
     customPanels,
@@ -568,7 +631,7 @@ export default function DrawingCanvas() {
 
     if (mode === 'add_custom_panel' && boxCanvas) {
       const Tpx = mmToPx(material.thickness)
-      if (isInsideInterior(pos, boxCanvas, Tpx)) {
+      if (isInsideInterior(pos, boxCanvas, Tpx, basePx)) {
         setCustomDrawStart(pos)
         setCustomDrawCurrent(pos)
       }
@@ -576,12 +639,12 @@ export default function DrawingCanvas() {
 
     if (mode === 'add_drawer' && boxCanvas) {
       const Tpx = mmToPx(material.thickness)
-      if (isInsideInterior(pos, boxCanvas, Tpx)) {
+      if (isInsideInterior(pos, boxCanvas, Tpx, basePx)) {
         setDrawerDrawStart(pos)
         setDrawerDrawCurrent(pos)
       }
     }
-  }, [mode, boxCanvas, material.thickness, snapPencilPoint, zoom, stagePos])
+  }, [mode, boxCanvas, material.thickness, basePx, snapPencilPoint, zoom, stagePos])
 
   const handleMouseMove = useCallback((e: KonvaEventObject<MouseEvent>) => {
     const raw = e.target.getStage()?.getPointerPosition()
@@ -633,11 +696,11 @@ export default function DrawingCanvas() {
     if (!boxCanvas || !outerBox) return null
 
     const Tpx = mmToPx(material.thickness)
-    if (!isInsideInterior(pos, boxCanvas, Tpx)) return null
+    if (!isInsideInterior(pos, boxCanvas, Tpx, basePx)) return null
 
-    const { left: iLeft, bottom: iBottom } = interiorOf(boxCanvas, Tpx)
+    const { left: iLeft, bottom: iBottom } = interiorOf(boxCanvas, Tpx, basePx)
     const interiorWidthMm = outerBox.width - material.thickness * 2
-    const interiorHeightMm = outerBox.height - material.thickness * 2
+    const interiorHeightMm = carcassInteriorHeightMm
     const clickFromLeft = Math.round(pxToMm(pos.x - iLeft))
     const clickFromBottom = Math.round(pxToMm(iBottom - pos.y))
     const sorted = [...partitions].sort((a, b) => a.fromLeft - b.fromLeft)
@@ -711,7 +774,7 @@ export default function DrawingCanvas() {
       sectionClearEnd: Math.round(sectionClearEnd),
       isShelfCell: sectionShelves.length > 0 || sectionDrawers.length > 0,
     }
-  }, [boxCanvas, outerBox, material.thickness, partitions, shelves, drawers, shelfPartitions])
+  }, [boxCanvas, outerBox, material.thickness, basePx, carcassInteriorHeightMm, partitions, shelves, drawers, shelfPartitions])
 
   const handleMouseUp = useCallback((e: KonvaEventObject<MouseEvent>) => {
     if (mode === 'pan') {
@@ -772,7 +835,7 @@ export default function DrawingCanvas() {
     // ── add_custom_panel: finalise drag rectangle ─────────────────────────
     if (mode === 'add_custom_panel' && customDrawStart && customDrawCurrent && boxCanvas && outerBox) {
       const Tpx = mmToPx(material.thickness)
-      const { left: iLeft, right: iRight, top: iTop, bottom: iBottom } = interiorOf(boxCanvas, Tpx)
+      const { left: iLeft, right: iRight, top: iTop, bottom: iBottom } = interiorOf(boxCanvas, Tpx, basePx)
 
       const rawX = Math.min(customDrawStart.x, customDrawCurrent.x)
       const rawY = Math.min(customDrawStart.y, customDrawCurrent.y)
@@ -811,9 +874,9 @@ export default function DrawingCanvas() {
       if (dist(clickStart, pos) > 6) { setClickStart(null); return }
 
       const T = mmToPx(material.thickness)
-      if (!isInsideInterior(pos, boxCanvas, T)) { setClickStart(null); return }
+      if (!isInsideInterior(pos, boxCanvas, T, basePx)) { setClickStart(null); return }
 
-      const interiorHeightMm = outerBox.height - material.thickness * 2
+      const interiorHeightMm = carcassInteriorHeightMm
       const fromTopMm = pxToMm(pos.y - (boxCanvas.y + T))
       const fromBottom = Math.max(0, interiorHeightMm - fromTopMm)
 
@@ -829,9 +892,9 @@ export default function DrawingCanvas() {
       if (dist(clickStart, pos) > 6) { setClickStart(null); return }
 
       const T = mmToPx(material.thickness)
-      if (!isInsideInterior(pos, boxCanvas, T)) { setClickStart(null); return }
+      if (!isInsideInterior(pos, boxCanvas, T, basePx)) { setClickStart(null); return }
 
-      const { left: iLeft, bottom: iBottom } = interiorOf(boxCanvas, T)
+      const { left: iLeft, bottom: iBottom } = interiorOf(boxCanvas, T, basePx)
       const fromLeft = pxToMm(pos.x - iLeft)
 
       const sorted   = [...partitions].sort((a, b) => a.fromLeft - b.fromLeft)
@@ -840,7 +903,7 @@ export default function DrawingCanvas() {
       const sIdx     = section?.index ?? 0
 
       // Find shelves in this section to see if we're clicking between two shelves
-      const interiorHeightMm = outerBox.height - material.thickness * 2
+      const interiorHeightMm = carcassInteriorHeightMm
       const sectionShelves   = shelves
         .filter((sh) => sh.sectionIndex === sIdx)
         .map((sh) => sh.fromBottom)
@@ -861,7 +924,7 @@ export default function DrawingCanvas() {
     // ── add_drawer: finalise drag rectangle ───────────────────────────────
     if (mode === 'add_drawer' && drawerDrawStart && drawerDrawCurrent && boxCanvas && outerBox) {
       const Tpx = mmToPx(material.thickness)
-      const { top: iTop, bottom: iBottom } = interiorOf(boxCanvas, Tpx)
+      const { top: iTop, bottom: iBottom } = interiorOf(boxCanvas, Tpx, basePx)
 
       const topY = Math.max(iTop,   Math.min(drawerDrawStart.y, drawerDrawCurrent.y))
       const botY = Math.min(iBottom, Math.max(drawerDrawStart.y, drawerDrawCurrent.y))
@@ -885,7 +948,7 @@ export default function DrawingCanvas() {
     }
 
     setClickStart(null)
-  }, [mode, drawStart, drawCurrent, customDrawStart, customDrawCurrent, drawerDrawStart, drawerDrawCurrent, pencilPoints, boxCanvas, outerBox, material, clickStart, partitions, shelves, addShelf, addPartition, addShelfPartition, addDrawer, addCustomPanel, addFreehandPath, pencilStroke, pencilStrokeWidth, setOuterBox, createFillGapDraft, setSelected, zoom, stagePos])
+  }, [mode, drawStart, drawCurrent, customDrawStart, customDrawCurrent, drawerDrawStart, drawerDrawCurrent, pencilPoints, boxCanvas, outerBox, material, basePx, carcassInteriorHeightMm, clickStart, partitions, shelves, addShelf, addPartition, addShelfPartition, addDrawer, addCustomPanel, addFreehandPath, pencilStroke, pencilStrokeWidth, setOuterBox, createFillGapDraft, setSelected, zoom, stagePos])
 
   const handleMouseLeave = useCallback(() => {
     setMousePos(null)
@@ -925,8 +988,9 @@ export default function DrawingCanvas() {
         outerWidth: outerBox.width,
         outerHeight: outerBox.height,
         interiorWidth: Math.max(1, outerBox.width - material.thickness * 2),
-        interiorHeight: Math.max(1, outerBox.height - material.thickness * 2),
+        interiorHeight: Math.max(1, carcassInteriorHeightMm),
         thickness: material.thickness,
+        baseHeight: carcass?.baseHeight ?? 0,
       }
     : null
   const measurementSettings = {
@@ -948,9 +1012,9 @@ export default function DrawingCanvas() {
   // Ghost shelf info while hovering in add_shelf mode
   const ghostShelf = useMemo(() => {
     if (mode !== 'add_shelf' || !mousePos || !boxCanvas || !outerBox) return null
-    if (!isInsideInterior(mousePos, boxCanvas, T)) return null
+    if (!isInsideInterior(mousePos, boxCanvas, T, basePx)) return null
 
-    const { bottom } = interiorOf(boxCanvas, T)
+    const { bottom } = interiorOf(boxCanvas, T, basePx)
     const sorted   = [...partitions].sort((a, b) => a.fromLeft - b.fromLeft)
     const sections = getSectionBoundaries(boxCanvas, sorted, T)
     const section  = sections.find((s) => mousePos.x >= s.left && mousePos.x <= s.right)
@@ -961,22 +1025,22 @@ export default function DrawingCanvas() {
     const left  = section.left  + leftOff
     const right = section.right - rightOff
 
-    const interiorHeightMm = outerBox.height - material.thickness * 2
+    const interiorHeightMm = carcassInteriorHeightMm
     const fromTopMm  = pxToMm(mousePos.y - (boxCanvas.y + T))
     const fromBottom = Math.round(Math.max(0, Math.min(interiorHeightMm, interiorHeightMm - fromTopMm)))
     const canvasY    = bottom - mmToPx(fromBottom)
 
     return { canvasY, fromBottom, left, right, sectionIndex: section.index }
-  }, [mode, mousePos, boxCanvas, outerBox, T, material.thickness, partitions])
+  }, [mode, mousePos, boxCanvas, outerBox, T, basePx, carcassInteriorHeightMm, partitions])
 
   // Ghost partition info while hovering in add_partition mode
   const ghostPartition = useMemo(() => {
     if (mode !== 'add_partition' || !mousePos || !boxCanvas || !outerBox) return null
-    if (!isInsideInterior(mousePos, boxCanvas, T)) return null
+    if (!isInsideInterior(mousePos, boxCanvas, T, basePx)) return null
 
-    const { left: iLeft, top: iTop, bottom: iBottom } = interiorOf(boxCanvas, T)
+    const { left: iLeft, top: iTop, bottom: iBottom } = interiorOf(boxCanvas, T, basePx)
     const interiorWidthMm  = outerBox.width  - material.thickness * 2
-    const interiorHeightMm = outerBox.height - material.thickness * 2
+    const interiorHeightMm = carcassInteriorHeightMm
     const fromLeftMm = Math.round(Math.max(0, Math.min(interiorWidthMm, pxToMm(mousePos.x - iLeft))))
     const canvasX    = iLeft + mmToPx(fromLeftMm)
 
@@ -1012,14 +1076,14 @@ export default function DrawingCanvas() {
       cellFromBottom, cellToBottom,
       iTop,  // original interior top (for the guide line on full-height)
     }
-  }, [mode, mousePos, boxCanvas, outerBox, T, material.thickness, partitions, shelves])
+  }, [mode, mousePos, boxCanvas, outerBox, T, basePx, carcassInteriorHeightMm, material.thickness, partitions, shelves])
 
   // Ghost drawer: hover = section highlight, drag = actual rectangle
   const ghostDrawer = useMemo(() => {
     if (mode !== 'add_drawer' || !boxCanvas || !outerBox) return null
 
     const Tpx = mmToPx(material.thickness)
-    const { top: iTop, bottom: iBottom } = interiorOf(boxCanvas, Tpx)
+    const { top: iTop, bottom: iBottom } = interiorOf(boxCanvas, Tpx, basePx)
     const sorted   = [...partitions].sort((a, b) => a.fromLeft - b.fromLeft)
     const sections = getSectionBoundaries(boxCanvas, sorted, Tpx)
 
@@ -1036,13 +1100,17 @@ export default function DrawingCanvas() {
       if (!section) return null
 
       const { leftOff, rightOff } = sectionOffsets(section)
+      const dragPadPx = mmToPx(getDrawerWidths(
+        pxToMm(section.right - section.left - leftOff - rightOff),
+        construction,
+      ).sidePadding)
       const topY = Math.max(iTop,   Math.min(drawerDrawStart.y, drawerDrawCurrent.y))
       const botY = Math.min(iBottom, Math.max(drawerDrawStart.y, drawerDrawCurrent.y))
 
       return {
         kind: 'drag' as const,
-        left: section.left + leftOff,
-        right: section.right - rightOff,
+        left: section.left + leftOff + dragPadPx,
+        right: section.right - rightOff - dragPadPx,
         drawerTop: topY,
         drawerBottom: botY,
         heightMm:     Math.round(pxToMm(botY - topY)),
@@ -1051,25 +1119,29 @@ export default function DrawingCanvas() {
     }
 
     // ── Hover: highlight the section the mouse is in ────────────────────
-    if (!mousePos || !isInsideInterior(mousePos, boxCanvas, Tpx)) return null
+    if (!mousePos || !isInsideInterior(mousePos, boxCanvas, Tpx, basePx)) return null
     const section = sections.find((s) => mousePos.x >= s.left && mousePos.x <= s.right)
     if (!section) return null
 
     const { leftOff, rightOff } = sectionOffsets(section)
+    const hoverPadPx = mmToPx(getDrawerWidths(
+      pxToMm(section.right - section.left - leftOff - rightOff),
+      construction,
+    ).sidePadding)
     return {
       kind: 'hover' as const,
-      left: section.left + leftOff,
-      right: section.right - rightOff,
+      left: section.left + leftOff + hoverPadPx,
+      right: section.right - rightOff - hoverPadPx,
       drawerTop:    iTop,
       drawerBottom: iBottom,
     }
-  }, [mode, mousePos, boxCanvas, outerBox, T, partitions, drawerDrawStart, drawerDrawCurrent, material.thickness])
+  }, [mode, mousePos, boxCanvas, outerBox, basePx, construction, partitions, drawerDrawStart, drawerDrawCurrent, material.thickness])
 
   // Ghost custom panel while dragging
   const ghostCustomPanel = useMemo(() => {
     if (mode !== 'add_custom_panel' || !customDrawStart || !customDrawCurrent || !boxCanvas) return null
     const Tpx = mmToPx(material.thickness)
-    const { left: iLeft, right: iRight, top: iTop, bottom: iBottom } = interiorOf(boxCanvas, Tpx)
+    const { left: iLeft, right: iRight, top: iTop, bottom: iBottom } = interiorOf(boxCanvas, Tpx, basePx)
 
     const x = Math.max(iLeft,  Math.min(customDrawStart.x, customDrawCurrent.x))
     const y = Math.max(iTop,   Math.min(customDrawStart.y, customDrawCurrent.y))
@@ -1079,7 +1151,7 @@ export default function DrawingCanvas() {
     const h = Math.max(0, b - y)
 
     return { x, y, w, h, widthMm: Math.round(pxToMm(w)), heightMm: Math.round(pxToMm(h)) }
-  }, [mode, customDrawStart, customDrawCurrent, boxCanvas, material.thickness])
+  }, [mode, customDrawStart, customDrawCurrent, boxCanvas, material.thickness, basePx])
 
   const hoverFillGap = useMemo(() => {
     if (mode !== 'fill_gap' || !mousePos || !boxCanvas || !outerBox || fillGapDraft) return null
@@ -1257,7 +1329,7 @@ export default function DrawingCanvas() {
               />
               {/* Bottom wall */}
               <Rect
-                x={boxCanvas.x + T} y={boxCanvas.y + boxCanvas.height - T}
+                x={boxCanvas.x + T} y={boxCanvas.y + boxCanvas.height - basePx - T}
                 width={boxCanvas.width - T * 2} height={T}
                 fill="rgba(184,148,90,0.35)"
                 stroke="#b8945a" strokeWidth={0.5}
@@ -1265,6 +1337,29 @@ export default function DrawingCanvas() {
                 style={{ cursor: 'pointer' }}
                 onClick={(e) => { e.cancelBubble = true; setSelected(OUTER_BOX_SELECTION_ID) }}
               />
+
+              {/* ── Base rail: interior width, between the full-height sides ── */}
+              {basePx > 0 && (
+                <Group listening={false}>
+                  <Rect
+                    x={boxCanvas.x + T}
+                    y={boxCanvas.y + boxCanvas.height - basePx}
+                    width={boxCanvas.width - T * 2}
+                    height={basePx}
+                    fill="rgba(120,100,70,0.30)"
+                    stroke="#8a7048"
+                    strokeWidth={1}
+                  />
+                  <Text
+                    x={boxCanvas.x + T + 8 * inv}
+                    y={boxCanvas.y + boxCanvas.height - basePx / 2 - 6 * inv}
+                    text={`Base ${Math.round(construction.baseHeight)}mm`}
+                    fontSize={11 * inv}
+                    fontStyle="bold"
+                    fill="#6b563a"
+                  />
+                </Group>
+              )}
 
               {/* ── Width dimension (top) ── */}
               <Line
@@ -1303,7 +1398,7 @@ export default function DrawingCanvas() {
 
           {/* ── Placed shelves ── */}
           {boxCanvas && outerBox && (() => {
-            const { bottom: interiorBottom } = interiorOf(boxCanvas, T)
+            const { bottom: interiorBottom } = interiorOf(boxCanvas, T, basePx)
             const sorted   = [...partitions].sort((a, b) => a.fromLeft - b.fromLeft)
             const sections = getSectionBoundaries(boxCanvas, sorted, T)
 
@@ -1311,8 +1406,8 @@ export default function DrawingCanvas() {
               const section  = sections[shelf.sectionIndex]
               const leftOff  = shelf.sectionIndex === 0             ? 0 : T / 2
               const rightOff = shelf.sectionIndex === sorted.length ? 0 : T / 2
-              const left  = section ? section.left  + leftOff  : interiorOf(boxCanvas, T).left
-              const right = section ? section.right - rightOff : interiorOf(boxCanvas, T).right
+              const left  = section ? section.left  + leftOff  : interiorOf(boxCanvas, T, basePx).left
+              const right = section ? section.right - rightOff : interiorOf(boxCanvas, T, basePx).right
 
               const displayFromBottom = dragLive?.id === shelf.id ? dragLive.mm : shelf.fromBottom
               const labelMm = measurementContext
@@ -1384,7 +1479,7 @@ export default function DrawingCanvas() {
 
           {/* ── Placed partitions ── */}
           {boxCanvas && outerBox && partitions.map((partition) => {
-            const { left: interiorLeft, right: interiorRight, top, bottom } = interiorOf(boxCanvas, T)
+            const { left: interiorLeft, right: interiorRight, top, bottom } = interiorOf(boxCanvas, T, basePx)
             const displayMm       = dragLive?.id === partition.id ? dragLive.mm : partition.fromLeft
             const partitionCenterX = interiorLeft + mmToPx(displayMm)
             const isSelected      = selectedId === partition.id
@@ -1477,7 +1572,7 @@ export default function DrawingCanvas() {
 
           {/* ── Placed shelf partitions (between-shelf vertical dividers) ── */}
           {boxCanvas && outerBox && (() => {
-            const { bottom: iBottom } = interiorOf(boxCanvas, T)
+            const { bottom: iBottom } = interiorOf(boxCanvas, T, basePx)
             const sorted   = [...partitions].sort((a, b) => a.fromLeft - b.fromLeft)
             const sections = getSectionBoundaries(boxCanvas, sorted, T)
 
@@ -1485,7 +1580,7 @@ export default function DrawingCanvas() {
               const section  = sections[sp.sectionIndex]
               if (!section) return null
 
-              const centX      = interiorOf(boxCanvas, T).left + mmToPx(sp.fromLeft)
+              const centX      = interiorOf(boxCanvas, T, basePx).left + mmToPx(sp.fromLeft)
               const panelTop   = iBottom - mmToPx(sp.toBottom)
               const panelBot   = iBottom - mmToPx(sp.fromBottom)
               const panelH     = panelBot - panelTop
@@ -1522,7 +1617,7 @@ export default function DrawingCanvas() {
                     }}
                     onDragEnd={(e) => {
                       const newCentX = e.target.x() + T / 2
-                      const fromLeft = Math.max(0, pxToMm(newCentX - interiorOf(boxCanvas, T).left))
+                      const fromLeft = Math.max(0, pxToMm(newCentX - interiorOf(boxCanvas, T, basePx).left))
                       moveShelfPartition(sp.id, fromLeft)
                       isDraggingElement.current = false
                     }}
@@ -1624,7 +1719,7 @@ export default function DrawingCanvas() {
 
           {/* ── Placed drawers ── */}
           {boxCanvas && outerBox && (() => {
-            const { top: interiorTop, bottom: interiorBottom } = interiorOf(boxCanvas, T)
+            const { top: interiorTop, bottom: interiorBottom } = interiorOf(boxCanvas, T, basePx)
             const sorted   = [...partitions].sort((a, b) => a.fromLeft - b.fromLeft)
             const sections = getSectionBoundaries(boxCanvas, sorted, T)
 
@@ -1636,6 +1731,7 @@ export default function DrawingCanvas() {
               const drawerBottom = interiorBottom - mmToPx(displayFromBottom)
               const drawerTop    = drawerBottom   - mmToPx(drawer.height)
               const isSelected   = selectedId === drawer.id
+              const active       = isSelected || dragLive?.id === drawer.id
               const drawerH   = mmToPx(drawer.height)
               const labelMm = measurementContext
                 ? displayVerticalBoxOffset(
@@ -1648,8 +1744,12 @@ export default function DrawingCanvas() {
               // Wall boundaries need no offset; partition boundaries need T/2 clearance
               const leftOff  = drawer.sectionIndex === 0             ? 0 : T / 2
               const rightOff = drawer.sectionIndex === sorted.length ? 0 : T / 2
-              const rectX    = section.left + leftOff
-              const rectW    = section.right - section.left - leftOff - rightOff
+              // Inset from both sides of the opening so the door hinges clear.
+              const openingW = section.right - section.left - leftOff - rightOff
+              const padPx    = mmToPx(getDrawerWidths(pxToMm(openingW), construction).sidePadding)
+              const channelPx = mmToPx(construction.drawerChannel)
+              const rectX    = section.left + leftOff + padPx
+              const rectW    = Math.max(1, openingW - padPx * 2)
 
               return (
                 <Group key={drawer.id}>
@@ -1696,33 +1796,56 @@ export default function DrawingCanvas() {
                     strokeWidth={1.5}
                     listening={false}
                   />
-                  {/* Height label */}
-                  <Text
-                    x={section.right - T / 2 + 8}
-                    y={drawerTop + drawerH / 2 - 8}
-                    text={`${labelMm}mm`}
-                    fontSize={11}
-                    fontStyle={isSelected ? 'bold' : 'normal'}
-                    fill={isSelected || dragLive?.id === drawer.id ? '#3b82f6' : '#888'}
-                    listening={false}
+                  {/* Height and position, kept legible at any zoom */}
+                  <HeightGuide
+                    x={section.right - T / 2 + 7 * inv}
+                    top={drawerTop}
+                    bottom={drawerTop + drawerH}
+                    inv={inv}
+                    accent={active ? '#3b82f6' : '#8a7048'}
                   />
-                  <Text
-                    x={section.right - T / 2 + 8}
-                    y={drawerTop + drawerH / 2 + 3}
-                    text={verticalMeasurementLabel(measurementVerticalReference)}
-                    fontSize={9}
-                    fill={isSelected || dragLive?.id === drawer.id ? '#3b82f6' : '#aaa'}
-                    listening={false}
+                  <MeasureBadge
+                    x={section.right - T / 2 + 13 * inv}
+                    y={drawerTop + drawerH / 2}
+                    text={`H ${Math.round(drawer.height)} mm`}
+                    sub={`${labelMm} ${verticalMeasurementLabel(measurementVerticalReference)}`}
+                    inv={inv}
+                    accent={active ? '#3b82f6' : '#8a7048'}
                   />
-                  {(drawer.frontSetback ?? 0) > 0 && (
-                    <Text
-                      x={rectX + 4}
-                      y={drawerTop - 13}
-                      text={`setback ${drawer.frontSetback}mm`}
-                      fontSize={9}
-                      fill={isSelected ? '#3b82f6' : '#888'}
-                      listening={false}
-                    />
+                  {/* Padding blocks either side, drawn as the brown packers
+                      they are so the hinge clearance is visible. */}
+                  {padPx > 0 && (
+                    <Group listening={false}>
+                      <Rect
+                        x={rectX - padPx} y={drawerTop}
+                        width={padPx} height={drawerH}
+                        fill="rgba(140,94,52,0.55)"
+                        stroke="#8a5e34" strokeWidth={0.75 * inv}
+                      />
+                      <Rect
+                        x={rectX + rectW} y={drawerTop}
+                        width={padPx} height={drawerH}
+                        fill="rgba(140,94,52,0.55)"
+                        stroke="#8a5e34" strokeWidth={0.75 * inv}
+                      />
+                    </Group>
+                  )}
+                  {/* Runner channel, just inside the padding on each side */}
+                  {channelPx > 0 && (
+                    <Group listening={false}>
+                      <Rect
+                        x={rectX} y={drawerTop}
+                        width={channelPx} height={drawerH}
+                        fill="rgba(96,150,170,0.55)"
+                        stroke="#3f7f92" strokeWidth={0.75 * inv}
+                      />
+                      <Rect
+                        x={rectX + rectW - channelPx} y={drawerTop}
+                        width={channelPx} height={drawerH}
+                        fill="rgba(96,150,170,0.55)"
+                        stroke="#3f7f92" strokeWidth={0.75 * inv}
+                      />
+                    </Group>
                   )}
                 </Group>
               )
@@ -1741,8 +1864,8 @@ export default function DrawingCanvas() {
                   height={ghostDrawer.drawerBottom - ghostDrawer.drawerTop}
                   fill="rgba(59,130,246,0.05)"
                   stroke="#3b82f6"
-                  strokeWidth={1}
-                  dash={[6, 4]}
+                  strokeWidth={1 * inv}
+                  dash={[6 * inv, 4 * inv]}
                 />
               ) : (
                 /* Drag: solid preview of the actual drawer being drawn */
@@ -1754,8 +1877,8 @@ export default function DrawingCanvas() {
                     height={ghostDrawer.drawerBottom - ghostDrawer.drawerTop}
                     fill="rgba(59,130,246,0.18)"
                     stroke="#3b82f6"
-                    strokeWidth={1.5}
-                    dash={[6, 3]}
+                    strokeWidth={1.5 * inv}
+                    dash={[6 * inv, 3 * inv]}
                   />
                   <Line
                     points={[
@@ -1764,26 +1887,29 @@ export default function DrawingCanvas() {
                       ghostDrawer.right - 14,
                       (ghostDrawer.drawerTop + ghostDrawer.drawerBottom) / 2,
                     ]}
-                    stroke="#3b82f6" strokeWidth={1.5} opacity={0.5}
+                    stroke="#3b82f6" strokeWidth={1.5 * inv} opacity={0.5}
                   />
-                  <Text
-                    x={ghostDrawer.right + 8}
-                    y={(ghostDrawer.drawerTop + ghostDrawer.drawerBottom) / 2 - 9}
-                    text={`${ghostDrawer.heightMm}mm tall`}
-                    fontSize={12} fontStyle="bold" fill="#3b82f6"
+                  {/* Live height: an extent line plus a readout that stays
+                      legible however far the view is zoomed out. */}
+                  <HeightGuide
+                    x={ghostDrawer.right + 7 * inv}
+                    top={ghostDrawer.drawerTop}
+                    bottom={ghostDrawer.drawerBottom}
+                    inv={inv}
                   />
-                  <Text
-                    x={ghostDrawer.right + 8}
-                    y={(ghostDrawer.drawerTop + ghostDrawer.drawerBottom) / 2 + 3}
-                    text={`${measurementContext
+                  <MeasureBadge
+                    x={ghostDrawer.right + 13 * inv}
+                    y={(ghostDrawer.drawerTop + ghostDrawer.drawerBottom) / 2}
+                    text={`H ${ghostDrawer.heightMm} mm`}
+                    sub={`${measurementContext
                       ? displayVerticalBoxOffset(
                           ghostDrawer.fromBottomMm,
                           ghostDrawer.heightMm,
                           measurementVerticalReference,
                           measurementContext,
                         )
-                      : ghostDrawer.fromBottomMm}mm ${verticalMeasurementLabel(measurementVerticalReference)}`}
-                    fontSize={9} fill="#3b82f6" opacity={0.7}
+                      : ghostDrawer.fromBottomMm} ${verticalMeasurementLabel(measurementVerticalReference)}`}
+                    inv={inv}
                   />
                 </>
               )}
@@ -1840,7 +1966,7 @@ export default function DrawingCanvas() {
 
           {/* ── Placed custom panels ── */}
           {boxCanvas && outerBox && (() => {
-            const { left: iLeft, bottom: iBottom } = interiorOf(boxCanvas, T)
+            const { left: iLeft, bottom: iBottom } = interiorOf(boxCanvas, T, basePx)
             const iW = outerBox.width - material.thickness * 2
 
             return customPanels.map((cp) => {
@@ -2058,8 +2184,8 @@ export default function DrawingCanvas() {
           {hoverFillGap && boxCanvas && (
             <Group listening={false}>
               <Rect
-                x={interiorOf(boxCanvas, T).left + mmToPx(hoverFillGap.fromLeft)}
-                y={interiorOf(boxCanvas, T).bottom - mmToPx(hoverFillGap.toBottom)}
+                x={interiorOf(boxCanvas, T, basePx).left + mmToPx(hoverFillGap.fromLeft)}
+                y={interiorOf(boxCanvas, T, basePx).bottom - mmToPx(hoverFillGap.toBottom)}
                 width={mmToPx(hoverFillGap.toLeft - hoverFillGap.fromLeft)}
                 height={mmToPx(hoverFillGap.toBottom - hoverFillGap.fromBottom)}
                 fill="rgba(37,99,235,0.10)"
@@ -2068,8 +2194,8 @@ export default function DrawingCanvas() {
                 dash={[7, 4]}
               />
               <Text
-                x={interiorOf(boxCanvas, T).left + mmToPx(hoverFillGap.fromLeft) + 8}
-                y={interiorOf(boxCanvas, T).bottom - mmToPx(hoverFillGap.toBottom) + 8}
+                x={interiorOf(boxCanvas, T, basePx).left + mmToPx(hoverFillGap.fromLeft) + 8}
+                y={interiorOf(boxCanvas, T, basePx).bottom - mmToPx(hoverFillGap.toBottom) + 8}
                 text={`${Math.round(hoverFillGap.toLeft - hoverFillGap.fromLeft)} x ${Math.round(hoverFillGap.toBottom - hoverFillGap.fromBottom)}mm`}
                 fontSize={11}
                 fontStyle="bold"

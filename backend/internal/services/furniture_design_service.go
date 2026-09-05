@@ -21,6 +21,15 @@ const (
 	defaultFurnitureMaterialColor = "#c8a96e"
 	defaultFurnitureThickness     = 18
 	defaultFurnitureBackPanel     = 6
+	defaultFurnitureDrawerPadding = 36
+	defaultFurnitureDrawerChannel = 12.5
+	defaultFurnitureDrawerDepthRd = 150
+	defaultFurnitureDrawerBoxRd   = 50
+	maxFurnitureBaseHeight        = 300
+	maxFurnitureDrawerPadding     = 200
+	maxFurnitureDrawerChannel     = 60
+	maxFurnitureDrawerDepthRd     = 600
+	maxFurnitureDrawerBoxRd       = 300
 )
 
 // ── Input types ──────────────────────────────────────────────────────────────
@@ -30,6 +39,7 @@ type CreateFurnitureDesignInput struct {
 	FurnitureType   models.FurnitureType                     `json:"furniture_type"`
 	OuterBox        *models.FurnitureOuterBox                `json:"outer_box"`
 	Material        models.FurnitureMaterial                 `json:"material"`
+	Construction    *models.FurnitureConstruction            `json:"construction"`
 	Shelves         []models.FurnitureShelf                  `json:"shelves"`
 	Partitions      []models.FurniturePartition              `json:"partitions"`
 	Drawers         []models.FurnitureDrawer                 `json:"drawers"`
@@ -45,6 +55,7 @@ type UpdateFurnitureDesignInput struct {
 	FurnitureType   *models.FurnitureType                    `json:"furniture_type"`
 	OuterBox        *models.FurnitureOuterBox                `json:"outer_box"`
 	Material        *models.FurnitureMaterial                `json:"material"`
+	Construction    *models.FurnitureConstruction            `json:"construction"`
 	Shelves         []models.FurnitureShelf                  `json:"shelves"`
 	Partitions      []models.FurniturePartition              `json:"partitions"`
 	Drawers         []models.FurnitureDrawer                 `json:"drawers"`
@@ -111,6 +122,58 @@ func normalizeFurnitureMaterial(material models.FurnitureMaterial) models.Furnit
 		material.Color = defaultFurnitureMaterialColor
 	}
 	return material
+}
+
+func floatOrDefault(value *float64, fallback float64) float64 {
+	if value == nil {
+		return fallback
+	}
+	return *value
+}
+
+func clampFurnitureFloat(value, min, max float64) float64 {
+	if value < min {
+		return min
+	}
+	if value > max {
+		return max
+	}
+	return value
+}
+
+func normalizeFurnitureTopFormation(value models.FurnitureTopFormation) models.FurnitureTopFormation {
+	if value == models.FurnitureDoorOverTop {
+		return models.FurnitureDoorOverTop
+	}
+	return models.FurnitureTopOverDoor
+}
+
+// normalizeFurnitureConstruction fills in defaults for designs saved before
+// construction settings existed, and keeps values inside sane build limits.
+func normalizeFurnitureConstruction(c *models.FurnitureConstruction) *models.FurnitureConstruction {
+	if c == nil {
+		c = &models.FurnitureConstruction{
+			DrawerSidePadding: defaultFurnitureDrawerPadding,
+			TopFormation:      models.FurnitureTopOverDoor,
+		}
+	}
+	// A nil pointer means the field predates this setting, so take the default.
+	// An explicit 0 is a real choice and is kept.
+	channel := clampFurnitureFloat(
+		floatOrDefault(c.DrawerChannel, defaultFurnitureDrawerChannel), 0, maxFurnitureDrawerChannel)
+	depthReduction := clampFurnitureFloat(
+		floatOrDefault(c.DrawerDepthReduction, defaultFurnitureDrawerDepthRd), 0, maxFurnitureDrawerDepthRd)
+	boxReduction := clampFurnitureFloat(
+		floatOrDefault(c.DrawerBoxReduction, defaultFurnitureDrawerBoxRd), 0, maxFurnitureDrawerBoxRd)
+
+	return &models.FurnitureConstruction{
+		BaseHeight:           clampFurnitureFloat(c.BaseHeight, 0, maxFurnitureBaseHeight),
+		DrawerSidePadding:    clampFurnitureFloat(c.DrawerSidePadding, 0, maxFurnitureDrawerPadding),
+		DrawerChannel:        &channel,
+		DrawerDepthReduction: &depthReduction,
+		DrawerBoxReduction:   &boxReduction,
+		TopFormation:         normalizeFurnitureTopFormation(c.TopFormation),
+	}
 }
 
 func validateFurnitureOuterBox(box *models.FurnitureOuterBox) error {
@@ -213,6 +276,7 @@ func CreateFurnitureDesign(input CreateFurnitureDesignInput) (*models.FurnitureD
 		FurnitureType:   furnitureType,
 		OuterBox:        input.OuterBox,
 		Material:        normalizeFurnitureMaterial(input.Material),
+		Construction:    normalizeFurnitureConstruction(input.Construction),
 		Shelves:         shelves,
 		Partitions:      partitions,
 		Drawers:         drawers,
@@ -289,6 +353,8 @@ func GetFurnitureDesign(designID string) (*models.FurnitureDesign, error) {
 	if errors.Is(err, mongo.ErrNoDocuments) {
 		return nil, nil
 	}
+	// Fill in settings added after this document was written.
+	design.Construction = normalizeFurnitureConstruction(design.Construction)
 	return &design, err
 }
 
@@ -314,6 +380,9 @@ func UpdateFurnitureDesign(designID string, input UpdateFurnitureDesignInput) (*
 	}
 	if input.Material != nil {
 		set["material"] = normalizeFurnitureMaterial(*input.Material)
+	}
+	if input.Construction != nil {
+		set["construction"] = normalizeFurnitureConstruction(input.Construction)
 	}
 	if input.Shelves != nil {
 		set["shelves"] = input.Shelves

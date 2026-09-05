@@ -3,11 +3,18 @@ import { Canvas, useThree } from '@react-three/fiber'
 import { OrbitControls, GizmoHelper, GizmoViewport, Html, Line, useTexture } from '@react-three/drei'
 import * as THREE from 'three'
 import type { OrbitControls as OrbitControlsImpl } from 'three-stdlib'
+import { DEFAULT_SECTION_CONFIG, useFurnitureStore } from '../../stores/furnitureStore'
 import {
-  DEFAULT_BACK_PANEL_THICKNESS,
-  DEFAULT_SECTION_CONFIG,
-  useFurnitureStore,
-} from '../../stores/furnitureStore'
+  DOOR_EDGE_GAP,
+  clampDrawerDepth,
+  getBackPackingSize,
+  getBasePieceSizes,
+  getCarcassMetrics,
+  getDoorHeight,
+  getDrawerWidths,
+  getSectionInsets,
+  getTopPanelDepth,
+} from '../../utils/furnitureConstruction'
 import {
   getCustomFurnitureMaterialForAssignment,
   getFurniturePreviewAssignmentForArea,
@@ -89,13 +96,6 @@ function getOffsetPosition(
 
 function point3(posX: number, posY: number, posZ: number): Point3 {
   return [u(posX), u(posY), u(posZ)]
-}
-
-function getSectionInsets(index: number, lastIndex: number, thickness: number) {
-  return {
-    left:  index === 0 ? 0 : thickness / 2,
-    right: index === lastIndex ? 0 : thickness / 2,
-  }
 }
 
 function sideBias(centerX: number) {
@@ -399,7 +399,10 @@ function DimensionLabels({
 // ── Full furniture model ──────────────────────────────────────────────────────
 
 function FurnitureModel() {
-  const { outerBox, shelves, partitions, drawers, material, sectionConfigs, shelfPartitions } = useFurnitureStore()
+  const {
+    outerBox, shelves, partitions, drawers, material,
+    construction, sectionConfigs, shelfPartitions,
+  } = useFurnitureStore()
   const showDoors = useFurniturePreviewStore((state) => state.showDoors)
   const showDimensions = useFurniturePreviewStore((state) => state.showDimensions)
   const explodedView = useFurniturePreviewStore((state) => state.explodedView)
@@ -416,8 +419,9 @@ function FurnitureModel() {
   if (!outerBox) return null
 
   const { width: W, height: H, depth: D } = outerBox
-  const T   = material.thickness
-  const B   = material.backPanelThickness ?? DEFAULT_BACK_PANEL_THICKNESS
+  const metrics = getCarcassMetrics(outerBox, material, construction)
+  const T   = metrics.thickness
+  const B   = metrics.backPanelThickness
   const createSurface = (area: FurniturePreviewMaterialArea): FurniturePreviewSurface => {
     const assignment = getFurniturePreviewAssignmentForArea({ materialAssignments }, area)
 
@@ -444,10 +448,18 @@ function FurnitureModel() {
     z * explodeDistance,
   ]
 
-  const interiorW = W - T * 2
-  const interiorH = H - T * 2
-  const interiorD = Math.max(1, D - B)
+  const interiorW = metrics.interiorWidth
+  const interiorH = metrics.interiorHeight
+  const interiorD = metrics.interiorDepth
   const interiorCenterZ = B / 2
+  // The drawn height includes the plinth, so the carcass is lifted off the
+  // floor and everything inside it rides up with it.
+  const sideH = metrics.sidePanelHeight
+  const carcassBottom = metrics.carcassBottom
+  const interiorY = metrics.interiorBottom
+  const basePieces = getBasePieceSizes(material, metrics)
+  const backPacking = getBackPackingSize(outerBox, material, metrics)
+  const topDepth = getTopPanelDepth(D, T, construction.topFormation)
   const sectionBoundaries = [0, ...sortedPartitions.map((p) => p.fromLeft), interiorW]
   const sections = sectionBoundaries.slice(0, -1).map((fromLeft, i) => ({
     index:    i,
@@ -462,29 +474,38 @@ function FurnitureModel() {
       {/* ── Outer shell ── */}
 
       {/* Left side */}
-      <Panel posX={-W / 2 + T / 2} posY={H / 2} posZ={0}
-             w={T} h={H} d={D} color={col} explode={explode(-1, 0, 0)}
+      <Panel posX={-W / 2 + T / 2} posY={sideH / 2} posZ={0}
+             w={T} h={sideH} d={D} color={col} explode={explode(-1, 0, 0)}
              surfaceMaterial={carcassSurface.customMaterial} />
 
-      {/* Right side */}
-      <Panel posX={W / 2 - T / 2} posY={H / 2} posZ={0}
-             w={T} h={H} d={D} color={col} explode={explode(1, 0, 0)}
+      {/* Right side — runs the full height down to the floor */}
+      <Panel posX={W / 2 - T / 2} posY={sideH / 2} posZ={0}
+             w={T} h={sideH} d={D} color={col} explode={explode(1, 0, 0)}
              surfaceMaterial={carcassSurface.customMaterial} />
 
-      {/* Top panel */}
-      <Panel posX={0} posY={H - T / 2} posZ={0}
-             w={interiorW} h={T} d={D} color={dark} explode={explode(0, 0.9, 0)}
+      {/* Top panel — set back by one board when the door covers its front edge */}
+      <Panel posX={0} posY={H - T / 2} posZ={-(D - topDepth) / 2}
+             w={interiorW} h={T} d={topDepth} color={dark} explode={explode(0, 0.9, 0)}
              surfaceMaterial={carcassSurface.customMaterial} />
 
       {/* Bottom panel */}
-      <Panel posX={0} posY={T / 2} posZ={0}
+      <Panel posX={0} posY={carcassBottom + T / 2} posZ={0}
              w={interiorW} h={T} d={D} color={dark} explode={explode(0, -0.55, 0)}
              surfaceMaterial={carcassSurface.customMaterial} />
 
-      {/* Back panel */}
-      <Panel posX={0} posY={H / 2} posZ={-D / 2 + B / 2}
-             w={W} h={H} d={B} color={back} explode={explode(0, 0, -1)}
+      {/* Back packing — let into a groove in each side, full height */}
+      <Panel posX={0} posY={backPacking.height / 2} posZ={-D / 2 + B / 2}
+             w={backPacking.width} h={backPacking.height} d={B} color={back}
+             explode={explode(0, 0, -1)}
              surfaceMaterial={backSurface.customMaterial} />
+
+      {/* ── Base / plinth: one front rail between the full-height sides ── */}
+      {basePieces && (
+        <Panel posX={0} posY={basePieces.height / 2} posZ={D / 2 - T / 2}
+               w={basePieces.railLength} h={basePieces.height} d={T}
+               color={dark} explode={explode(0, -1, 0.2)}
+               surfaceMaterial={carcassSurface.customMaterial} />
+      )}
 
       {/* ── Vertical partitions ── */}
       {sortedPartitions.map((p) => {
@@ -492,7 +513,7 @@ function FurnitureModel() {
         return (
           <Panel key={p.id}
             posX={panelCentX}
-            posY={T + interiorH / 2}
+            posY={interiorY + interiorH / 2}
             posZ={interiorCenterZ}
             w={T} h={interiorH} d={interiorD}
             color={col}
@@ -507,7 +528,7 @@ function FurnitureModel() {
         const section = sections[sp.sectionIndex]
         if (!section) return null
         const panelH    = sp.toBottom - sp.fromBottom
-        const panelCentY = T + sp.fromBottom + panelH / 2
+        const panelCentY = interiorY + sp.fromBottom + panelH / 2
         const panelCentX = -W / 2 + T + sp.fromLeft
         return (
           <Panel key={sp.id}
@@ -534,7 +555,7 @@ function FurnitureModel() {
         return (
           <Panel key={shelf.id}
             posX={shelfCentX}
-            posY={T + shelf.fromBottom}
+            posY={interiorY + shelf.fromBottom}
             posZ={interiorCenterZ}
             w={shelfW} h={T} d={interiorD}
             color={dark}
@@ -549,14 +570,19 @@ function FurnitureModel() {
         const section = sections[drawer.sectionIndex]
         if (!section) return null
 
-        const drawerCenterY = T + drawer.fromBottom + drawer.height / 2
+        const drawerCenterY = interiorY + drawer.fromBottom + drawer.height / 2
         const inset         = getSectionInsets(drawer.sectionIndex, sortedPartitions.length, T)
-        const drawerW       = section.width - inset.left - inset.right
-        const drawerCenterX = -W / 2 + T + section.fromLeft + inset.left + drawerW / 2
-        const frontSetback  = Math.max(0, Math.min(drawer.frontSetback ?? 0, interiorD - T - 17))
-        const drawerD       = Math.max(1, interiorD - T - frontSetback)
-        const drawerZ       = interiorCenterZ - (T + frontSetback) / 2
-        const drawerFrontZ  = D / 2 - frontSetback - T / 2
+        const openingW      = section.width - inset.left - inset.right
+        // Inset from both sides of the opening so the door hinges can close.
+        const { frontWidth, boxWidth, sidePadding } = getDrawerWidths(openingW, construction)
+        const drawerCenterX = -W / 2 + T + section.fromLeft + inset.left + openingW / 2
+        // Drawer depth is measured from the front, so the box runs back from there.
+        const drawerDepth   = clampDrawerDepth(drawer.depth, D, construction)
+        const drawerD       = Math.max(1, drawerDepth - T)
+        const drawerZ       = D / 2 - T - drawerD / 2
+        const drawerFrontZ  = D / 2 - T / 2
+        const paddingDepth  = Math.max(1, D - construction.drawerBoxReduction)
+        const paddingZ      = D / 2 - paddingDepth / 2
 
         return (
           <group key={drawer.id}>
@@ -565,7 +591,7 @@ function FurnitureModel() {
               posX={drawerCenterX}
               posY={drawerCenterY}
               posZ={drawerZ}
-              w={drawerW} h={drawer.height - 2} d={drawerD}
+              w={boxWidth} h={drawer.height - 2} d={drawerD}
               color={drawerColor}
               explode={explode(sideBias(drawerCenterX), 0, 0.72)}
               surfaceMaterial={drawerSurface.customMaterial}
@@ -575,11 +601,30 @@ function FurnitureModel() {
               posX={drawerCenterX}
               posY={drawerCenterY}
               posZ={drawerFrontZ}
-              w={drawerW} h={drawer.height - 2} d={T}
+              w={frontWidth} h={drawer.height - 2} d={T}
               color={drawerColor}
               explode={explode(sideBias(drawerCenterX), 0, 1)}
               surfaceMaterial={drawerSurface.customMaterial}
             />
+            {/* Padding blocks that hold the drawer clear of the door hinges */}
+            {sidePadding > 0 && (
+              <>
+                <Panel
+                  posX={drawerCenterX - openingW / 2 + sidePadding / 2}
+                  posY={drawerCenterY} posZ={paddingZ}
+                  w={sidePadding} h={drawer.height} d={paddingDepth}
+                  color="#8a5e34"
+                  explode={explode(sideBias(drawerCenterX) - 0.3, 0, 0.5)}
+                />
+                <Panel
+                  posX={drawerCenterX + openingW / 2 - sidePadding / 2}
+                  posY={drawerCenterY} posZ={paddingZ}
+                  w={sidePadding} h={drawer.height} d={paddingDepth}
+                  color="#8a5e34"
+                  explode={explode(sideBias(drawerCenterX) + 0.3, 0, 0.5)}
+                />
+              </>
+            )}
           </group>
         )
       })}
@@ -587,9 +632,10 @@ function FurnitureModel() {
       {/* ── Doors & hanging rails (per section) ── */}
       {sections.map((section) => {
         const cfg = sectionConfigs[section.index] ?? DEFAULT_SECTION_CONFIG
-        const doorH    = interiorH - 2          // 1mm clearance top + bottom
+        // `door_over_top` runs the door up across the top panel's front edge.
+        const doorH    = getDoorHeight(interiorH, T, construction.topFormation)
         const doorFaceZ = D / 2 + T / 2        // overlay: sits just in front of frame
-        const doorCenterY = T + interiorH / 2
+        const doorCenterY = interiorY + DOOR_EDGE_GAP + doorH / 2
 
         return (
           <group key={`sec-${section.index}`}>
@@ -635,7 +681,7 @@ function FurnitureModel() {
               const railOffset = explode(sideBias(section.centerX), 0, 0.34)
               return (
                 <mesh
-                  position={getOffsetPosition(section.centerX, T + interiorH - 200, interiorCenterZ, railOffset)}
+                  position={getOffsetPosition(section.centerX, interiorY + interiorH - 200, interiorCenterZ, railOffset)}
                   rotation={[0, 0, Math.PI / 2]}
                 >
                   <cylinderGeometry args={[u(12.5), u(12.5), u(section.width - T * 2), 16]} />

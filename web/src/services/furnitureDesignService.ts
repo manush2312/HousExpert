@@ -21,6 +21,17 @@ export interface FurnitureMaterial {
   color: string
 }
 
+export type FurnitureTopFormation = 'top_over_door' | 'door_over_top'
+
+export interface FurnitureConstruction {
+  base_height: number
+  drawer_side_padding: number
+  drawer_channel?: number | null
+  drawer_depth_reduction?: number | null
+  drawer_box_reduction?: number | null
+  top_formation: FurnitureTopFormation
+}
+
 export type FurnitureDesignPreviewView = 'isometric' | 'front' | 'side' | 'top'
 export type FurnitureDesignPreviewBackground = 'dark' | 'light'
 export type FurnitureDesignPreviewMaterialSource = 'preset' | 'custom_material'
@@ -129,7 +140,7 @@ export interface FurnitureDrawer {
   section_index: number
   from_bottom: number
   height: number
-  front_setback: number
+  depth: number
 }
 
 export interface FurnitureCustomPanel {
@@ -161,6 +172,7 @@ export interface FurnitureDesign {
   furniture_type: FurnitureType
   outer_box?: FurnitureOuterBox
   material: FurnitureMaterial
+  construction?: FurnitureConstruction | null
   shelves: FurnitureShelf[]
   partitions: FurniturePartition[]
   drawers: FurnitureDrawer[]
@@ -185,6 +197,7 @@ export interface CreateFurnitureDesignPayload {
   furniture_type?: FurnitureType
   outer_box?: FurnitureOuterBox | null
   material?: Partial<FurnitureMaterial>
+  construction?: FurnitureConstruction | null
   shelves?: FurnitureShelf[]
   partitions?: FurniturePartition[]
   drawers?: FurnitureDrawer[]
@@ -200,6 +213,7 @@ export interface UpdateFurnitureDesignPayload {
   furniture_type?: FurnitureType
   outer_box?: FurnitureOuterBox | null
   material?: Partial<FurnitureMaterial>
+  construction?: FurnitureConstruction | null
   shelves?: FurnitureShelf[]
   partitions?: FurniturePartition[]
   drawers?: FurnitureDrawer[]

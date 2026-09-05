@@ -33,6 +33,36 @@ type FurnitureOuterBox struct {
 	Depth  float64 `bson:"depth" json:"depth"`
 }
 
+// FurnitureTopFormation identifies how the top panel and door meet.
+type FurnitureTopFormation string
+
+const (
+	// FurnitureTopOverDoor runs the top panel full depth with the door below it.
+	FurnitureTopOverDoor FurnitureTopFormation = "top_over_door"
+	// FurnitureDoorOverTop runs the door up across the top panel's front edge.
+	FurnitureDoorOverTop FurnitureTopFormation = "door_over_top"
+)
+
+// FurnitureConstruction stores build settings that change how panels are sized.
+type FurnitureConstruction struct {
+	// BaseHeight is the plinth height in mm. It is included in the overall
+	// height rather than added to it, so the carcass is shorter by this much.
+	BaseHeight float64 `bson:"base_height" json:"base_height"`
+	// DrawerSidePadding is the padding block thickness per side, so the drawer
+	// clears the door hinges when the door closes.
+	DrawerSidePadding float64 `bson:"drawer_side_padding" json:"drawer_side_padding"`
+	// These three are pointers so a document saved before they existed decodes
+	// as nil and picks up the defaults, while a deliberate 0 is still honoured.
+	//
+	// DrawerChannel is the runner allowance per side, between padding and box.
+	DrawerChannel *float64 `bson:"drawer_channel,omitempty" json:"drawer_channel,omitempty"`
+	// DrawerDepthReduction is taken off the cabinet depth for the default drawer depth.
+	DrawerDepthReduction *float64 `bson:"drawer_depth_reduction,omitempty" json:"drawer_depth_reduction,omitempty"`
+	// DrawerBoxReduction is taken off the drawer height and depth to size the box walls.
+	DrawerBoxReduction *float64              `bson:"drawer_box_reduction,omitempty" json:"drawer_box_reduction,omitempty"`
+	TopFormation       FurnitureTopFormation `bson:"top_formation" json:"top_formation"`
+}
+
 // FurnitureMaterial stores the board/sheet settings used by the designer.
 type FurnitureMaterial struct {
 	Thickness          float64 `bson:"thickness" json:"thickness"`
@@ -130,7 +160,9 @@ type FurnitureDrawer struct {
 	SectionIndex int     `bson:"section_index" json:"section_index"`
 	FromBottom   float64 `bson:"from_bottom" json:"from_bottom"`
 	Height       float64 `bson:"height" json:"height"`
-	FrontSetback float64 `bson:"front_setback" json:"front_setback"`
+	// Depth is the drawer front-to-back size. 0 falls back to the cabinet
+	// depth less the configured depth reduction.
+	Depth float64 `bson:"depth" json:"depth"`
 }
 
 // FurnitureFreehandPath stores freehand pencil annotations on the 2D drawing.
@@ -166,6 +198,7 @@ type FurnitureDesign struct {
 	FurnitureType   FurnitureType                     `bson:"furniture_type" json:"furniture_type"`
 	OuterBox        *FurnitureOuterBox                `bson:"outer_box,omitempty" json:"outer_box,omitempty"`
 	Material        FurnitureMaterial                 `bson:"material" json:"material"`
+	Construction    *FurnitureConstruction            `bson:"construction,omitempty" json:"construction,omitempty"`
 	Shelves         []FurnitureShelf                  `bson:"shelves" json:"shelves"`
 	Partitions      []FurniturePartition              `bson:"partitions" json:"partitions"`
 	Drawers         []FurnitureDrawer                 `bson:"drawers" json:"drawers"`

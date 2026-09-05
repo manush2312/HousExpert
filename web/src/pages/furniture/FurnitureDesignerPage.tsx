@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 import {
   ArrowLeft, Save, Download,
@@ -57,6 +57,23 @@ import {
   updateFurnitureDesign,
 } from '../../services/furnitureDesignService'
 import { calculateCutList } from '../../utils/cutListCalculator'
+import { buildFurnitureCalculations } from '../../utils/furnitureCalculations'
+import { buildFurnitureDrawings } from '../../utils/furnitureDrawings'
+import {
+  BASE_HEIGHT_RANGE,
+  DEFAULT_BASE_HEIGHT,
+  DRAWER_BOX_REDUCTION_RANGE,
+  DRAWER_CHANNEL_RANGE,
+  DRAWER_DEPTH_REDUCTION_RANGE,
+  DRAWER_SIDE_PADDING_RANGE,
+  TOP_FORMATIONS,
+  TOP_FORMATION_DESCRIPTIONS,
+  TOP_FORMATION_LABELS,
+  getCarcassMetrics,
+  clampDrawerDepth,
+  getDefaultDrawerDepth,
+  type TopFormation,
+} from '../../utils/furnitureConstruction'
 // exportCutListPdf is imported dynamically inside the click handler so jsPDF
 // (a large dependency) is only downloaded when the user actually exports.
 import {
@@ -64,9 +81,6 @@ import {
   HORIZONTAL_REFERENCE_LABELS,
   PANEL_REFERENCE_LABELS,
   VERTICAL_REFERENCE_LABELS,
-  depthMeasurementLabel,
-  depthOffsetFromDisplay,
-  displayDepthOffset,
   displayHorizontalPanelPosition,
   displayVerticalBoxOffset,
   displayVerticalPanelPosition,
@@ -419,13 +433,26 @@ function DesignerErrorState({ message, onBack }: { message: string; onBack: () =
 // ── Export PDF button ────────────────────────────────────────────────────────
 
 function ExportPdfButton() {
-  const { designName, outerBox, shelves, partitions, drawers, material, sectionConfigs, shelfPartitions, customPanels } = useFurnitureStore()
+  const {
+    designName, outerBox, shelves, partitions, drawers, material,
+    construction, sectionConfigs, shelfPartitions, customPanels,
+  } = useFurnitureStore()
 
   const handleExport = async () => {
     if (!outerBox) return
-    const summary = calculateCutList(outerBox, shelves, partitions, drawers, material, sectionConfigs, shelfPartitions, customPanels)
+    const summary = calculateCutList({
+      outerBox, material, construction, shelves, partitions,
+      drawers, shelfPartitions, customPanels, sectionConfigs,
+    })
+    const calculations = buildFurnitureCalculations({
+      outerBox, material, construction, partitions, shelves,
+    })
+    const drawings = buildFurnitureDrawings({
+      outerBox, material, construction, shelves, partitions,
+      drawers, shelfPartitions, customPanels, sectionConfigs,
+    })
     const { exportCutListPdf } = await import('../../utils/exportCutListPdf')
-    exportCutListPdf(designName, 'Furniture', outerBox, summary)
+    exportCutListPdf(designName, 'Furniture', outerBox, summary, calculations, drawings)
   }
 
   return (
@@ -2020,6 +2047,9 @@ function RightPanel() {
 
         {showPencilToolSettings && <PencilToolSettings />}
 
+        {/* Build settings: plinth, drawer hinge clearance, top formation */}
+        <ConstructionSettings />
+
         <EqualSpacingTool />
 
         {/* Structural presets */}
@@ -2027,6 +2057,9 @@ function RightPanel() {
 
         {/* Section settings: doors + hanging rails */}
         <SectionSettings />
+
+        {/* Step-by-step opening sizes */}
+        <CalculationsPanel />
 
         {/* Cut list */}
         <CutList />
@@ -2183,6 +2216,7 @@ function EqualSpacingTool() {
   const {
     outerBox,
     material,
+    construction,
     partitions,
     setMode: setDrawingMode,
     addEqualShelves,
@@ -2201,8 +2235,9 @@ function EqualSpacingTool() {
 
   const sectionCount = partitions.length + 1
   const safeSectionIndex = Math.min(sectionIndex, sectionCount - 1)
-  const interiorWidth = Math.max(1, outerBox.width - material.thickness * 2)
-  const interiorHeight = Math.max(1, outerBox.height - material.thickness * 2)
+  const metrics = getCarcassMetrics(outerBox, material, construction)
+  const interiorWidth = Math.max(1, metrics.interiorWidth)
+  const interiorHeight = Math.max(1, metrics.interiorHeight)
   const section = getSectionForIndex(partitions, interiorWidth, safeSectionIndex)
   const sectionClearStart = (section?.fromLeft ?? 0) + (safeSectionIndex === 0 ? 0 : material.thickness / 2)
   const sectionClearEnd = (section?.toLeft ?? interiorWidth) - (safeSectionIndex === partitions.length ? 0 : material.thickness / 2)
@@ -2436,7 +2471,7 @@ function BoxCreator() {
 }
 
 function SettingRow({
-  label, value, disabled, onChange, hint, min = 1, max, suffix = 'mm',
+  label, value, disabled, onChange, hint, min = 1, max, suffix = 'mm', step = 1,
 }: {
   label: string
   value: number
@@ -2446,11 +2481,16 @@ function SettingRow({
   min?: number
   max?: number
   suffix?: string
+  /** Smallest increment. Use 0.5 for values like a 12.5mm channel. */
+  step?: number
 }) {
   const updateValue = (raw: string) => {
     const parsed = Number(raw)
-    const rounded = Math.round(Number.isFinite(parsed) ? parsed : min)
-    const next = Math.max(min, Math.min(max ?? Number.MAX_SAFE_INTEGER, rounded))
+    const safe = Number.isFinite(parsed) ? parsed : min
+    // Snap to the step rather than to whole millimetres, so fractional
+    // allowances survive. The toFixed guards against float drift.
+    const snapped = Number((Math.round(safe / step) * step).toFixed(3))
+    const next = Math.max(min, Math.min(max ?? Number.MAX_SAFE_INTEGER, snapped))
     onChange(next)
   }
 
@@ -2463,7 +2503,7 @@ function SettingRow({
             type="number"
             min={min}
             max={max}
-            step={1}
+            step={step}
             value={value}
             disabled={disabled}
             onChange={(e) => updateValue(e.target.value)}
@@ -2601,6 +2641,7 @@ function SelectedItemInspector() {
   const {
     outerBox,
     material,
+    construction,
     shelves,
     partitions,
     drawers,
@@ -2626,11 +2667,10 @@ function SelectedItemInspector() {
   if (!selectedItem || !outerBox) return null
 
   const sectionCount = partitions.length + 1
-  const interiorWidth = Math.max(1, outerBox.width - material.thickness * 2)
-  const interiorHeight = Math.max(1, outerBox.height - material.thickness * 2)
-  const backPanelThickness = material.backPanelThickness ?? DEFAULT_BACK_PANEL_THICKNESS
-  const interiorDepth = Math.max(1, outerBox.depth - backPanelThickness)
-  const maxDrawerSetback = Math.max(0, Math.floor(interiorDepth - material.thickness - 16 - 1))
+  const metrics = getCarcassMetrics(outerBox, material, construction)
+  const interiorWidth = Math.max(1, metrics.interiorWidth)
+  const interiorHeight = Math.max(1, metrics.interiorHeight)
+  const defaultDrawerDepth = getDefaultDrawerDepth(outerBox.depth, construction)
   const title = selectedItemTitle(selectedItem.type)
   const measurementContext = {
     outerWidth: outerBox.width,
@@ -2638,6 +2678,7 @@ function SelectedItemInspector() {
     interiorWidth,
     interiorHeight,
     thickness: material.thickness,
+    baseHeight: metrics.baseHeight,
   }
   const measurementSettings = {
     horizontalReference: measurementHorizontalReference,
@@ -2987,18 +3028,12 @@ function SelectedItemInspector() {
 
                 <InspectorSubhead>Depth</InspectorSubhead>
                 <SettingRow
-                  label={depthMeasurementLabel(measurementDepthReference)}
-                  value={displayDepthOffset(
-                    Math.min(selectedItem.item.frontSetback ?? 0, maxDrawerSetback),
-                    maxDrawerSetback,
-                    measurementDepthReference,
-                  )}
-                  min={0}
-                  max={maxDrawerSetback}
-                  onChange={(v) => updateDrawer(selectedItem.id, {
-                    frontSetback: depthOffsetFromDisplay(v, maxDrawerSetback, measurementDepthReference),
-                  })}
-                  hint={`Drawer box depth becomes ${Math.max(1, Math.round(interiorDepth - Math.min(selectedItem.item.frontSetback ?? 0, maxDrawerSetback) - material.thickness - 16))}mm.`}
+                  label="Drawer depth"
+                  value={clampDrawerDepth(selectedItem.item.depth, outerBox.depth, construction)}
+                  min={1}
+                  max={Math.round(outerBox.depth)}
+                  onChange={(v) => updateDrawer(selectedItem.id, { depth: v })}
+                  hint={`Default is ${Math.round(defaultDrawerDepth)}mm (${Math.round(outerBox.depth)} - ${Math.round(construction.drawerDepthReduction)}). Box sides become ${Math.max(0, Math.round(clampDrawerDepth(selectedItem.item.depth, outerBox.depth, construction) - construction.drawerBoxReduction))}mm long.`}
                 />
               </>
             )
@@ -3293,10 +3328,243 @@ function SectionSettings() {
   )
 }
 
+// ── Construction (base, drawer clearance, top formation) ─────────────────────
+
+/**
+ * Two ways the top panel and door meet: the top runs full depth with the door
+ * hanging below it, or the door runs up and covers the top panel's front edge.
+ */
+function TopFormationIcon({ formation }: { formation: TopFormation }) {
+  if (formation === 'door_over_top') {
+    return (
+      <svg width="40" height="34" viewBox="0 0 40 34" aria-hidden="true">
+        <rect x="3" y="5" width="23" height="7" fill="currentColor" opacity="0.5" />
+        <rect x="27" y="5" width="7" height="25" fill="currentColor" />
+      </svg>
+    )
+  }
+  return (
+    <svg width="40" height="34" viewBox="0 0 40 34" aria-hidden="true">
+      <rect x="3" y="5" width="31" height="7" fill="currentColor" opacity="0.5" />
+      <rect x="18" y="13" width="7" height="17" fill="currentColor" />
+    </svg>
+  )
+}
+
+function ConstructionSettings() {
+  const {
+    outerBox, material, construction,
+    setBaseHeight, setDrawerSidePadding, setDrawerChannel,
+    setDrawerDepthReduction, setDrawerBoxReduction, setTopFormation,
+  } = useFurnitureStore()
+
+  const hasBase = construction.baseHeight > 0
+  const metrics = outerBox ? getCarcassMetrics(outerBox, material, construction) : null
+
+  return (
+    <div>
+      <label className="eyebrow mb-2 block">Construction</label>
+      <div className="space-y-3">
+
+        {/* ── Base / plinth ── */}
+        <div
+          className="rounded-md px-2.5 py-2.5 space-y-2"
+          style={{ background: 'var(--bg-sunken)', border: '1px solid var(--line)' }}
+        >
+          <div className="flex items-center gap-2">
+            <span className="text-[11.5px] font-semibold flex-1" style={{ color: 'var(--ink)' }}>
+              Base / Plinth
+            </span>
+            <button
+              onClick={() => setBaseHeight(hasBase ? 0 : DEFAULT_BASE_HEIGHT)}
+              className="px-2.5 py-0.5 rounded text-[10.5px] transition-colors"
+              style={{
+                background: hasBase ? 'var(--accent)' : 'var(--bg)',
+                color: hasBase ? 'white' : 'var(--ink-3)',
+                border: '1px solid var(--line)',
+              }}
+            >
+              {hasBase ? 'On' : 'Off'}
+            </button>
+          </div>
+
+          {hasBase && (
+            <>
+              <SettingRow
+                label="Base height"
+                value={construction.baseHeight}
+                min={BASE_HEIGHT_RANGE.min}
+                max={BASE_HEIGHT_RANGE.max}
+                onChange={setBaseHeight}
+              />
+              <p className="text-[11px]" style={{ color: 'var(--ink-4)' }}>
+                {metrics
+                  ? `Included in the overall height. Rail is ${Math.round(metrics.interiorWidth)} x ${Math.round(metrics.baseHeight)}, sides run the full ${Math.round(metrics.sidePanelHeight)}.`
+                  : 'Included in the overall height, not added to it.'}
+              </p>
+            </>
+          )}
+        </div>
+
+        {/* ── Drawer build allowances ── */}
+        <div
+          className="rounded-md px-2.5 py-2.5 space-y-2"
+          style={{ background: 'var(--bg-sunken)', border: '1px solid var(--line)' }}
+        >
+          <div className="text-[11.5px] font-semibold" style={{ color: 'var(--ink)' }}>
+            Drawers
+          </div>
+          <SettingRow
+            label="Side padding"
+            value={construction.drawerSidePadding}
+            min={DRAWER_SIDE_PADDING_RANGE.min}
+            max={DRAWER_SIDE_PADDING_RANGE.max}
+            onChange={setDrawerSidePadding}
+            hint="Padding block each side, clearing the door hinges"
+          />
+          <SettingRow
+            label="Channel"
+            value={construction.drawerChannel}
+            min={DRAWER_CHANNEL_RANGE.min}
+            max={DRAWER_CHANNEL_RANGE.max}
+            step={0.5}
+            onChange={setDrawerChannel}
+            hint="Runner allowance each side (half-mm steps)"
+          />
+          <SettingRow
+            label="Depth reduction"
+            value={construction.drawerDepthReduction}
+            min={DRAWER_DEPTH_REDUCTION_RANGE.min}
+            max={DRAWER_DEPTH_REDUCTION_RANGE.max}
+            onChange={setDrawerDepthReduction}
+            hint={outerBox
+              ? `Default drawer depth = ${Math.round(outerBox.depth)} - ${Math.round(construction.drawerDepthReduction)} = ${Math.round(Math.max(1, outerBox.depth - construction.drawerDepthReduction))}mm`
+              : 'Taken off the cabinet depth for the default drawer depth'}
+          />
+          <SettingRow
+            label="Box reduction"
+            value={construction.drawerBoxReduction}
+            min={DRAWER_BOX_REDUCTION_RANGE.min}
+            max={DRAWER_BOX_REDUCTION_RANGE.max}
+            onChange={setDrawerBoxReduction}
+            hint="Taken off box wall height and length"
+          />
+        </div>
+
+        {/* ── Top formation ── */}
+        <div>
+          <span className="text-[12px] block mb-1.5" style={{ color: 'var(--ink-3)' }}>
+            Top formation
+          </span>
+          <div className="grid grid-cols-2 gap-1.5">
+            {TOP_FORMATIONS.map((formation) => {
+              const active = construction.topFormation === formation
+              return (
+                <button
+                  key={formation}
+                  onClick={() => setTopFormation(formation)}
+                  title={TOP_FORMATION_DESCRIPTIONS[formation]}
+                  className="rounded-md px-2 py-2 flex flex-col items-center gap-1 transition-colors"
+                  style={{
+                    background: active ? 'var(--accent)' : 'var(--bg-sunken)',
+                    border: `1px solid ${active ? 'var(--accent)' : 'var(--line)'}`,
+                    color: active ? 'white' : 'var(--ink-3)',
+                  }}
+                >
+                  <TopFormationIcon formation={formation} />
+                  <span className="text-[10.5px] leading-tight text-center">
+                    {TOP_FORMATION_LABELS[formation]}
+                  </span>
+                </button>
+              )
+            })}
+          </div>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+// ── Calculations ──────────────────────────────────────────────────────────────
+
+function CalculationsPanel() {
+  const { outerBox, material, construction, partitions, shelves } = useFurnitureStore()
+
+  const blocks = useMemo(
+    () => (outerBox
+      ? buildFurnitureCalculations({ outerBox, material, construction, partitions, shelves })
+      : []),
+    [outerBox, material, construction, partitions, shelves],
+  )
+
+  if (!outerBox) return null
+
+  return (
+    <div>
+      <label className="eyebrow mb-2 block">Calculations</label>
+      <div className="space-y-2">
+        {blocks.map((block) => (
+          <div
+            key={block.id}
+            className="rounded-md px-2.5 py-2.5"
+            style={{ background: 'var(--bg-sunken)', border: '1px solid var(--line)' }}
+          >
+            <div className="text-[11.5px] font-semibold mb-1.5" style={{ color: 'var(--ink)' }}>
+              {block.title}
+            </div>
+
+            <div className="space-y-1.5">
+              {block.steps.map((step, index) => (
+                <div key={index}>
+                  <div
+                    className="text-[12px]"
+                    style={{ color: 'var(--ink)', fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace' }}
+                  >
+                    {step.expression} = <strong>{step.result}</strong>
+                  </div>
+                  <div className="text-[10.5px]" style={{ color: 'var(--ink-4)' }}>
+                    {step.note}
+                  </div>
+                </div>
+              ))}
+            </div>
+
+            {block.note && (
+              <p className="text-[10.5px] mt-1.5" style={{ color: 'var(--ink-4)' }}>
+                {block.note}
+              </p>
+            )}
+
+            {block.outcomes.length > 0 && (
+              <div
+                className="flex flex-wrap gap-1 mt-2 pt-2"
+                style={{ borderTop: '1px solid var(--line)' }}
+              >
+                {block.outcomes.map((outcome) => (
+                  <span
+                    key={outcome.label}
+                    className="text-[10.5px] px-1.5 py-0.5 rounded"
+                    style={{ background: 'var(--bg)', color: 'var(--ink-3)', border: '1px solid var(--line)' }}
+                  >
+                    {outcome.label} <strong style={{ color: 'var(--ink)' }}>{outcome.value}</strong>
+                  </span>
+                ))}
+              </div>
+            )}
+          </div>
+        ))}
+      </div>
+    </div>
+  )
+}
+
 // ── Cut list ──────────────────────────────────────────────────────────────────
 
 function CutList() {
-  const { outerBox, shelves, partitions, drawers, material, sectionConfigs, shelfPartitions, customPanels } = useFurnitureStore()
+  const {
+    outerBox, shelves, partitions, drawers, material,
+    construction, sectionConfigs, shelfPartitions, customPanels,
+  } = useFurnitureStore()
 
   if (!outerBox) {
     return (
@@ -3309,7 +3577,10 @@ function CutList() {
     )
   }
 
-  const summary = calculateCutList(outerBox, shelves, partitions, drawers, material, sectionConfigs, shelfPartitions, customPanels)
+  const summary = calculateCutList({
+    outerBox, material, construction, shelves, partitions,
+    drawers, shelfPartitions, customPanels, sectionConfigs,
+  })
 
   return (
     <div>
@@ -3322,6 +3593,19 @@ function CutList() {
           {summary.totalPieces} pieces
         </span>
       </div>
+
+      {summary.warnings.length > 0 && (
+        <div
+          className="rounded-md px-2.5 py-2 mb-2 space-y-1"
+          style={{ background: 'rgba(217,119,6,0.10)', border: '1px solid rgba(217,119,6,0.35)' }}
+        >
+          {summary.warnings.map((warning) => (
+            <p key={warning} className="text-[11px]" style={{ color: 'var(--ink-2, #92400e)' }}>
+              {warning}
+            </p>
+          ))}
+        </div>
+      )}
 
       <div className="space-y-3">
         {summary.groups.map((group) => (

@@ -14,10 +14,13 @@ export interface FurnitureMeasurementSettings {
 
 export interface FurnitureMeasurementContext {
   outerWidth: number
+  /** Includes the plinth — the drawn height is the overall height. */
   outerHeight: number
   interiorWidth: number
   interiorHeight: number
   thickness: number
+  /** Plinth height, so exterior references read from the floor. */
+  baseHeight?: number
 }
 
 export interface FurnitureMeasurementSection {
@@ -146,15 +149,17 @@ export function displayVerticalPoint(
   reference: FurnitureMeasurementVerticalReference,
   context: FurnitureMeasurementContext,
 ) {
+  // The interior floor sits one base height + one board above the very bottom.
+  const base = context.baseHeight ?? 0
   switch (reference) {
     case 'interior_bottom':
       return pointFromInteriorBottom
     case 'exterior_bottom':
-      return pointFromInteriorBottom + context.thickness
+      return pointFromInteriorBottom + context.thickness + base
     case 'interior_top':
       return context.interiorHeight - pointFromInteriorBottom
     case 'exterior_top':
-      return context.outerHeight - context.thickness - pointFromInteriorBottom
+      return context.outerHeight - base - context.thickness - pointFromInteriorBottom
   }
 }
 
@@ -163,15 +168,16 @@ export function verticalPointFromDisplay(
   reference: FurnitureMeasurementVerticalReference,
   context: FurnitureMeasurementContext,
 ) {
+  const base = context.baseHeight ?? 0
   switch (reference) {
     case 'interior_bottom':
       return displayedValue
     case 'exterior_bottom':
-      return displayedValue - context.thickness
+      return displayedValue - context.thickness - base
     case 'interior_top':
       return context.interiorHeight - displayedValue
     case 'exterior_top':
-      return context.outerHeight - context.thickness - displayedValue
+      return context.outerHeight - base - context.thickness - displayedValue
   }
 }
 

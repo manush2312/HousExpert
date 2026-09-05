@@ -8,6 +8,19 @@ import {
   FURNITURE_BOX_FRAME_PADDING,
   furnitureCanvasPxToMm,
 } from '../utils/furnitureCanvasGeometry'
+import {
+  DEFAULT_BACK_PANEL_THICKNESS,
+  DEFAULT_CONSTRUCTION,
+  DRAWER_BOX_HEIGHT_ALLOWANCE,
+  backPanelThicknessOf,
+  getCarcassMetrics,
+  clampDrawerDepth,
+  getMinDrawerHeight,
+  normalizeConstruction,
+  type CarcassMetrics,
+  type Construction,
+  type TopFormation,
+} from '../utils/furnitureConstruction'
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -54,7 +67,7 @@ export interface Drawer {
   sectionIndex: number // which section (0 = leftmost)
   fromBottom: number   // mm from interior bottom of that section
   height: number       // mm
-  frontSetback: number  // mm behind the front/door plane
+  depth: number        // mm front-to-back; 0 falls back to cabinet depth - reduction
 }
 
 export interface Material {
@@ -95,6 +108,7 @@ export interface FurnitureSnapshot {
   furnitureType: FurnitureType
   outerBox: OuterBox | null
   material: Material
+  construction: Construction
   shelves: Shelf[]
   partitions: Partition[]
   drawers: Drawer[]
@@ -118,7 +132,7 @@ export type SelectedFurnitureItem =
 
 export type ShelfUpdate = Partial<Pick<Shelf, 'fromBottom' | 'sectionIndex'>>
 export type PartitionUpdate = Partial<Pick<Partition, 'fromLeft'>>
-export type DrawerUpdate = Partial<Pick<Drawer, 'sectionIndex' | 'fromBottom' | 'height' | 'frontSetback'>>
+export type DrawerUpdate = Partial<Pick<Drawer, 'sectionIndex' | 'fromBottom' | 'height' | 'depth'>>
 export type ShelfPartitionUpdate = Partial<Pick<ShelfPartition, 'sectionIndex' | 'fromLeft' | 'fromBottom' | 'toBottom'>>
 export type CustomPanelUpdate = Partial<Omit<CustomPanel, 'id'>>
 export type FreehandPathUpdate = Partial<Pick<FreehandPath, 'points' | 'stroke' | 'strokeWidth'>>
@@ -141,6 +155,9 @@ interface FurnitureState {
 
   // Material
   material: Material
+
+  // Build settings: plinth height, drawer hinge clearance, top formation
+  construction: Construction
 
   // Internal elements (all positions in mm)
   shelves: Shelf[]
@@ -185,6 +202,14 @@ interface FurnitureState {
   setThickness: (mm: number) => void
   setBackPanelThickness: (mm: number) => void
   setMaterialColor: (color: string) => void
+
+  // Construction
+  setBaseHeight: (mm: number) => void
+  setDrawerSidePadding: (mm: number) => void
+  setDrawerChannel: (mm: number) => void
+  setDrawerDepthReduction: (mm: number) => void
+  setDrawerBoxReduction: (mm: number) => void
+  setTopFormation: (formation: TopFormation) => void
 
   // Add elements
   addShelf: (fromBottom: number, sectionIndex: number) => void
@@ -260,9 +285,10 @@ function localElementId(elementId: string | undefined) {
   return elementId
 }
 
-export const DEFAULT_BACK_PANEL_THICKNESS = 6
-export const DRAWER_BOX_HEIGHT_ALLOWANCE = 6
-const DRAWER_DEPTH_CLEARANCE = 16
+// Re-exported so existing importers keep working; the definitions live in
+// furnitureConstruction alongside the rest of the trade allowances.
+export { DEFAULT_BACK_PANEL_THICKNESS, DRAWER_BOX_HEIGHT_ALLOWANCE }
+export type { Construction, TopFormation }
 export const DEFAULT_PENCIL_STROKE = '#2563eb'
 export const DEFAULT_PENCIL_STROKE_WIDTH = 2
 export const PENCIL_STROKE_WIDTH_RANGE = { min: 1, max: 16 }
@@ -286,32 +312,46 @@ function clampSectionIndex(sectionIndex: number | undefined, fallback: number, p
 }
 
 function minDrawerHeight(thickness: number): number {
-  return Math.max(20, thickness + DRAWER_BOX_HEIGHT_ALLOWANCE + 1)
+  return getMinDrawerHeight(thickness)
+}
+
+/** Interior height for a box, with the plinth already taken off the top total. */
+function interiorHeightOf(box: OuterBox, material: Material, construction: Construction): number {
+  return getCarcassMetrics(box, material, construction).interiorHeight
 }
 
 function minOuterWidthForLayout(thickness: number, partitionCount: number): number {
   return thickness * (partitionCount + 2) + 1
 }
 
-function minOuterHeightForLayout(thickness: number, hasShelves: boolean, hasDrawers: boolean): number {
+function minOuterHeightForLayout(
+  thickness: number,
+  hasShelves: boolean,
+  hasDrawers: boolean,
+  baseHeight = 0,
+): number {
   let minInteriorHeight = 1
   if (hasShelves) minInteriorHeight = Math.max(minInteriorHeight, thickness + 1)
   if (hasDrawers) minInteriorHeight = Math.max(minInteriorHeight, minDrawerHeight(thickness))
-  return thickness * 2 + minInteriorHeight
+  // The drawn height includes the plinth, so the carcass minimum sits on top of it.
+  return baseHeight + thickness * 2 + minInteriorHeight
 }
 
 function maxMaterialThicknessForLayout(outerBox: OuterBox, state: FurnitureState): number {
+  // The plinth is not made of carcass board, so it never constrains thickness --
+  // but it does reduce the height the carcass has to work with.
+  const carcassHeight = Math.max(1, outerBox.height - state.construction.baseHeight)
   const widthLimit = Math.floor((outerBox.width - 1) / (state.partitions.length + 2))
-  let heightLimit = Math.floor((outerBox.height - 1) / 2)
+  let heightLimit = Math.floor((carcassHeight - 1) / 2)
 
   if (state.shelves.length > 0) {
-    heightLimit = Math.min(heightLimit, Math.floor((outerBox.height - 1) / 3))
+    heightLimit = Math.min(heightLimit, Math.floor((carcassHeight - 1) / 3))
   }
   if (state.drawers.length > 0) {
     heightLimit = Math.min(
       heightLimit,
-      Math.floor((outerBox.height - 20) / 2),
-      Math.floor((outerBox.height - DRAWER_BOX_HEIGHT_ALLOWANCE - 1) / 3),
+      Math.floor((carcassHeight - 20) / 2),
+      Math.floor((carcassHeight - DRAWER_BOX_HEIGHT_ALLOWANCE - 1) / 3),
     )
   }
 
@@ -322,6 +362,7 @@ function sanitizeOuterBoxForLayout(
   box: OuterBox,
   material: Material,
   state: Pick<FurnitureState, 'partitions' | 'shelves' | 'drawers'>,
+  construction: Construction = DEFAULT_CONSTRUCTION,
 ): OuterBox {
   return {
     width: Math.max(
@@ -329,7 +370,12 @@ function sanitizeOuterBoxForLayout(
       snap(box.width),
     ),
     height: Math.max(
-      minOuterHeightForLayout(material.thickness, state.shelves.length > 0, state.drawers.length > 0),
+      minOuterHeightForLayout(
+        material.thickness,
+        state.shelves.length > 0,
+        state.drawers.length > 0,
+        construction.baseHeight,
+      ),
       snap(box.height),
     ),
     depth: Math.max(backPanelThicknessOf(material) + 1, snap(box.depth)),
@@ -373,15 +419,6 @@ function sectionDividerBounds(
   const max = rightBoundary - (sectionIndex === sorted.length ? thickness / 2 : thickness)
   if (max < min) return null
   return { min, max }
-}
-
-function backPanelThicknessOf(material: Material) {
-  return material.backPanelThickness ?? DEFAULT_BACK_PANEL_THICKNESS
-}
-
-function maxDrawerFrontSetback(outerBox: OuterBox, thickness: number, backPanelThickness: number) {
-  const interiorD = outerBox.depth - backPanelThickness
-  return Math.max(0, interiorD - thickness - DRAWER_DEPTH_CLEARANCE - 1)
 }
 
 function shiftSectionConfigsForInsert(
@@ -436,9 +473,9 @@ function evenlySpacedCenters(start: number, end: number, itemThickness: number, 
   ))
 }
 
-function clampCustomPanel(panel: Omit<CustomPanel, 'id'>, outerBox: OuterBox, thickness: number) {
-  const interiorW = Math.max(1, outerBox.width - thickness * 2)
-  const interiorH = Math.max(1, outerBox.height - thickness * 2)
+function clampCustomPanel(panel: Omit<CustomPanel, 'id'>, metrics: CarcassMetrics) {
+  const interiorW = Math.max(1, metrics.interiorWidth)
+  const interiorH = Math.max(1, metrics.interiorHeight)
   const width = clamp(snap(panel.width), 1, interiorW)
   const height = clamp(snap(panel.height), 1, interiorH)
 
@@ -468,15 +505,19 @@ function freehandPathCanvasBounds(points: number[]) {
 function customPanelFromFreehandPath(
   path: FreehandPath,
   outerBox: OuterBox,
-  thickness: number,
+  metrics: CarcassMetrics,
 ): Omit<CustomPanel, 'id'> | null {
   const bounds = freehandPathCanvasBounds(path.points)
   if (!bounds) return null
 
+  const thickness = metrics.thickness
   const interiorLeft = FURNITURE_BOX_FRAME_PADDING.left + thickness
   const interiorTop = FURNITURE_BOX_FRAME_PADDING.top + thickness
   const interiorRight = FURNITURE_BOX_FRAME_PADDING.left + outerBox.width - thickness
-  const interiorBottom = FURNITURE_BOX_FRAME_PADDING.top + outerBox.height - thickness
+  // The plinth occupies the bottom of the drawn box, so the interior floor
+  // sits one base height higher than the outer box bottom.
+  const interiorBottom = FURNITURE_BOX_FRAME_PADDING.top
+    + outerBox.height - metrics.baseHeight - thickness
 
   if (
     bounds.right < interiorLeft
@@ -508,7 +549,7 @@ function customPanelFromFreehandPath(
       width,
       height,
       thickness,
-    }, outerBox, thickness)
+    }, metrics)
   }
 
   if (isVertical) {
@@ -521,7 +562,7 @@ function customPanelFromFreehandPath(
       width,
       height,
       thickness,
-    }, outerBox, thickness)
+    }, metrics)
   }
 
   return clampCustomPanel({
@@ -531,7 +572,7 @@ function customPanelFromFreehandPath(
     width: Math.max(thickness, rawWidth),
     height: Math.max(thickness, rawHeight),
     thickness,
-  }, outerBox, thickness)
+  }, metrics)
 }
 
 function clampPartitionsForLayout(partitions: Partition[], outerBox: OuterBox, thickness: number): Partition[] {
@@ -563,6 +604,7 @@ function clampSectionConfigsForLayout(
 type NormalizedFurnitureLayout = {
   outerBox: OuterBox
   material: Material
+  construction: Construction
   shelves: Shelf[]
   partitions: Partition[]
   drawers: Drawer[]
@@ -575,10 +617,12 @@ function normalizeFurnitureLayout(
   state: FurnitureState,
   outerBox: OuterBox,
   material: Material,
+  construction: Construction = state.construction,
 ): NormalizedFurnitureLayout {
-  const safeOuterBox = sanitizeOuterBoxForLayout(outerBox, material, state)
+  const safeOuterBox = sanitizeOuterBoxForLayout(outerBox, material, state, construction)
   const T = material.thickness
-  const interiorH = Math.max(1, safeOuterBox.height - T * 2)
+  const metrics = getCarcassMetrics(safeOuterBox, material, construction)
+  const interiorH = Math.max(1, metrics.interiorHeight)
   const partitions = clampPartitionsForLayout(state.partitions, safeOuterBox, T)
 
   const shelves = state.shelves.map((shelf) => ({
@@ -595,23 +639,14 @@ function normalizeFurnitureLayout(
       sectionIndex: clampSectionIndex(drawer.sectionIndex, drawer.sectionIndex, partitions),
       fromBottom: clamp(snap(drawer.fromBottom), 0, Math.max(0, interiorH - height)),
       height,
-      frontSetback: clamp(
-        snap(drawer.frontSetback ?? 0),
-        0,
-        maxDrawerFrontSetback(safeOuterBox, T, backPanelThicknessOf(material)),
-      ),
+      depth: clampDrawerDepth(drawer.depth, safeOuterBox.depth, construction),
     }
   })
 
   const shelfPartitions = state.shelfPartitions
     .map((partition) => {
       const sectionIndex = clampSectionIndex(partition.sectionIndex, partition.sectionIndex, partitions)
-      const bounds = sectionDividerBounds(
-        partitions,
-        sectionIndex,
-        Math.max(1, safeOuterBox.width - T * 2),
-        T,
-      )
+      const bounds = sectionDividerBounds(partitions, sectionIndex, Math.max(1, metrics.interiorWidth), T)
       if (!bounds) return null
       const fromBottom = clamp(snap(partition.fromBottom), 0, Math.max(0, interiorH - 1))
       const toBottom = clamp(snap(partition.toBottom), fromBottom + 1, interiorH)
@@ -627,12 +662,13 @@ function normalizeFurnitureLayout(
 
   const customPanels = state.customPanels.map((panel) => {
     const { id, ...rawPanel } = panel
-    return { id, ...clampCustomPanel(rawPanel, safeOuterBox, T) }
+    return { id, ...clampCustomPanel(rawPanel, metrics) }
   })
 
   return {
     outerBox: safeOuterBox,
     material,
+    construction,
     shelves,
     partitions,
     drawers,
@@ -665,6 +701,7 @@ function cloneFurnitureSnapshot(snapshot: FurnitureSnapshot): FurnitureSnapshot 
     furnitureType: snapshot.furnitureType,
     outerBox: snapshot.outerBox ? { ...snapshot.outerBox } : null,
     material: { ...snapshot.material },
+    construction: { ...snapshot.construction },
     shelves: snapshot.shelves.map((shelf) => ({ ...shelf })),
     partitions: snapshot.partitions.map((partition) => ({ ...partition })),
     drawers: snapshot.drawers.map((drawer) => ({ ...drawer })),
@@ -681,6 +718,7 @@ export function captureFurnitureSnapshot(state: FurnitureState): FurnitureSnapsh
     furnitureType: state.furnitureType,
     outerBox: state.outerBox,
     material: state.material,
+    construction: state.construction,
     shelves: state.shelves,
     partitions: state.partitions,
     drawers: state.drawers,
@@ -785,6 +823,14 @@ function serializeFurnitureDesignState(s: FurnitureState): CreateFurnitureDesign
       back_panel_thickness: s.material.backPanelThickness,
       color: s.material.color,
     },
+    construction: {
+      base_height: s.construction.baseHeight,
+      drawer_side_padding: s.construction.drawerSidePadding,
+      drawer_channel: s.construction.drawerChannel,
+      drawer_depth_reduction: s.construction.drawerDepthReduction,
+      drawer_box_reduction: s.construction.drawerBoxReduction,
+      top_formation: s.construction.topFormation,
+    },
     shelves: s.shelves.map((shelf) => ({
       element_id: shelf.id,
       from_bottom: shelf.fromBottom,
@@ -799,7 +845,7 @@ function serializeFurnitureDesignState(s: FurnitureState): CreateFurnitureDesign
       section_index: drawer.sectionIndex,
       from_bottom: drawer.fromBottom,
       height: drawer.height,
-      front_setback: drawer.frontSetback,
+      depth: drawer.depth,
     })),
     custom_panels: s.customPanels.map((panel) => ({
       element_id: panel.id,
@@ -862,6 +908,14 @@ function storePatchFromDesign(design: FurnitureDesign): Partial<FurnitureState> 
     backPanelThickness: design.material?.back_panel_thickness ?? DEFAULT_MATERIAL.backPanelThickness,
     color: design.material?.color || DEFAULT_MATERIAL.color,
   }
+  const construction = normalizeConstruction(design.construction ? {
+    baseHeight: design.construction.base_height,
+    drawerSidePadding: design.construction.drawer_side_padding,
+    drawerChannel: design.construction.drawer_channel,
+    drawerDepthReduction: design.construction.drawer_depth_reduction,
+    drawerBoxReduction: design.construction.drawer_box_reduction,
+    topFormation: design.construction.top_formation,
+  } : null)
   const shelves = (design.shelves ?? []).map((shelf) => ({
     id: localElementId(shelf.element_id),
     fromBottom: shelf.from_bottom,
@@ -876,7 +930,7 @@ function storePatchFromDesign(design: FurnitureDesign): Partial<FurnitureState> 
     sectionIndex: drawer.section_index,
     fromBottom: drawer.from_bottom,
     height: drawer.height,
-    frontSetback: drawer.front_setback,
+    depth: drawer.depth,
   }))
   const customPanels = (design.custom_panels ?? []).map((panel) => ({
     id: localElementId(panel.element_id),
@@ -906,6 +960,7 @@ function storePatchFromDesign(design: FurnitureDesign): Partial<FurnitureState> 
     furnitureType,
     outerBox,
     material,
+    construction,
     shelves,
     partitions,
     drawers,
@@ -921,6 +976,7 @@ function storePatchFromDesign(design: FurnitureDesign): Partial<FurnitureState> 
     furnitureType,
     outerBox,
     material,
+    construction,
     shelves,
     partitions,
     drawers,
@@ -950,6 +1006,7 @@ export const useFurnitureStore = create<FurnitureState>((set, get) => ({
   future: [],
   outerBox: null,
   material: DEFAULT_MATERIAL,
+  construction: DEFAULT_CONSTRUCTION,
   shelves: [],
   partitions: [],
   drawers: [],
@@ -1140,11 +1197,59 @@ export const useFurnitureStore = create<FurnitureState>((set, get) => ({
       : { ...recordFurnitureEdit(s), material: { ...s.material, color } }
   )),
 
+  setBaseHeight: (mm) => set((s) => {
+    const construction = normalizeConstruction({ ...s.construction, baseHeight: mm })
+    if (construction.baseHeight === s.construction.baseHeight) return {}
+    if (!s.outerBox) return { ...recordFurnitureEdit(s), construction }
+    // The drawn height INCLUDES the plinth, so raising the base shrinks the
+    // interior. Re-run the layout so nothing is left hanging outside it.
+    const layout = normalizeFurnitureLayout(s, s.outerBox, s.material, construction)
+    return { ...recordFurnitureEdit(s), ...layout }
+  }),
+
+  setDrawerSidePadding: (mm) => set((s) => {
+    const construction = normalizeConstruction({ ...s.construction, drawerSidePadding: mm })
+    if (construction.drawerSidePadding === s.construction.drawerSidePadding) return {}
+    // Padding only changes panel sizes, never element placement, so the
+    // existing layout stays valid.
+    return { ...recordFurnitureEdit(s), construction }
+  }),
+
+  setDrawerChannel: (mm) => set((s) => {
+    const construction = normalizeConstruction({ ...s.construction, drawerChannel: mm })
+    if (construction.drawerChannel === s.construction.drawerChannel) return {}
+    return { ...recordFurnitureEdit(s), construction }
+  }),
+
+  setDrawerDepthReduction: (mm) => set((s) => {
+    const construction = normalizeConstruction({ ...s.construction, drawerDepthReduction: mm })
+    if (construction.drawerDepthReduction === s.construction.drawerDepthReduction) return {}
+    // Drawers left on the default depth follow the new reduction.
+    if (!s.outerBox) return { ...recordFurnitureEdit(s), construction }
+    return { ...recordFurnitureEdit(s), ...normalizeFurnitureLayout(s, s.outerBox, s.material, construction) }
+  }),
+
+  setDrawerBoxReduction: (mm) => set((s) => {
+    const construction = normalizeConstruction({ ...s.construction, drawerBoxReduction: mm })
+    if (construction.drawerBoxReduction === s.construction.drawerBoxReduction) return {}
+    // Only affects board sizes, never placement.
+    return { ...recordFurnitureEdit(s), construction }
+  }),
+
+  setTopFormation: (formation) => set((s) => (
+    s.construction.topFormation === formation
+      ? {}
+      : {
+          ...recordFurnitureEdit(s),
+          construction: { ...s.construction, topFormation: formation },
+        }
+  )),
+
   addShelf: (fromBottom, sectionIndex) => {
-    const { outerBox, material, partitions } = get()
+    const { outerBox, material, partitions, construction } = get()
     if (!outerBox) return
     const T = material.thickness
-    const interiorH = outerBox.height - T * 2
+    const interiorH = interiorHeightOf(outerBox, material, construction)
     if (interiorH <= 0) return
     const clamped = clamp(snap(fromBottom), T / 2, interiorH - T / 2)
     set((s) => ({
@@ -1187,11 +1292,11 @@ export const useFurnitureStore = create<FurnitureState>((set, get) => ({
   },
 
   addEqualShelves: (count, sectionIndex, bottomMargin = 0, topMargin = 0) => {
-    const { outerBox, material, partitions } = get()
+    const { outerBox, material, partitions, construction } = get()
     if (!outerBox) return
 
     const T = material.thickness
-    const interiorH = outerBox.height - T * 2
+    const interiorH = interiorHeightOf(outerBox, material, construction)
     if (interiorH <= 0) return
 
     const safeSectionIndex = clampSectionIndex(sectionIndex, 0, partitions)
@@ -1267,12 +1372,12 @@ export const useFurnitureStore = create<FurnitureState>((set, get) => ({
   },
 
   addEqualShelfPartitions: (count, sectionIndex, fromBottom, toBottom, fromLeft, toLeft) => {
-    const { outerBox, material, partitions } = get()
+    const { outerBox, material, partitions, construction } = get()
     if (!outerBox) return
 
     const T = material.thickness
     const interiorW = outerBox.width - T * 2
-    const interiorH = outerBox.height - T * 2
+    const interiorH = interiorHeightOf(outerBox, material, construction)
     if (interiorW <= 0 || interiorH <= 0) return
 
     const sorted = [...partitions].sort((a, b) => a.fromLeft - b.fromLeft)
@@ -1306,9 +1411,9 @@ export const useFurnitureStore = create<FurnitureState>((set, get) => ({
   },
 
   addDrawer: (sectionIndex, fromBottom, height) => {
-    const { outerBox, material, partitions } = get()
+    const { outerBox, material, partitions, construction } = get()
     if (!outerBox) return
-    const interiorH = outerBox.height - material.thickness * 2
+    const interiorH = interiorHeightOf(outerBox, material, construction)
     if (interiorH <= 0) return
     const minH = Math.min(interiorH, minDrawerHeight(material.thickness))
     const snappedH = clamp(snap(height), minH, interiorH)
@@ -1320,7 +1425,7 @@ export const useFurnitureStore = create<FurnitureState>((set, get) => ({
         sectionIndex: clampSectionIndex(sectionIndex, 0, partitions),
         fromBottom: snapped,
         height: snappedH,
-        frontSetback: 0,
+        depth: clampDrawerDepth(undefined, outerBox.depth, construction),
       }],
     }))
   },
@@ -1331,7 +1436,7 @@ export const useFurnitureStore = create<FurnitureState>((set, get) => ({
     if (!shelf) return {}
 
     const T = s.material.thickness
-    const interiorH = s.outerBox.height - T * 2
+    const interiorH = interiorHeightOf(s.outerBox, s.material, s.construction)
     if (interiorH <= 0) return {}
 
     const nextShelf = {
@@ -1374,7 +1479,7 @@ export const useFurnitureStore = create<FurnitureState>((set, get) => ({
     const drawer = s.drawers.find((item) => item.id === id)
     if (!drawer) return {}
 
-    const interiorH = s.outerBox.height - s.material.thickness * 2
+    const interiorH = interiorHeightOf(s.outerBox, s.material, s.construction)
     if (interiorH <= 0) return {}
 
     const minH = Math.min(interiorH, minDrawerHeight(s.material.thickness))
@@ -1384,11 +1489,7 @@ export const useFurnitureStore = create<FurnitureState>((set, get) => ({
       sectionIndex: clampSectionIndex(patch.sectionIndex, drawer.sectionIndex, s.partitions),
       fromBottom: clamp(snap(patch.fromBottom ?? drawer.fromBottom), 0, Math.max(0, interiorH - height)),
       height,
-      frontSetback: clamp(
-        snap(patch.frontSetback ?? drawer.frontSetback ?? 0),
-        0,
-        maxDrawerFrontSetback(s.outerBox, s.material.thickness, backPanelThicknessOf(s.material)),
-      ),
+      depth: clampDrawerDepth(patch.depth ?? drawer.depth, s.outerBox.depth, s.construction),
     }
     if (valuesMatch(drawer, nextDrawer)) return {}
 
@@ -1405,7 +1506,7 @@ export const useFurnitureStore = create<FurnitureState>((set, get) => ({
 
     const T = s.material.thickness
     const interiorW = s.outerBox.width - T * 2
-    const interiorH = s.outerBox.height - T * 2
+    const interiorH = interiorHeightOf(s.outerBox, s.material, s.construction)
     if (interiorW <= 0 || interiorH <= 0) return {}
 
     const sectionIndex = clampSectionIndex(patch.sectionIndex, shelfPartition.sectionIndex, s.partitions)
@@ -1451,8 +1552,7 @@ export const useFurnitureStore = create<FurnitureState>((set, get) => ({
         height: patch.height ?? customPanel.height,
         thickness: patch.thickness ?? customPanel.thickness,
       },
-      s.outerBox,
-      s.material.thickness,
+      getCarcassMetrics(s.outerBox, s.material, s.construction),
     )
     const nextCustomPanel = { ...customPanel, ...clamped }
     if (valuesMatch(customPanel, nextCustomPanel)) return {}
@@ -1464,10 +1564,10 @@ export const useFurnitureStore = create<FurnitureState>((set, get) => ({
   }),
 
   moveShelf: (id, fromBottom) => {
-    const { outerBox, material } = get()
+    const { outerBox, material, construction } = get()
     if (!outerBox) return
     const T = material.thickness
-    const interiorH = outerBox.height - T * 2
+    const interiorH = interiorHeightOf(outerBox, material, construction)
     if (interiorH <= 0) return
     const clamped = clamp(snap(fromBottom), T / 2, interiorH - T / 2)
     set((s) => ({
@@ -1491,11 +1591,11 @@ export const useFurnitureStore = create<FurnitureState>((set, get) => ({
   },
 
   moveDrawer: (id, fromBottom) => {
-    const { outerBox, material, drawers } = get()
+    const { outerBox, material, drawers, construction } = get()
     if (!outerBox) return
     const drawer = drawers.find((d) => d.id === id)
     if (!drawer) return
-    const interiorH = outerBox.height - material.thickness * 2
+    const interiorH = interiorHeightOf(outerBox, material, construction)
     const snapped = clamp(snap(fromBottom), 0, Math.max(0, interiorH - drawer.height))
     set((s) => ({
       ...recordFurnitureEdit(s),
@@ -1504,11 +1604,11 @@ export const useFurnitureStore = create<FurnitureState>((set, get) => ({
   },
 
   addShelfPartition: (sectionIndex, fromLeft, fromBottom, toBottom) => {
-    const { outerBox, material, partitions } = get()
+    const { outerBox, material, partitions, construction } = get()
     if (!outerBox) return
     const T = material.thickness
     const interiorW = outerBox.width - T * 2
-    const interiorH = outerBox.height - T * 2
+    const interiorH = interiorHeightOf(outerBox, material, construction)
     if (interiorW <= 0 || interiorH <= 0) return
     const safeSectionIndex = clampSectionIndex(sectionIndex, 0, partitions)
     const bounds = sectionDividerBounds(partitions, safeSectionIndex, interiorW, T)
@@ -1547,9 +1647,9 @@ export const useFurnitureStore = create<FurnitureState>((set, get) => ({
   },
 
   addCustomPanel: (panel) => {
-    const { outerBox, material } = get()
+    const { outerBox, material, construction } = get()
     if (!outerBox) return
-    const clamped = clampCustomPanel(panel, outerBox, material.thickness)
+    const clamped = clampCustomPanel(panel, getCarcassMetrics(outerBox, material, construction))
     set((s) => ({
       ...recordFurnitureEdit(s),
       customPanels: [...s.customPanels, { ...clamped, id: uid() }],
@@ -1557,13 +1657,17 @@ export const useFurnitureStore = create<FurnitureState>((set, get) => ({
   },
 
   convertFreehandPathToCustomPanel: (id) => {
-    const { outerBox, material, freehandPaths } = get()
+    const { outerBox, material, freehandPaths, construction } = get()
     if (!outerBox) return
 
     const path = freehandPaths.find((item) => item.id === id)
     if (!path) return
 
-    const panel = customPanelFromFreehandPath(path, outerBox, material.thickness)
+    const panel = customPanelFromFreehandPath(
+      path,
+      outerBox,
+      getCarcassMetrics(outerBox, material, construction),
+    )
     if (!panel) return
 
     const panelId = uid()
@@ -1640,11 +1744,14 @@ export const useFurnitureStore = create<FurnitureState>((set, get) => ({
   }),
 
   moveCustomPanel: (id, fromLeft, fromBottom) => {
-    const { outerBox, material, customPanels } = get()
+    const { outerBox, material, customPanels, construction } = get()
     if (!outerBox) return
     const panel = customPanels.find((p) => p.id === id)
     if (!panel) return
-    const clamped = clampCustomPanel({ ...panel, fromLeft, fromBottom }, outerBox, material.thickness)
+    const clamped = clampCustomPanel(
+      { ...panel, fromLeft, fromBottom },
+      getCarcassMetrics(outerBox, material, construction),
+    )
     set((s) => ({
       ...recordFurnitureEdit(s),
       customPanels: s.customPanels.map((p) =>
@@ -1742,6 +1849,7 @@ export const useFurnitureStore = create<FurnitureState>((set, get) => ({
     ...clearFurnitureHistory(),
     outerBox: null,
     material: DEFAULT_MATERIAL,
+    construction: DEFAULT_CONSTRUCTION,
     shelves: [],
     partitions: [],
     drawers: [],
