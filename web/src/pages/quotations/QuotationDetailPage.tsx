@@ -102,6 +102,10 @@ export default function QuotationDetailPage() {
   const isEditable = quotation.status === 'draft'
   const discountAmount = quotation.discount_amount || 0
   const discountPercent = quotation.discount_percent || 0
+  // A quotation saved before fixed discounts existed has no mode, so percent.
+  const discountIsFlat = quotation.discount_mode === 'amount'
+  const hasDiscount = discountAmount > 0 || discountPercent > 0
+  const discountLabel = discountIsFlat ? '' : (discountPercent > 0 ? ` (${discountPercent}%)` : '')
   const subtotal = quotation.subtotal_amount || (quotation.total_amount - (quotation.gst_amount || 0) + discountAmount)
   const taxableAmount = Math.max(0, subtotal - discountAmount)
   const gstAmount = quotation.gst_amount || 0
@@ -232,10 +236,10 @@ export default function QuotationDetailPage() {
         <div className="card px-4 py-3">
           <div className="eyebrow mb-1.5">Discount</div>
           <div className="text-[20px] font-semibold numeral" style={{ color: 'var(--ink)' }}>
-            {discountPercent > 0 ? `${discountPercent}%` : '—'}
+            {!hasDiscount ? '—' : discountIsFlat ? fmtINR(discountAmount) : `${discountPercent}%`}
           </div>
           <div className="text-[11.5px] mt-1" style={{ color: 'var(--ink-4)' }}>
-            {discountPercent > 0 ? `-${fmtINR(discountAmount)}` : 'Not applied'}
+            {!hasDiscount ? 'Not applied' : discountIsFlat ? 'Fixed amount' : `-${fmtINR(discountAmount)}`}
           </div>
         </div>
         <div className="card px-4 py-3">
@@ -336,9 +340,9 @@ export default function QuotationDetailPage() {
           <span>Subtotal</span>
           <span className="numeral">{fmtINR(subtotal)}</span>
         </div>
-        <div className="mt-2 flex items-center justify-between text-[13px]" style={{ color: discountPercent > 0 ? 'var(--ink-2)' : 'var(--ink-4)' }}>
-          <span>Discount{discountPercent > 0 ? ` (${discountPercent}%)` : ''}</span>
-          <span className="numeral">{discountPercent > 0 ? `-${fmtINR(discountAmount)}` : fmtINR(0)}</span>
+        <div className="mt-2 flex items-center justify-between text-[13px]" style={{ color: hasDiscount ? 'var(--ink-2)' : 'var(--ink-4)' }}>
+          <span>Discount{discountLabel}</span>
+          <span className="numeral">{hasDiscount ? `-${fmtINR(discountAmount)}` : fmtINR(0)}</span>
         </div>
         <div className="mt-2 flex items-center justify-between text-[13px]" style={{ color: 'var(--ink-3)' }}>
           <span>Taxable amount</span>

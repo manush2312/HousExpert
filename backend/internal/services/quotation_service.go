@@ -43,7 +43,9 @@ type CreateQuotationInput struct {
 	ClientPhone     string                  `json:"client_phone"`
 	ClientLocation  string                  `json:"client_location"`
 	Sections        []QuotationSectionInput `json:"sections"`
+	DiscountMode    string                  `json:"discount_mode"`
 	DiscountPercent float64                 `json:"discount_percent"`
+	DiscountValue   float64                 `json:"discount_value"`
 	ApplyGST        bool                    `json:"apply_gst"`
 	GSTPercent      float64                 `json:"gst_percent"`
 	Notes           string                  `json:"notes"`
@@ -54,7 +56,9 @@ type UpdateQuotationInput struct {
 	ClientPhone     *string                 `json:"client_phone"`
 	ClientLocation  *string                 `json:"client_location"`
 	Sections        []QuotationSectionInput `json:"sections"` // nil means no change
+	DiscountMode    *string                 `json:"discount_mode"`
 	DiscountPercent *float64                `json:"discount_percent"`
+	DiscountValue   *float64                `json:"discount_value"`
 	ApplyGST        *bool                   `json:"apply_gst"`
 	GSTPercent      *float64                `json:"gst_percent"`
 	Notes           *string                 `json:"notes"`
@@ -175,7 +179,22 @@ func validateGSTInput(applyGST bool, gstPercent float64) error {
 	return nil
 }
 
-func validateDiscountInput(discountPercent float64) error {
+// normalizedDiscountMode treats anything unrecognised - including the empty
+// string written by every quotation saved before this feature - as percent.
+func normalizedDiscountMode(mode string) models.QuotationDiscountMode {
+	if models.QuotationDiscountMode(mode) == models.QuotationDiscountAmount {
+		return models.QuotationDiscountAmount
+	}
+	return models.QuotationDiscountPercent
+}
+
+func validateDiscountInput(mode string, discountPercent, discountValue float64) error {
+	if normalizedDiscountMode(mode) == models.QuotationDiscountAmount {
+		if discountValue < 0 {
+			return fmt.Errorf("discount amount cannot be negative")
+		}
+		return nil
+	}
 	if discountPercent < 0 {
 		return fmt.Errorf("discount percent cannot be negative")
 	}
@@ -192,6 +211,36 @@ func normalizedDiscountPercent(discountPercent float64) float64 {
 	return roundQuotationMoney(discountPercent)
 }
 
+func normalizedDiscountValue(discountValue float64) float64 {
+	if discountValue <= 0 {
+		return 0
+	}
+	return roundQuotationMoney(discountValue)
+}
+
+// Only the field belonging to the active mode is stored; the other is zeroed,
+// so a quotation can never carry both a percentage and a flat discount.
+func discountFieldsForMode(mode string, discountPercent, discountValue float64) (models.QuotationDiscountMode, float64, float64) {
+	resolved := normalizedDiscountMode(mode)
+	if resolved == models.QuotationDiscountAmount {
+		return resolved, 0, normalizedDiscountValue(discountValue)
+	}
+	return resolved, normalizedDiscountPercent(discountPercent), 0
+}
+
+// resolveDiscountAmount turns whichever discount was entered into rupees.
+// A flat discount is capped at the subtotal so the total can never go negative.
+func resolveDiscountAmount(subtotal float64, mode string, discountPercent, discountValue float64) float64 {
+	if normalizedDiscountMode(mode) == models.QuotationDiscountAmount {
+		value := normalizedDiscountValue(discountValue)
+		if value > subtotal {
+			value = subtotal
+		}
+		return roundQuotationMoney(value)
+	}
+	return roundQuotationMoney(subtotal * normalizedDiscountPercent(discountPercent) / 100)
+}
+
 func normalizedGSTPercent(applyGST bool, gstPercent float64) float64 {
 	if !applyGST {
 		return 0
@@ -199,10 +248,9 @@ func normalizedGSTPercent(applyGST bool, gstPercent float64) float64 {
 	return roundQuotationMoney(gstPercent)
 }
 
-func computeQuotationTotals(subtotal float64, discountPercent float64, applyGST bool, gstPercent float64) (float64, float64, float64, float64) {
+func computeQuotationTotals(subtotal float64, mode string, discountPercent, discountValue float64, applyGST bool, gstPercent float64) (float64, float64, float64, float64) {
 	subtotal = roundQuotationMoney(subtotal)
-	discountPercent = normalizedDiscountPercent(discountPercent)
-	discountAmount := roundQuotationMoney(subtotal * discountPercent / 100)
+	discountAmount := resolveDiscountAmount(subtotal, mode, discountPercent, discountValue)
 	taxableAmount := roundQuotationMoney(subtotal - discountAmount)
 
 	if !applyGST {
@@ -231,10 +279,13 @@ func CreateQuotation(input CreateQuotationInput) (*models.Quotation, error) {
 	if err := validateGSTInput(input.ApplyGST, input.GSTPercent); err != nil {
 		return nil, err
 	}
-	if err := validateDiscountInput(input.DiscountPercent); err != nil {
+	if err := validateDiscountInput(input.DiscountMode, input.DiscountPercent, input.DiscountValue); err != nil {
 		return nil, err
 	}
-	subtotal, discountAmount, gstAmount, finalTotal := computeQuotationTotals(total, input.DiscountPercent, input.ApplyGST, input.GSTPercent)
+	subtotal, discountAmount, gstAmount, finalTotal := computeQuotationTotals(
+		total, input.DiscountMode, input.DiscountPercent, input.DiscountValue, input.ApplyGST, input.GSTPercent)
+	discountMode, storedPercent, storedValue := discountFieldsForMode(
+		input.DiscountMode, input.DiscountPercent, input.DiscountValue)
 
 	now := time.Now()
 	q := &models.Quotation{
@@ -244,7 +295,9 @@ func CreateQuotation(input CreateQuotationInput) (*models.Quotation, error) {
 		ClientLocation:  input.ClientLocation,
 		Sections:        sections,
 		SubtotalAmount:  subtotal,
-		DiscountPercent: normalizedDiscountPercent(input.DiscountPercent),
+		DiscountMode:    discountMode,
+		DiscountPercent: storedPercent,
+		DiscountValue:   storedValue,
 		DiscountAmount:  discountAmount,
 		ApplyGST:        input.ApplyGST,
 		GSTPercent:      normalizedGSTPercent(input.ApplyGST, input.GSTPercent),
@@ -331,7 +384,9 @@ func UpdateQuotation(quotationID string, input UpdateQuotationInput) (*models.Qu
 
 	set := bson.M{"updated_at": time.Now()}
 	currentSubtotal := subtotalOrExisting(existing.SubtotalAmount, existing.TotalAmount, existing.GSTAmount, existing.DiscountAmount)
+	nextDiscountMode := string(existing.DiscountMode)
 	nextDiscountPercent := existing.DiscountPercent
+	nextDiscountValue := existing.DiscountValue
 	nextApplyGST := existing.ApplyGST
 	nextGSTPercent := existing.GSTPercent
 
@@ -347,8 +402,14 @@ func UpdateQuotation(quotationID string, input UpdateQuotationInput) (*models.Qu
 	if input.Notes != nil {
 		set["notes"] = *input.Notes
 	}
+	if input.DiscountMode != nil {
+		nextDiscountMode = *input.DiscountMode
+	}
 	if input.DiscountPercent != nil {
 		nextDiscountPercent = *input.DiscountPercent
+	}
+	if input.DiscountValue != nil {
+		nextDiscountValue = *input.DiscountValue
 	}
 	if input.ApplyGST != nil {
 		nextApplyGST = *input.ApplyGST
@@ -356,9 +417,11 @@ func UpdateQuotation(quotationID string, input UpdateQuotationInput) (*models.Qu
 	if input.GSTPercent != nil {
 		nextGSTPercent = *input.GSTPercent
 	}
-	if err := validateDiscountInput(nextDiscountPercent); err != nil {
+	if err := validateDiscountInput(nextDiscountMode, nextDiscountPercent, nextDiscountValue); err != nil {
 		return nil, err
 	}
+	nextMode, storedPercent, storedValue := discountFieldsForMode(
+		nextDiscountMode, nextDiscountPercent, nextDiscountValue)
 	if err := validateGSTInput(nextApplyGST, nextGSTPercent); err != nil {
 		return nil, err
 	}
@@ -367,10 +430,13 @@ func UpdateQuotation(quotationID string, input UpdateQuotationInput) (*models.Qu
 		if err != nil {
 			return nil, err
 		}
-		subtotal, discountAmount, gstAmount, finalTotal := computeQuotationTotals(total, nextDiscountPercent, nextApplyGST, nextGSTPercent)
+		subtotal, discountAmount, gstAmount, finalTotal := computeQuotationTotals(
+			total, nextDiscountMode, nextDiscountPercent, nextDiscountValue, nextApplyGST, nextGSTPercent)
 		set["sections"] = sections
 		set["subtotal_amount"] = subtotal
-		set["discount_percent"] = normalizedDiscountPercent(nextDiscountPercent)
+		set["discount_mode"] = nextMode
+		set["discount_percent"] = storedPercent
+		set["discount_value"] = storedValue
 		set["discount_amount"] = discountAmount
 		set["apply_gst"] = nextApplyGST
 		set["gst_percent"] = normalizedGSTPercent(nextApplyGST, nextGSTPercent)
@@ -378,9 +444,13 @@ func UpdateQuotation(quotationID string, input UpdateQuotationInput) (*models.Qu
 		set["total_amount"] = finalTotal
 		currentSubtotal = subtotal
 	}
-	if input.DiscountPercent != nil || input.ApplyGST != nil || input.GSTPercent != nil {
-		subtotal, discountAmount, gstAmount, finalTotal := computeQuotationTotals(currentSubtotal, nextDiscountPercent, nextApplyGST, nextGSTPercent)
-		set["discount_percent"] = normalizedDiscountPercent(nextDiscountPercent)
+	if input.DiscountMode != nil || input.DiscountPercent != nil || input.DiscountValue != nil ||
+		input.ApplyGST != nil || input.GSTPercent != nil {
+		subtotal, discountAmount, gstAmount, finalTotal := computeQuotationTotals(
+			currentSubtotal, nextDiscountMode, nextDiscountPercent, nextDiscountValue, nextApplyGST, nextGSTPercent)
+		set["discount_mode"] = nextMode
+		set["discount_percent"] = storedPercent
+		set["discount_value"] = storedValue
 		set["discount_amount"] = discountAmount
 		set["apply_gst"] = nextApplyGST
 		set["gst_percent"] = normalizedGSTPercent(nextApplyGST, nextGSTPercent)

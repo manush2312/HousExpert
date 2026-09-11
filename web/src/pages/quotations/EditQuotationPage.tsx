@@ -13,7 +13,7 @@ import {
 } from '../../services/quotationService'
 import { listProducts, type Product } from '../../services/productService'
 import { deriveSqft, deriveSqftString } from '../../utils/sizeFormat'
-import { computeQuotationTotals } from '../../utils/quotationTotals'
+import { computeQuotationTotals, type QuotationDiscountMode } from '../../utils/quotationTotals'
 
 interface DraftItem {
   _id: string
@@ -115,6 +115,8 @@ export default function EditQuotationPage() {
   const [clientPhone, setClientPhone] = useState('')
   const [clientLocation, setClientLocation] = useState('')
   const [discountPercent, setDiscountPercent] = useState('')
+  const [discountMode, setDiscountMode] = useState<QuotationDiscountMode>('percent')
+  const [discountValue, setDiscountValue] = useState('')
   const [applyGST, setApplyGST] = useState(false)
   const [gstPercent, setGSTPercent] = useState('')
   const [sections, setSections] = useState<DraftSection[]>([emptySection('Bedroom')])
@@ -138,6 +140,8 @@ export default function EditQuotationPage() {
         setClientPhone(next.client_phone ?? '')
         setClientLocation(next.client_location ?? '')
         setDiscountPercent(next.discount_percent ? String(next.discount_percent) : '')
+        setDiscountMode(next.discount_mode === 'amount' ? 'amount' : 'percent')
+        setDiscountValue(next.discount_value ? String(next.discount_value) : '')
         setApplyGST(Boolean(next.apply_gst))
         setGSTPercent(next.apply_gst && next.gst_percent ? String(next.gst_percent) : '')
         setSections(quotationToDraftSections(next))
@@ -201,10 +205,15 @@ export default function EditQuotationPage() {
     e.preventDefault()
     if (saving) return
     if (!id || !clientName.trim()) return
-    const discountRate = Number(discountPercent) || 0
+    const discountRate = discountMode === 'percent' ? Number(discountPercent) || 0 : 0
+    const discountFlat = discountMode === 'amount' ? Number(discountValue) || 0 : 0
     const gstRate = Number(gstPercent) || 0
-    if (discountRate < 0 || discountRate > 100) {
+    if (discountMode === 'percent' && (discountRate < 0 || discountRate > 100)) {
       setError('Enter a discount percentage between 0 and 100.')
+      return
+    }
+    if (discountMode === 'amount' && discountFlat < 0) {
+      setError('Enter a discount amount of 0 or more.')
       return
     }
     if (applyGST && gstRate <= 0) {
@@ -219,7 +228,9 @@ export default function EditQuotationPage() {
         client_phone: clientPhone.trim() || undefined,
         client_location: clientLocation.trim() || undefined,
         sections: toServicePayload(sections),
+        discount_mode: discountMode,
         discount_percent: discountRate,
+        discount_value: discountFlat,
         apply_gst: applyGST,
         gst_percent: applyGST ? gstRate : 0,
       })
@@ -232,9 +243,14 @@ export default function EditQuotationPage() {
   }
 
   const subtotal = calcTotal(sections)
-  const discountRate = Number(discountPercent) || 0
+  const discountRate = discountMode === 'percent' ? Number(discountPercent) || 0 : 0
+  const discountFlat = discountMode === 'amount' ? Number(discountValue) || 0 : 0
   const gstRate = Number(gstPercent) || 0
-  const totals = computeQuotationTotals(subtotal, discountRate, applyGST, gstRate)
+  const totals = computeQuotationTotals(subtotal, discountRate, applyGST, gstRate, discountMode, discountFlat)
+  const discountLabel = discountMode === 'percent'
+    ? (discountRate > 0 ? ` (${discountRate}%)` : '')
+    : ''
+  const hasDiscount = totals.discountAmount > 0
 
   if (loading) {
     return (
@@ -337,19 +353,63 @@ export default function EditQuotationPage() {
 
           <div className="mt-4 grid grid-cols-1 gap-3 md:grid-cols-[180px_180px_minmax(0,1fr)]">
             <div className="space-y-1.5">
-              <label className="text-[12.5px] font-medium" style={{ color: 'var(--ink-2)' }}>Discount percentage</label>
+              <label className="text-[12.5px] font-medium" style={{ color: 'var(--ink-2)' }}>Discount</label>
+              {/* Percentage and fixed amount are mutually exclusive — only the
+                  selected one is entered, and only it is sent to the server. */}
+              <div className="flex rounded-lg overflow-hidden" style={{ border: '1px solid var(--line)' }}>
+                <button
+                  type="button"
+                  onClick={() => setDiscountMode('percent')}
+                  className="flex-1 px-2 py-1 text-[11.5px] transition-colors"
+                  style={{
+                    background: discountMode === 'percent' ? 'var(--accent)' : 'var(--bg)',
+                    color: discountMode === 'percent' ? 'white' : 'var(--ink-3)',
+                    borderRight: '1px solid var(--line)',
+                  }}
+                >
+                  Percentage
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setDiscountMode('amount')}
+                  className="flex-1 px-2 py-1 text-[11.5px] transition-colors"
+                  style={{
+                    background: discountMode === 'amount' ? 'var(--accent)' : 'var(--bg)',
+                    color: discountMode === 'amount' ? 'white' : 'var(--ink-3)',
+                  }}
+                >
+                  Fixed amount
+                </button>
+              </div>
               <div className="relative">
-                <input
-                  type="number"
-                  min="0"
-                  max="100"
-                  step="0.01"
-                  className="input pr-8"
-                  placeholder="e.g. 10"
-                  value={discountPercent}
-                  onChange={(e) => setDiscountPercent(e.target.value)}
-                />
-                <span className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-[12px]" style={{ color: 'var(--ink-4)' }}>%</span>
+                {discountMode === 'percent' ? (
+                  <>
+                    <input
+                      type="number"
+                      min="0"
+                      max="100"
+                      step="0.01"
+                      className="input pr-8"
+                      placeholder="e.g. 10"
+                      value={discountPercent}
+                      onChange={(e) => setDiscountPercent(e.target.value)}
+                    />
+                    <span className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-[12px]" style={{ color: 'var(--ink-4)' }}>%</span>
+                  </>
+                ) : (
+                  <>
+                    <input
+                      type="number"
+                      min="0"
+                      step="0.01"
+                      className="input pl-7"
+                      placeholder="e.g. 5000"
+                      value={discountValue}
+                      onChange={(e) => setDiscountValue(e.target.value)}
+                    />
+                    <span className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-[12px]" style={{ color: 'var(--ink-4)' }}>₹</span>
+                  </>
+                )}
               </div>
             </div>
 
@@ -375,9 +435,9 @@ export default function EditQuotationPage() {
                 <span>Subtotal</span>
                 <span className="numeral">{fmtINR(totals.subtotal)}</span>
               </div>
-              <div className="mt-2 flex items-center justify-between text-[12.5px]" style={{ color: discountRate > 0 ? 'var(--ink-2)' : 'var(--ink-4)' }}>
-                <span>Discount{discountRate > 0 ? ` (${discountRate}%)` : ''}</span>
-                <span className="numeral">{discountRate > 0 ? `-${fmtINR(totals.discountAmount)}` : fmtINR(0)}</span>
+              <div className="mt-2 flex items-center justify-between text-[12.5px]" style={{ color: hasDiscount ? 'var(--ink-2)' : 'var(--ink-4)' }}>
+                <span>Discount{discountLabel}</span>
+                <span className="numeral">{hasDiscount ? `-${fmtINR(totals.discountAmount)}` : fmtINR(0)}</span>
               </div>
               <div className="mt-2 flex items-center justify-between text-[12.5px]" style={{ color: 'var(--ink-3)' }}>
                 <span>Taxable amount</span>

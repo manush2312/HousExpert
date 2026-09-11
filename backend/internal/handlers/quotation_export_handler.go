@@ -258,7 +258,7 @@ func buildQuotationPDF(q *models.Quotation) (*bytes.Buffer, error) {
 		doc.AddPage()
 		y = p.drawQuotRunningHeader(q, "Continued", "Sections & Totals")
 	}
-	y = p.drawQuotGrandTotal(y, q.SubtotalAmount, q.DiscountPercent, q.DiscountAmount, q.ApplyGST, q.GSTPercent, q.GSTAmount, q.TotalAmount)
+	y = p.drawQuotGrandTotal(y, q.SubtotalAmount, q.DiscountMode, q.DiscountPercent, q.DiscountAmount, q.ApplyGST, q.GSTPercent, q.GSTAmount, q.TotalAmount)
 
 	// Appendix notice
 	if y+22 > qph-18 {
@@ -718,7 +718,15 @@ func (p *pdfWriter) drawQuotItemRow(y float64, idx int, item models.QuotationIte
 
 // ── Grand total ───────────────────────────────────────────────────────────────
 
-func (p *pdfWriter) drawQuotGrandTotal(y float64, subtotal float64, discountPercent float64, discountAmount float64, applyGST bool, gstPercent float64, gstAmount float64, total float64) float64 {
+// quotDiscountLabel shows the rate only when the discount was entered as one.
+func quotDiscountLabel(mode models.QuotationDiscountMode, discountPercent float64) string {
+	if mode == models.QuotationDiscountAmount {
+		return "Discount"
+	}
+	return fmt.Sprintf("Discount (%.2f%%)", discountPercent)
+}
+
+func (p *pdfWriter) drawQuotGrandTotal(y float64, subtotal float64, discountMode models.QuotationDiscountMode, discountPercent float64, discountAmount float64, applyGST bool, gstPercent float64, gstAmount float64, total float64) float64 {
 	doc := p.doc
 	const (
 		rowH   = 8.5
@@ -749,7 +757,7 @@ func (p *pdfWriter) drawQuotGrandTotal(y float64, subtotal float64, discountPerc
 				label string
 				value string
 			}{
-				label: fmt.Sprintf("Discount (%.2f%%)", discountPercent),
+				label: quotDiscountLabel(discountMode, discountPercent),
 				value: "-" + p.rupee + " " + formatNum(discountAmount),
 			},
 			struct {

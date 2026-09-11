@@ -38,6 +38,16 @@ type QuotationSection struct {
 	Items     []QuotationItem `bson:"items" json:"items"`
 }
 
+// QuotationDiscountMode selects how the discount figure is interpreted.
+// An empty value means percent, so quotations saved before fixed-amount
+// discounts existed keep behaving exactly as they did.
+type QuotationDiscountMode string
+
+const (
+	QuotationDiscountPercent QuotationDiscountMode = "percent"
+	QuotationDiscountAmount  QuotationDiscountMode = "amount"
+)
+
 // Quotation represents a price estimate prepared for a client.
 type Quotation struct {
 	ID          primitive.ObjectID `bson:"_id,omitempty" json:"id"`
@@ -53,8 +63,10 @@ type Quotation struct {
 
 	// Financials
 	SubtotalAmount  float64 `bson:"subtotal_amount" json:"subtotal_amount"`                       // sum of all item amounts before discount and GST
-	DiscountPercent float64 `bson:"discount_percent,omitempty" json:"discount_percent,omitempty"` // discount rate percentage entered by the user
-	DiscountAmount  float64 `bson:"discount_amount,omitempty" json:"discount_amount,omitempty"`   // computed discount amount before GST
+	DiscountMode    QuotationDiscountMode `bson:"discount_mode,omitempty" json:"discount_mode,omitempty"`       // percent (default) or amount
+	DiscountPercent float64               `bson:"discount_percent,omitempty" json:"discount_percent,omitempty"` // rate entered by the user, percent mode only
+	DiscountValue   float64               `bson:"discount_value,omitempty" json:"discount_value,omitempty"`     // flat figure entered by the user, amount mode only
+	DiscountAmount  float64               `bson:"discount_amount,omitempty" json:"discount_amount,omitempty"`   // computed discount amount before GST
 	ApplyGST        bool    `bson:"apply_gst,omitempty" json:"apply_gst,omitempty"`               // whether GST is applied to the quotation
 	GSTPercent      float64 `bson:"gst_percent,omitempty" json:"gst_percent,omitempty"`           // GST rate percentage entered by the user
 	GSTAmount       float64 `bson:"gst_amount,omitempty" json:"gst_amount,omitempty"`             // computed GST amount after discount

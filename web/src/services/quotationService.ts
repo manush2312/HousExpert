@@ -29,7 +29,9 @@ export interface Quotation {
   client_location?: string
   sections: QuotationSection[]
   subtotal_amount: number
+  discount_mode?: 'percent' | 'amount'
   discount_percent?: number
+  discount_value?: number
   discount_amount?: number
   apply_gst?: boolean
   gst_percent?: number
@@ -104,7 +106,9 @@ export interface CreateQuotationPayload {
   client_phone?: string
   client_location?: string
   sections?: QuotationSectionInput[]
+  discount_mode?: 'percent' | 'amount'
   discount_percent?: number
+  discount_value?: number
   apply_gst?: boolean
   gst_percent?: number
   notes?: string
@@ -115,7 +119,9 @@ export interface UpdateQuotationPayload {
   client_phone?: string
   client_location?: string
   sections?: QuotationSectionInput[]
+  discount_mode?: 'percent' | 'amount'
   discount_percent?: number
+  discount_value?: number
   apply_gst?: boolean
   gst_percent?: number
   notes?: string
